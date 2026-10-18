@@ -1,117 +1,165 @@
 <p align="center">
-  <img src="docs/img/logo.png" width="112" alt="Logo do concord">
+  <img src="docs/img/logo.png" width="112" alt="concord logo">
 </p>
 
 <h1 align="center">concord</h1>
 
-<p align="center"><b>Voz, tela e chat para o seu grupo, rodando no PC de um de vocês.</b></p>
+<p align="center"><b>Voice, screen sharing and chat for your group, hosted on one of your own PCs.</b></p>
 
-O concord é um app leve no estilo do Discord, feito para **grupos de amigos** e **hospedado por vocês mesmos**: canais de texto, salas de voz, câmeras e transmissão de tela (Go Live), com o servidor rodando no PC de alguém do grupo, como no TeamSpeak. Nada passa por uma empresa no meio.
+<p align="center">English · <a href="README.pt-BR.md">Português</a></p>
 
-> Até a v1.0.0 o projeto se chamava **voxhub**. Desde a v1.0.1 ele é o concord: o mesmo app, com nome e logo novos. Ele copia sozinho as configurações e os servidores salvos do voxhub, e apps voxhub v1.0.0 e concord conversam normalmente entre si.
+concord is a lightweight, self-hosted, Discord-style app for small groups of friends. It has text channels, voice rooms, cameras and Go Live screen sharing. The server runs on someone's PC in the group, like TeamSpeak, so nothing goes through a company in the middle.
 
-![Sala de voz com duas transmissões fixadas e as câmeras embaixo](docs/img/sala.png)
+The app is called concord. It was called voxhub until v1.0.0. It is a personal project, independent of Discord.
 
-## O que tem
+## Preview
 
-| | |
+| Voice room with two pinned streams | Voice room with a text channel docked |
 |---|---|
-| **Texto** | Canais de texto, mensagens diretas, respostas, menções (`@nome`), reações, imagens (comprimidas antes de enviar), links com prévia e soundboard |
-| **Voz** | Salas de voz, supressão de ruído com IA (RNNoise / DeepFilterNet), modificador de voz, push-to-talk e volume por pessoa |
-| **Go Live** | Até 4 transmissões ao mesmo tempo, **áudio só do app que você escolheu**, modo "só áudio", fixar várias telas, tela cheia e codificação pela placa de vídeo (NVIDIA, AMD ou Intel) |
-| **Câmeras** | Várias câmeras na sala, com ajustes de imagem (brilho, exposição, foco, zoom), espelhar e girar |
-| **Mensagens diretas** | Conversa privada entre duas pessoas, com chamada de voz e câmera ("Ligar") |
-| **Canais privados** | Só os cargos ou as pessoas escolhidas veem o canal e entram na voz dele |
-| **Convites** | Códigos `vox1-...` com validade e limite de usos: o amigo cola o código e entra, sem digitar IP nem senha |
-| **Hospedar pelo app** | "Criar servidor" na tela inicial: o app baixa a parte de voz, tenta abrir as portas do roteador e gera os convites |
-| **Lista de servidores** | Os servidores em que você já entrou ficam salvos na tela inicial, com uma bolinha verde quando estão ligados |
-| **Perfil e moderação** | Foto, "Sobre mim", status e presença; cargos (Dono, Admin, Moderador, Membro), silenciar, mover, desconectar e registro de ações |
-| **Bandeja e avisos** | Fechar no X minimiza para a bandeja; contador de não lidas e avisos do Windows |
+| ![Voice room with two pinned streams and cameras below](docs/img/sala.png) | ![Voice room with a text channel next to the video](docs/img/sala-chat.png) |
 
-<p align="center">
-  <img src="docs/img/sala-chat.png" width="49%" alt="Sala de voz com o chat de um canal ao lado">
-  <img src="docs/img/chat.png" width="49%" alt="Chat com resposta, menção e reações">
-</p>
-<p align="center">
-  <img src="docs/img/perfil.png" width="49%" alt="Cartão de perfil de uma pessoa">
-  <img src="docs/img/inicio.png" width="49%" alt="Tela inicial do concord">
-</p>
+| Chat with a reply, a mention and reactions | Profile card |
+|---|---|
+| ![Chat with a reply, a mention and reactions](docs/img/chat.png) | ![Profile card](docs/img/perfil.png) |
 
-*(As imagens usam pessoas, servidores e conversas fictícios.)*
+The interface is in Portuguese (pt-BR). People, servers and conversations in the images are fictional.
 
-## Leve de verdade
+**Compatibility:** concord has been tested on Windows 11 PCs with NVIDIA graphics, and with friends connecting over the internet. AMD and Intel hardware encoders are detected and self-tested by the app, but they have had little real-world use. If you try other hardware, say so in your issue, with the GPU model and driver version.
 
-App nativo em Rust, sem Electron e sem navegador embutido; o vídeo é codificado pela placa de vídeo. Na medição da v1.0 ([docs/perf-v1.md](docs/perf-v1.md)): parado na tela inicial, **~0% de CPU** e cerca de 80 MB de memória; numa chamada de voz com o chat aberto, **~1% de um núcleo**; assistindo a uma transmissão, cerca de 11% de um núcleo. Os números são do PC de teste e mudam de máquina para máquina.
+### Tested setups
 
-## Requisitos
+| Setup | Status |
+|---|---|
+| Windows 11, NVIDIA RTX (NVENC) | Works: voice, cameras, Go Live with app audio, hosting |
+| CPU encoding (no hardware encoder, or acceleration turned off) | Works: tested by forcing the CPU encoder on Windows 11 |
+| Laptops with two GPUs (AMD/Intel + NVIDIA) | Supported, little real-world testing |
+| Windows on ARM, macOS, Linux | Not supported yet |
 
-- **Windows 10 (versão 2004 ou mais nova) ou Windows 11, 64 bits.**
-- Fone de ouvido é recomendado.
-- Placa de vídeo com codificação H.264 por hardware é recomendada para o Go Live e a câmera. Sem ela, o app codifica pelo processador.
+## Quick start with Claude
 
-## Baixar
+If you use Claude Code, clone this repository and tell Claude:
 
-Na página de [**Releases**](../../releases), baixe o **`concord-v1.0.1-PUBLICO.zip`**, extraia a pasta (não rode de dentro do .zip) e abra o `concord.exe`.
+> Set up a concord server for my group.
 
-O executável não é assinado digitalmente. Na primeira vez o Windows pode mostrar "O Windows protegeu o computador": clique em "Mais informações" e depois em "Executar assim mesmo". Baixe só deste repositório ou de quem hospeda o seu grupo.
+The [CLAUDE.md](CLAUDE.md) file in the root tells Claude how to download or build concord, host a server, choose between a VPN and opening ports, and invite your friends. Claude will ask you for anything it cannot find, such as your router or VPN.
 
-## Como entrar (seus amigos)
+## Requirements
 
-- **Com convite:** clique em "Conectar", cole o código `vox1-...` e escreva o seu nome.
-- **Sem convite:** informe o endereço do servidor, o seu nome e a senha do servidor (passada em particular).
+- Windows 10 (version 2004 or later) or Windows 11, 64-bit.
+- A headset is recommended.
+- A GPU with hardware H.264 encoding is recommended for cameras and Go Live. Without one, the app encodes on the CPU.
+- To host: a PC that stays on while the group is online, plus either a VPN (Tailscale or ZeroTier) or the ability to open ports on your router.
 
-## Como hospedar
+## Download
 
-### Pelo app (o jeito fácil)
+On the [Releases](../../releases) page:
 
-1. Na tela inicial, clique em **"Criar ou abrir servidor"**.
-2. Na primeira vez, o app baixa a parte de voz (o LiveKit, uns 19 MB, conferido por checksum) e pede ao roteador (UPnP) que abra as portas. Quando o Firewall do Windows perguntar, permita **só em redes privadas**.
-3. Use **"Convidar"** para gerar um código e mande-o em conversa privada.
+- **`concord-v1.0.1-PUBLICO.zip`** is the app. Extract the folder (don't run it from inside the zip) and open `concord.exe`.
+- **`concord-servidor-v1.0.1.zip`** is the standalone server (optional, see below).
 
-O servidor fica ligado enquanto o app estiver aberto (ou na bandeja). Quem cria o servidor vira o **Dono**.
+The executables aren't digitally signed. The first time, Windows may show "Windows protected your PC": choose "More info" and then "Run anyway". Download concord only from this repository or from the person who hosts your group.
 
-### Servidor dedicado (`concord-server.exe`)
+## Host a server
 
-Para deixar um PC ligado com o servidor sem abrir o app:
+### From the app (the easy way)
 
-1. Baixe o código deste repositório e o `concord-server.exe` da página de Releases (ou compile, veja abaixo), e coloque o exe em `bin\`.
-2. Baixe o LiveKit com `hub\scripts\fetch-livekit.ps1` (ele confere o checksum e instala em `bin\`).
-3. Rode `iniciar-servidor.bat`. Na primeira vez ele cria `data\config.toml`: **defina uma senha** (`server_password`) antes de convidar alguém.
-4. Libere as portas **TCP 7890, 7880 e 7881** e **UDP 7882** (no roteador ou, melhor, use uma VPN).
-5. Abra o app **no próprio PC do servidor** com o endereço `127.0.0.1` para virar o Dono.
+1. On the home screen, choose **"Criar / abrir servidor"** (Create / open server).
+2. The first time, the app downloads the voice server (LiveKit, about 19 MB, verified by a pinned SHA-256). It also asks your router (UPnP) to open the ports.
+3. When Windows Firewall asks, allow concord on private networks.
+4. Use **"Convidar"** (Invite) to create a code and send it in a private message.
 
-Detalhes em [hub/README.md](hub/README.md).
+The server stays on while the app is open or in the tray. Whoever creates the server becomes its owner (Dono).
 
-## Segurança: leia antes de abrir para a internet
+### Standalone server
 
-Leia o [SECURITY.md](SECURITY.md). Em resumo:
+For a PC that keeps the server running without the app:
 
-- O concord foi feito para **grupos pequenos de amigos que confiam entre si**.
-- A conexão entre o app e o servidor **ainda não é criptografada** (sem HTTPS/TLS). O áudio e o vídeo vão criptografados; senhas, convites e mensagens, não. **Prefira uma VPN (Tailscale ou ZeroTier)** a abrir portas no roteador.
-- Use uma senha de servidor forte e exclusiva, e uma senha pessoal que você não usa em nenhum outro lugar.
-- Um código de convite funciona como uma senha: mande só em conversa privada.
-- A pasta `data\` (e a de cada servidor criado pelo app) guarda segredos e as mensagens: nunca a envie para ninguém.
+1. Download `concord-servidor-v1.0.1.zip` and extract it to a permanent folder.
+2. Run `baixar-livekit.bat`. It downloads LiveKit from its official release and checks the hash.
+3. Run `iniciar-servidor.bat`. On the first run it creates `data\config.toml`. **Set `server_password`** before you invite anyone, then start it again.
+4. Open `concord.exe` on the same PC and connect to `127.0.0.1` to become the owner.
+5. Make the server reachable: use a VPN (safer), or forward TCP 7890, 7880, 7881 and UDP 7882 to this PC.
 
-## Compilar a partir do código
+`LEIA-ME-SERVIDOR.txt` inside the zip has the full steps.
 
-Requer o Rust (stable, MSVC) e o Visual Studio Build Tools com C++.
+## Invite your friends
 
-```
+- **With an invite code:** your friend chooses "Conectar" (Connect), pastes the `vox1-...` code and types a name. No address or password is needed.
+- **Without a code:** they enter the server address, a name and the server password, which you send privately.
+
+Invite codes can expire, have a use limit, and be revoked at any time. A code hides the address from casual eyes, but anyone who joins can still learn the host's IP.
+
+## Compatibility and limits
+
+- **No TLS yet:** traffic between the app and the server isn't encrypted, except voice and video. Prefer a VPN to opening ports. See [SECURITY.md](SECURITY.md).
+- **Router and ISP:** if your ISP uses CGNAT, your friends can't reach your PC directly. The app detects this and explains the options; a VPN works in that case.
+- **Encoders:** NVENC, AMD and Intel (through Media Foundation) and a CPU fallback. The app tests each one on first start. If viewers report broken video, it switches automatically.
+- **Go Live audio:** captures audio from the app you share only (Windows 10 2004+ process loopback). Your voice chat isn't captured.
+- **Private channels:** people without access can't read or join them. They can still notice that messages were sent, because message numbers skip.
+- **Downgrades:** while any channel is private, older server versions refuse to open the database. Make all channels public before going back to an older version.
+- **Group size:** designed for groups of around 15 people.
+
+## Privacy and local storage
+
+concord has no analytics, no accounts on our side and no cloud service. Everything goes between your group's PCs.
+
+The app connects to the internet in these cases only:
+
+- your group's server;
+- link previews, which the server fetches so clients never visit arbitrary sites;
+- when you host from the app: the LiveKit download from GitHub, a STUN request to `stun.l.google.com` or `stun.cloudflare.com` to learn your public address, and UPnP requests to your router.
+
+Where data is kept:
+
+| What | Where |
+|---|---|
+| Settings, saved servers, encoder test results | `%APPDATA%\concord\` |
+| Servers you host from the app, soundboard cache, logs | `%LOCALAPPDATA%\concord\` |
+| Saved passwords and login tokens | Inside those files, encrypted with Windows DPAPI for your Windows user |
+| A standalone server's secrets and messages | The server's `data\` folder |
+
+None of these files are part of this repository. Never share a server's `data\` folder.
+
+## Build from source
+
+You need Rust (stable, MSVC) and Visual Studio Build Tools with C++.
+
+```powershell
 cargo build --release -p voxhub-app -p voxhub-server
 ```
 
-Os executáveis ficam em `target/release/` (`concord.exe` e `concord-server.exe`). Os pacotes do Cargo mantêm os nomes antigos (`voxhub-app` e `voxhub-server`).
+The executables are in `target\release\` (`concord.exe` and `concord-server.exe`). The Cargo packages keep their old names, `voxhub-app` and `voxhub-server`.
 
-## Licença
+## Offline checks
 
-- Código do concord: [MIT](LICENSE).
-- **O logo não está sob a licença MIT.** Ele é a marca do projeto; por favor, não o use para representar outros projetos. Veja [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
-- Bibliotecas, fontes e ícones de terceiros têm as próprias licenças, também listadas em [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+These run without anyone else and without touching a real server:
 
-## Créditos
+```powershell
+cargo test --workspace
+powershell -ExecutionPolicy Bypass -File tools\gate.ps1
+```
 
-Feito por Cezar Callado · cezar.callado@gmail.com
+`cargo test` runs the unit and integration tests. `tools\gate.ps1` starts throwaway local servers on loopback (ports 7997, 7990 and 7998, plus LiveKit on 7970–7982) and runs scripted app clients through calls, Go Live, chat, invites and private channels. It needs `bin\livekit-server.exe` (use `hub\scripts\fetch-livekit.ps1`) and a release build. Its windows open in the background and don't take focus.
 
----
+## Diagnostics
 
-**English summary:** concord (called voxhub before v1.0.1) is a lightweight, self-hosted Discord-like app for Windows, written in Rust, for small groups of friends. It has text channels, DMs, replies, mentions and reactions, voice rooms with AI noise suppression, cameras, and Go Live screen sharing with per-app audio and hardware encoding. It also has private channels, invite codes, a saved server list, and one-click hosting from the app (or the standalone `concord-server.exe`). The server runs on one friend's PC. There is no TLS yet, so prefer a VPN and read `SECURITY.md`. Download `concord-v1.0.1-PUBLICO.zip` from Releases. Code: MIT. The logo is not MIT-licensed (see `THIRD-PARTY-NOTICES.md`). Made by Cezar Callado.
+Logs are in `%LOCALAPPDATA%\concord\logs\app` (press Win+R and paste the path). They contain your server's address and people's names, so share them only privately with whoever hosts your group.
+
+## Contributing
+
+Bug reports and pull requests are welcome, in Portuguese or English.
+
+When you report a problem, include:
+
+- your Windows version;
+- your GPU model and driver version (for video problems);
+- steps to reproduce;
+- a redacted error message or log excerpt.
+
+Keep IP addresses, passwords, invite codes, logs and `data\` files out of public issues and pull requests. To report a security problem, see [SECURITY.md](SECURITY.md).
+
+## License
+
+The code is MIT. See [LICENSE](LICENSE). The concord logo is not covered by the MIT license; please don't use it for other projects. Third-party libraries, fonts and icons are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+Made by Cezar Callado · cezar.callado@gmail.com
