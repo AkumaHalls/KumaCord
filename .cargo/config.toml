@@ -1,0 +1,10 @@
+# The prebuilt libwebrtc used by the LiveKit SDK links the static MSVC runtime,
+# so every crate in the workspace must too (otherwise vox-client-core fails to link).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Keep builds from exhausting RAM: a full-parallel build can push a PC into its page file (slow
+# on a hard disk) and freeze it. 6 jobs keeps peak memory moderate while still building
+# reasonably fast; lower it with `-j` on a smaller machine.
+[build]
+jobs = 6

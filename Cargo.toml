@@ -1,0 +1,69 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vox-log",
+    "crates/vox-proto",
+    "crates/vox-capture",
+    "crates/vox-client-core",
+    "hub",
+    "app",
+]
+# Vendored third-party code (a dependency of vox-client-core, not linted or tested as ours).
+exclude = ["vendor/deep_filter"]
+
+[workspace.package]
+edition = "2021"
+version = "1.0.1"
+publish = false
+
+[workspace.dependencies]
+vox-log = { path = "crates/vox-log" }
+vox-proto = { path = "crates/vox-proto" }
+vox-capture = { path = "crates/vox-capture" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+tracing = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+# DeepFilterNet ("IA máxima"): tract's model loading and graph transforms run once, when the model
+# loads, so they are built for size; the inference kernels (tract-core, tract-linalg) keep -O3.
+[profile.release.package.tract-onnx]
+opt-level = "z"
+[profile.release.package.tract-onnx-opl]
+opt-level = "z"
+[profile.release.package.tract-hir]
+opt-level = "z"
+[profile.release.package.tract-nnef]
+opt-level = "z"
+[profile.release.package.tract-pulse]
+opt-level = "z"
+[profile.release.package.prost]
+opt-level = "z"
+
+# Dependencies are built optimized even in dev, so test runs reflect real CPU usage.
+# Less debug info in dev/test builds: lower peak RAM while linking and much smaller target dirs.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# tract's debug-only graph check (`check_compact`) sometimes rejects DeepFilterNet3's ERB decoder
+# over a cosmetic duplicate node name, so "IA máxima" would not load in test builds. Release
+# builds never run it.
+[profile.dev.package.tract-core]
+debug-assertions = false
+
+# The stereo flag of audio publications (livekit-rust-sdks 0.9.4 never asks the server for stereo,
+# so a stereo source goes out as mono); see vendor/livekit/README.voxhub.md.
+[patch.crates-io]
+livekit = { path = "vendor/livekit" }

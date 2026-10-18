@@ -1,0 +1,36 @@
+[package]
+name = "deep_filter"
+# Vendored subset of libDF (DeepFilterNet, MIT/Apache-2.0) at commit
+# d375b2d8309e0935d165700c91da9de862a99c31; see README.voxhub.md.
+version = "0.5.7-voxhub"
+authors = ["Hendrik Schröter"]
+edition = "2021"
+description = "DeepFilterNet3 streaming inference (tract), trimmed for voxhub"
+repository = "https://github.com/Rikorose/DeepFilterNet"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "df"
+path = "src/lib.rs"
+
+[features]
+default = ["default-model"]
+# Embed the DeepFilterNet3 model (models/DeepFilterNet3_onnx.tar.gz, 8 MB).
+default-model = []
+timings = []
+
+[dependencies]
+rustfft = "6.1"
+realfft = "3.1"
+itertools = "0.12"
+num-complex = "0.4"
+log = { version = "0.4", features = ["std"] }
+rust-ini = "0.21"
+tract-core = "=0.21.4"
+tract-onnx = "=0.21.4"
+tract-pulse = "=0.21.4"
+tract-hir = "=0.21.4"
+anyhow = "1"
+flate2 = "1.0.24"
+tar = "0.4.38"

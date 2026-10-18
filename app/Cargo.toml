@@ -1,0 +1,38 @@
+[package]
+name = "voxhub-app"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+description = "concord desktop app (egui): connect, chat, voice, Go Live."
+
+# The package keeps its old name; the program is `concord.exe` since v1.0.1.
+[[bin]]
+name = "concord"
+path = "src/main.rs"
+
+[dependencies]
+vox-log = { workspace = true }
+vox-proto = { workspace = true }
+vox-capture = { workspace = true }
+vox-client-core = { path = "../crates/vox-client-core" }
+# "Criar / abrir servidor" (v0.8): the hub runs inside the app, as a library (nothing of it starts
+# until somebody hosts).
+voxhub-server = { path = "../hub" }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+raw-window-handle = "0.6"
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
+# Link-preview thumbnails arrive as small JPEGs (item 10); profile pictures are JPEG or PNG, and the
+# file chosen for one (PNG / JPEG / WebP / GIF) is decoded here to preview its circular crop.
+# v1.0 UI: the Phosphor icon font, regular weight, subset at compile time to the icons the app uses
+# (`theme::ph`), for button and row icons.
+egui-phosphor = { version = "0.14", default-features = false, features = ["subset"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+
+[target.'cfg(windows)'.dependencies]
+# The native file dialog (IFileOpenDialog) for "Foto de perfil".
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security_Cryptography", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_LibraryLoader", "Win32_System_Ole", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_Time", "Win32_UI_Controls_Dialogs", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
