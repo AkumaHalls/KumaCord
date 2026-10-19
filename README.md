@@ -65,7 +65,7 @@ The executables aren't digitally signed. The first time, Windows may show "Windo
 
 1. On the home screen, choose **"Criar / abrir servidor"** (Create / open server).
 2. The first time, the app downloads the voice server (LiveKit, about 19 MB, verified by a pinned SHA-256). It also asks your router (UPnP) to open the ports.
-3. When Windows Firewall asks, allow concord on private networks.
+3. When Windows Firewall asks, allow concord on the networks you use. If Windows marks your network as public, tick public networks too; otherwise friends can't connect.
 4. Use **"Convidar"** (Invite) to create a code and send it in a private message.
 
 The server stays on while the app is open or in the tray. Whoever creates the server becomes its owner (Dono).
@@ -76,9 +76,10 @@ For a PC that keeps the server running without the app:
 
 1. Download `concord-servidor-v1.0.1.zip` and extract it to a permanent folder.
 2. Run `baixar-livekit.bat`. It downloads LiveKit from its official release and checks the hash.
-3. Run `iniciar-servidor.bat`. On the first run it creates `data\config.toml`. **Set `server_password`** before you invite anyone, then start it again.
-4. Open `concord.exe` on the same PC and connect to `127.0.0.1` to become the owner.
-5. Make the server reachable: use a VPN (safer), or forward TCP 7890, 7880, 7881 and UDP 7882 to this PC.
+3. Run `liberar-firewall.bat` and accept the Windows prompt. It allows the server and LiveKit through Windows Firewall on all networks, for IPv4 and IPv6 (`remover-firewall.bat` undoes it). It's in the server zip from v1.0.2.
+4. Run `iniciar-servidor.bat`. On the first run it creates `data\config.toml`. **Set `server_password`** before you invite anyone, then start it again. From v1.0.2, a few seconds after it starts, the server window shows a connection check (IPv4/IPv6, CGNAT, Windows Firewall) and what to fix.
+5. Open `concord.exe` on the same PC and connect to `127.0.0.1` to become the owner.
+6. Make the server reachable: use a VPN (safer), or forward TCP 7890, 7880, 7881 and UDP 7882 to this PC.
 
 `LEIA-ME-SERVIDOR.txt` inside the zip has the full steps.
 

@@ -67,7 +67,7 @@ O executável não é assinado digitalmente. Na primeira vez o Windows pode most
 ### Pelo app (o jeito fácil)
 
 1. Na tela inicial, clique em **"Criar ou abrir servidor"**.
-2. Na primeira vez, o app baixa a parte de voz (o LiveKit, uns 19 MB, conferido por checksum) e pede ao roteador (UPnP) que abra as portas. Quando o Firewall do Windows perguntar, permita **só em redes privadas**.
+2. Na primeira vez, o app baixa a parte de voz (o LiveKit, uns 19 MB, conferido por checksum) e pede ao roteador (UPnP) que abra as portas. Quando o Firewall do Windows perguntar, permita nas redes que você usa. Se o Windows marcou a sua rede como pública, marque também redes públicas; senão os amigos não conseguem entrar.
 3. Use **"Convidar"** para gerar um código e mande-o em conversa privada.
 
 O servidor fica ligado enquanto o app estiver aberto (ou na bandeja). Quem cria o servidor vira o **Dono**.
@@ -78,9 +78,10 @@ Para deixar um PC ligado com o servidor sem abrir o app:
 
 1. Na página de Releases, baixe o **`concord-servidor-v1.0.1.zip`** e extraia a pasta num lugar fixo.
 2. Rode `baixar-livekit.bat` (baixa a parte de voz do site oficial e confere o checksum).
-3. Rode `iniciar-servidor.bat`. Na primeira vez ele cria `data\config.toml`: **defina uma senha** (`server_password`) antes de convidar alguém.
-4. Libere as portas **TCP 7890, 7880 e 7881** e **UDP 7882** (no roteador ou, melhor, use uma VPN).
-5. Abra o app **no próprio PC do servidor** com o endereço `127.0.0.1` para virar o Dono.
+3. Rode `liberar-firewall.bat` e aceite o pedido do Windows. Ele libera o servidor e a voz no Firewall do Windows em todas as redes, em IPv4 e IPv6 (o `remover-firewall.bat` desfaz). Vem no zip do servidor a partir da v1.0.2.
+4. Rode `iniciar-servidor.bat`. Na primeira vez ele cria `data\config.toml`: **defina uma senha** (`server_password`) antes de convidar alguém. A partir da v1.0.2, alguns segundos depois de ligar, a janela do servidor mostra um diagnóstico de conexão (IPv4/IPv6, CGNAT, Firewall do Windows) e o que corrigir.
+5. Libere as portas **TCP 7890, 7880 e 7881** e **UDP 7882** (no roteador ou, melhor, use uma VPN).
+6. Abra o app **no próprio PC do servidor** com o endereço `127.0.0.1` para virar o Dono.
 
 O passo a passo completo está no `LEIA-ME-SERVIDOR.txt` dentro do zip.
 

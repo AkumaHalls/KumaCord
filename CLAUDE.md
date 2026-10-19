@@ -17,7 +17,7 @@ Ask the user how their friends will connect, then pick one:
 - **VPN (recommended):** Tailscale or ZeroTier on every PC. Friends connect to the host's VPN address. No router changes, and the traffic is encrypted by the VPN.
 - **Port forwarding:** TCP 7890 (hub), 7880 (LiveKit signal), 7881 (LiveKit TCP), UDP 7882 (media) to the host PC. Never suggest the router's DMZ.
 - **CGNAT:** if the router's WAN address is in 100.64.0.0/10 or a private range, or differs from the public IP, port forwarding won't work. Use a VPN.
-- Windows Firewall: allow `concord.exe` / `concord-server.exe` on private networks when prompted.
+- Windows Firewall: allow `concord.exe` / `concord-server.exe` on the networks the user actually uses when prompted (a network Windows marks as public needs the public box too). For the standalone server, the user runs `liberar-firewall.bat` from the server zip (v1.0.2 and later): it adds inbound rules for the server and LiveKit on all profiles, IPv4 and IPv6; `remover-firewall.bat` removes them.
 
 Then the owner creates an invite in the app ("Convidar") with an expiry and a use limit, and sends it privately.
 
