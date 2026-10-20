@@ -21,8 +21,10 @@ Ele não foi feito para comunidades abertas com desconhecidos.
   na internet enquanto ele está ligado. Se preferir não expor nada, desligue o UPnP no roteador e
   use uma VPN.
 - Se você mesmo abrir portas, abra **só** as do concord (TCP 7890, 7880 e 7881, UDP 7882). Evite
-  o DMZ do roteador, que expõe o PC inteiro. Mantenha o Firewall do Windows ligado e, quando ele
-  perguntar, permita o concord só em **redes privadas**.
+  o DMZ do roteador, que expõe o PC inteiro. Mantenha o Firewall do Windows ligado. No servidor
+  separado, o `liberar-firewall.bat` libera só os programas e as portas do concord, em todas as
+  redes (também nas que o Windows marca como Públicas, senão quem é de fora não entra). Num
+  notebook que usa Wi-Fi público, desligue o servidor fora de casa ou rode o `remover-firewall.bat`.
 
 ## Convites
 

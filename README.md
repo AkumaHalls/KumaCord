@@ -55,7 +55,7 @@ The [CLAUDE.md](CLAUDE.md) file in the root tells Claude how to download or buil
 On the [Releases](../../releases) page:
 
 - **`concord-v1.0.1-PUBLICO.zip`** is the app. Extract the folder (don't run it from inside the zip) and open `concord.exe`.
-- **`concord-servidor-v1.0.1.zip`** is the standalone server (optional, see below).
+- **`concord-servidor-v1.0.2.zip`** is the standalone server (optional, see below).
 
 The executables aren't digitally signed. The first time, Windows may show "Windows protected your PC": choose "More info" and then "Run anyway". Download concord only from this repository or from the person who hosts your group.
 
@@ -74,12 +74,12 @@ The server stays on while the app is open or in the tray. Whoever creates the se
 
 For a PC that keeps the server running without the app:
 
-1. Download `concord-servidor-v1.0.1.zip` and extract it to a permanent folder.
+1. Download `concord-servidor-v1.0.2.zip` and extract it to a permanent folder.
 2. Run `baixar-livekit.bat`. It downloads LiveKit from its official release and checks the hash.
 3. Run `liberar-firewall.bat` and accept the Windows prompt. It allows the server and LiveKit through Windows Firewall on all networks, for IPv4 and IPv6 (`remover-firewall.bat` undoes it). It's in the server zip from v1.0.2.
 4. Run `iniciar-servidor.bat`. On the first run it creates `data\config.toml`. **Set `server_password`** before you invite anyone, then start it again. From v1.0.2, a few seconds after it starts, the server window shows a connection check (IPv4/IPv6, CGNAT, Windows Firewall) and what to fix.
 5. Open `concord.exe` on the same PC and connect to `127.0.0.1` to become the owner.
-6. Make the server reachable: use a VPN (safer), or forward TCP 7890, 7880, 7881 and UDP 7882 to this PC.
+6. Make the server reachable. From v1.0.2 it listens on IPv6 as well as IPv4, so friends who have IPv6 can usually join through this PC's IPv6 address without port forwarding, even behind CGNAT (invites made on the server include it; some routers block incoming IPv6 until you allow it in their IPv6 firewall settings). Otherwise use a VPN (safer), or forward TCP 7890, 7880, 7881 and UDP 7882 to this PC.
 
 `LEIA-ME-SERVIDOR.txt` inside the zip has the full steps.
 
@@ -93,7 +93,7 @@ Invite codes can expire, have a use limit, and be revoked at any time. A code hi
 ## Compatibility and limits
 
 - **No TLS yet:** traffic between the app and the server isn't encrypted, except voice and video. Prefer a VPN to opening ports. See [SECURITY.md](SECURITY.md).
-- **Router and ISP:** if your ISP uses CGNAT, your friends can't reach your PC directly. The app detects this and explains the options; a VPN works in that case.
+- **Router and ISP:** if your ISP uses CGNAT, your friends can't reach your PC directly. The app detects this and explains the options; a VPN works in that case, and so does IPv6 with the standalone server from v1.0.2.
 - **Encoders:** NVENC, AMD and Intel (through Media Foundation) and a CPU fallback. The app tests each one on first start. If viewers report broken video, it switches automatically.
 - **Go Live audio:** captures audio from the app you share only (Windows 10 2004+ process loopback). Your voice chat isn't captured.
 - **Private channels:** people without access can't read or join them. They can still notice that messages were sent, because message numbers skip.

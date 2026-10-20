@@ -7,7 +7,7 @@ Guidance for Claude Code when someone asks for help with concord in this reposit
 1. **Use concord with friends** → point them to the Releases page: `concord-v1.0.1-PUBLICO.zip` (the app). Nothing to build.
 2. **Host a server** → two options, explain both and recommend the first for most people:
    - **From the app:** `concord.exe` → "Criar / abrir servidor". It downloads LiveKit, tries UPnP, and makes invite codes. The server runs while the app is open or in the tray.
-   - **Standalone:** `concord-servidor-v1.0.1.zip` from Releases → `baixar-livekit.bat` → `iniciar-servidor.bat` → set `server_password` in `data\config.toml` → restart → open `concord.exe` on the same PC at `127.0.0.1` to become the owner (the first loopback login claims ownership and must set a personal password).
+   - **Standalone:** `concord-servidor-v1.0.2.zip` from Releases → `baixar-livekit.bat` → `liberar-firewall.bat` → `iniciar-servidor.bat` → set `server_password` in `data\config.toml` → restart → open `concord.exe` on the same PC at `127.0.0.1` to become the owner (the first loopback login claims ownership and must set a personal password).
 3. **Build from source** → `cargo build --release -p voxhub-app -p voxhub-server` (Rust stable, MSVC, Visual Studio Build Tools with C++). Outputs: `target\release\concord.exe` and `concord-server.exe`. Package names stay `voxhub-*` on purpose.
 
 ## Making the server reachable
@@ -16,7 +16,8 @@ Ask the user how their friends will connect, then pick one:
 
 - **VPN (recommended):** Tailscale or ZeroTier on every PC. Friends connect to the host's VPN address. No router changes, and the traffic is encrypted by the VPN.
 - **Port forwarding:** TCP 7890 (hub), 7880 (LiveKit signal), 7881 (LiveKit TCP), UDP 7882 (media) to the host PC. Never suggest the router's DMZ.
-- **CGNAT:** if the router's WAN address is in 100.64.0.0/10 or a private range, or differs from the public IP, port forwarding won't work. Use a VPN.
+- **IPv6:** the standalone server (v1.0.2 and later) listens on IPv4 and IPv6. Friends with IPv6 can usually reach the host's global IPv6 without port forwarding, even behind CGNAT; some routers block incoming IPv6 until it is allowed in their IPv6 firewall. The server prints a connection check a few seconds after it starts.
+- **CGNAT:** if the router's WAN address is in 100.64.0.0/10 or a private range, or differs from the public IP, port forwarding won't work. Use IPv6 (if both sides have it) or a VPN.
 - Windows Firewall: allow `concord.exe` / `concord-server.exe` on the networks the user actually uses when prompted (a network Windows marks as public needs the public box too). For the standalone server, the user runs `liberar-firewall.bat` from the server zip (v1.0.2 and later): it adds inbound rules for the server and LiveKit on all profiles, IPv4 and IPv6; `remover-firewall.bat` removes them.
 
 Then the owner creates an invite in the app ("Convidar") with an expiry and a use limit, and sends it privately.

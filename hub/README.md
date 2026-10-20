@@ -83,11 +83,15 @@ Redirecione para o PC do host:
 | 7881 | TCP | mídia do LiveKit (fallback quando UDP é bloqueado) |
 | 7882 | UDP | mídia do LiveKit (principal) |
 
-Na primeira execução o Firewall do Windows vai perguntar sobre `concord-server.exe` e `livekit-server.exe`: permita **só em redes privadas** (e deixe a rede de casa marcada como Privada no Windows), ou crie as regras de entrada para as portas acima. Liberar em redes públicas expõe o servidor em qualquer Wi-Fi em que o PC estiver. Uma VPN (Tailscale ou ZeroTier) é mais segura do que abrir portas; veja `SECURITY.md`.
+No servidor separado (zip `concord-servidor`, v1.0.2 em diante), rode o `liberar-firewall.bat` antes de ligar: ele cria regras de entrada no Firewall do Windows só para `bin\concord-server.exe` e `bin\livekit-server.exe` e só nas portas acima, em todas as redes (Domínio, Privada e Pública), em IPv4 e IPv6, e desliga bloqueios que o próprio Windows tenha criado para esses programas (o `remover-firewall.bat` desfaz tudo). Se o Firewall perguntar ao ligar o servidor, permita nas redes que você usa: se o Windows marcou a rede de casa como Pública, marque também redes públicas, senão ninguém de fora entra. Num notebook que se conecta a Wi-Fi público, desligue o servidor fora de casa. Uma VPN (Tailscale ou ZeroTier) é mais segura do que abrir portas; veja `SECURITY.md`.
+
+## IPv6 (v1.0.2)
+
+O servidor escuta em IPv4 e IPv6 num socket só (`bind = "[::]:7890"`; um `config.toml` antigo com `0.0.0.0:7890` também passa a escutar nos dois). Amigos com IPv6 entram pelo IPv6 global do PC sem redirecionar portas, mesmo com CGNAT, e os convites criados no servidor já levam esse endereço quando `public_host` está vazio ou é `127.0.0.1` (o padrão). Alguns roteadores bloqueiam IPv6 vindo de fora: procure "firewall IPv6" nas configurações dele. Para voltar a só IPv4, acrescente `ipv6 = false` no `config.toml`. Alguns segundos depois de ligar, o servidor mostra um diagnóstico de conexão (IPv4/IPv6, CGNAT, Firewall do Windows); `--no-diag` desliga.
 
 ## CGNAT
 
-Se a operadora usa CGNAT (o IP "público" do roteador não é o IP que sites como o ifconfig.me mostram, ou fica em 100.64.x.x), o redirecionamento de portas não funciona. Alternativas: VPN mesh (Tailscale ou ZeroTier; use o IP da VPN em `public_host`) ou uma VPS pequena como relay.
+Se a operadora usa CGNAT (o IP "público" do roteador não é o IP que sites como o ifconfig.me mostram, ou fica em 100.64.x.x), o redirecionamento de portas não funciona. Alternativas: IPv6 (veja acima), VPN mesh (Tailscale ou ZeroTier; use o IP da VPN em `public_host`) ou uma VPS pequena como relay.
 
 ## Logs
 
