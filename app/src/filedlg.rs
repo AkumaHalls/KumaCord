@@ -1,5 +1,6 @@
-//! The native Windows file dialogs (`IFileOpenDialog` / `IFileSaveDialog`). Each call blocks
-//! until the dialog closes, so callers run it on a thread of its own.
+//! The native file dialogs: Windows `IFileOpenDialog` / `IFileSaveDialog`, macOS the standard
+//! panels through `osascript`. Each call blocks until the dialog closes, so callers run it on a
+//! thread of its own.
 
 use std::path::PathBuf;
 
@@ -108,7 +109,57 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS: AppleScript's standard file panels through `osascript` (blocks until closed, like the
+/// Windows dialogs). Cancelling answers error -128: an empty result, not an error.
+#[cfg(target_os = "macos")]
+mod imp {
+    use std::path::PathBuf;
+
+    /// An AppleScript string literal.
+    fn quoted(s: &str) -> String {
+        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+
+    /// `*.png;*.jpg` -> `{"png", "jpg"}`.
+    pub(super) fn types(patterns: &str) -> String {
+        let exts: Vec<String> = patterns.split(';').filter_map(|p| p.trim().strip_prefix("*.")).filter(|e| !e.is_empty() && *e != "*").map(quoted).collect();
+        format!("{{{}}}", exts.join(", "))
+    }
+
+    /// Run `script`; `Ok(None)` when the user cancelled.
+    fn run(script: &str) -> Result<Option<String>, String> {
+        let out = std::process::Command::new("/usr/bin/osascript").arg("-e").arg(script).output().map_err(|e| format!("osascript: {e}"))?;
+        if out.status.success() {
+            return Ok(Some(String::from_utf8_lossy(&out.stdout).trim_end_matches('\n').to_string()));
+        }
+        let err = String::from_utf8_lossy(&out.stderr);
+        if err.contains("-128") {
+            return Ok(None);
+        }
+        Err(format!("osascript: {}", err.trim()))
+    }
+
+    pub fn open(_owner: Option<isize>, title: &str, filter: (&str, &str), multi: bool) -> Result<Vec<PathBuf>, String> {
+        let pick = format!("choose file with prompt {} of type {}{}", quoted(title), types(filter.1), if multi { " with multiple selections allowed" } else { "" });
+        let script = format!(
+            "set fs to {pick}\nif class of fs is not list then set fs to {{fs}}\nset out to \"\"\nrepeat with f in fs\nset out to out & POSIX path of f & linefeed\nend repeat\nreturn out"
+        );
+        Ok(run(&script)?.map(|t| t.lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect()).unwrap_or_default())
+    }
+
+    pub fn save(_owner: Option<isize>, title: &str, file_name: &str, _filter: (&str, &str), ext: &str) -> Result<Option<PathBuf>, String> {
+        let script = format!("POSIX path of (choose file name with prompt {} default name {})", quoted(title), quoted(file_name));
+        Ok(run(&script)?.map(|p| {
+            let mut p = PathBuf::from(p);
+            if p.extension().is_none() && !ext.is_empty() {
+                p.set_extension(ext);
+            }
+            p
+        }))
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use std::path::PathBuf;
 
@@ -129,4 +180,13 @@ pub fn open(owner: Option<isize>, title: &str, filter: (&str, &str), multi: bool
 /// "Salvar como": the chosen path (`None`: cancelled). `ext` without the dot.
 pub fn save(owner: Option<isize>, title: &str, file_name: &str, filter: (&str, &str), ext: &str) -> Result<Option<PathBuf>, String> {
     imp::save(owner, title, file_name, filter, ext)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    #[test]
+    fn filters_become_applescript_type_lists() {
+        assert_eq!(super::imp::types("*.png;*.jpg"), "{\"png\", \"jpg\"}");
+        assert_eq!(super::imp::types("*.*"), "{}");
+    }
 }

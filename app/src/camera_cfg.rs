@@ -720,7 +720,7 @@ impl App {
                     vox_client_core::golive::camera::PREVIEW_KEY.to_string()
                 };
                 // The video is a native window placed over this rectangle (see `call.rs`).
-                self.video.want.insert(key.clone(), rect.shrink(1.0));
+                self.video.put(key.clone(), rect.shrink(1.0), ui.painter());
                 self.video.want_layer.insert(key, ui.layer_id());
             }
             CameraPreviewUi::On => note(ui, ph::VIDEO_CAMERA, "A prévia aparece depois de entrar no servidor.", theme::NEVOA),

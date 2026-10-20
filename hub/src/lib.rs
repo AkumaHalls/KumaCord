@@ -10,11 +10,14 @@ pub mod calls;
 pub mod chat;
 pub mod config;
 pub mod db;
+pub mod diag;
 pub mod dms;
 pub mod host;
 pub mod ids;
 pub mod invites;
+pub mod ipv6;
 pub mod job;
+pub mod listen;
 pub mod livekit;
 pub mod livekit_admin;
 pub mod linkpreview;
@@ -75,8 +78,13 @@ impl Default for Tuning {
 }
 
 pub struct Server {
-    /// Address actually bound.
+    /// Address actually bound (the first one, see [`Server::addrs`]).
     pub addr: SocketAddr,
+    /// v1.0.2: every address the hub listens on (`[::]:7890` dual-stack, or `0.0.0.0:7890` and
+    /// `[::]:7890`, or the one `bind` names).
+    pub addrs: Vec<SocketAddr>,
+    /// One socket takes IPv4 and IPv6 (see `listen.rs`).
+    pub dual_stack: bool,
     pub config: config::Config,
     state: state::AppState,
     shutdown_tx: watch::Sender<bool>,
@@ -150,12 +158,13 @@ pub async fn start_tuned(opts: Options, previews: linkpreview::PreviewConfig, tu
     let server_muted = db.call(|c| db::server_muted_ids(c)).await?;
 
     let bind = opts.bind_override.as_deref().unwrap_or(&cfg.bind);
-    let listener = tokio::net::TcpListener::bind(bind).await.with_context(|| format!("binding {bind}"))?;
-    let addr = listener.local_addr()?;
+    let bound = listen::bind(&listen::plan(bind, cfg.ipv6)).await.with_context(|| format!("binding {bind}"))?;
+    let (addr, addrs, dual_stack) = (bound.addrs[0], bound.addrs.clone(), bound.dual_stack);
 
     tracing::info!(
         server = %cfg.server_name,
         %addr,
+        listening = %bound.describe(),
         public_host = %cfg.public_host,
         password = !cfg.server_password.is_empty(),
         livekit = !opts.no_livekit,
@@ -190,7 +199,10 @@ pub async fn start_tuned(opts: Options, previews: linkpreview::PreviewConfig, tu
     tasks.push(tokio::spawn(attachments::watch(state.clone(), shutdown_rx.clone())));
     tasks.push(tokio::spawn(voice_guard::watch(state.clone(), shutdown_rx.clone())));
     let app = api::router(state.clone());
-    tasks.push(tokio::spawn(serve::serve(listener, app, slots.clone(), shutdown_rx)));
+    // One accept loop per socket (two without a dual-stack one); the connection caps are shared.
+    for listener in bound.listeners {
+        tasks.push(tokio::spawn(serve::serve(listener, app.clone(), slots.clone(), shutdown_rx.clone())));
+    }
 
-    Ok(Server { addr, config: cfg, state, shutdown_tx, tasks, slots })
+    Ok(Server { addr, addrs, dual_stack, config: cfg, state, shutdown_tx, tasks, slots })
 }

@@ -13,7 +13,14 @@ pub struct Config {
     pub server_name: String,
     /// Shared password clients must send on login. Empty = open server.
     pub server_password: String,
+    /// Where the hub listens. `[::]:7890` (the default since v1.0.2) and `0.0.0.0:7890` (older
+    /// configs) both mean every interface, IPv4 and IPv6 (see [`Config::ipv6`]); a specific
+    /// address (`192.168.0.10:7890`, `127.0.0.1:7890`, `[2001:db8::1]:7890`) is used exactly as
+    /// written. See `listen.rs`.
     pub bind: String,
+    /// v1.0.2: with an every-interface `bind`, also take IPv6 connections (default `true`).
+    /// `false` keeps the old IPv4-only behaviour (`0.0.0.0`).
+    pub ipv6: bool,
     /// Host/IP clients use to reach LiveKit (the host's public IP or DDNS name).
     pub public_host: String,
     /// The owner ("Dono", item 12): this username has every permission. Compared
@@ -66,7 +73,8 @@ impl Default for Config {
         Self {
             server_name: "concord".into(),
             server_password: String::new(),
-            bind: "0.0.0.0:7890".into(),
+            bind: "[::]:7890".into(),
+            ipv6: true,
             public_host: "127.0.0.1".into(),
             owner: String::new(),
             max_attachment_storage_gb: 5.0,
@@ -116,7 +124,10 @@ fn default_file(key: &str, secret: &str) -> String {
 server_name = "concord"
 # Shared password for logging in. Empty = anyone who can reach the server may join.
 server_password = ""
-bind = "0.0.0.0:7890"
+# Where the server listens. "[::]:7890" = every network, IPv4 and IPv6 (friends with IPv6 can then
+# join without port forwarding, even behind CGNAT). "0.0.0.0:7890" means the same; add
+# `ipv6 = false` to listen on IPv4 only, as before v1.0.2.
+bind = "[::]:7890"
 # Host/IP that clients use to reach LiveKit: your public IP or DDNS name.
 public_host = "127.0.0.1"
 # The server owner ("Dono") can do everything, including making Admins. You normally do not need
@@ -150,4 +161,46 @@ rtc_udp_port = 7882
 use_external_ip = false
 "#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::listen::{plan, Plan};
+
+    fn parse(text: &str) -> Config {
+        toml::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn new_configs_listen_on_ipv4_and_ipv6() {
+        let cfg = parse(&default_file("k", &"s".repeat(32)));
+        assert_eq!((cfg.bind.as_str(), cfg.ipv6), ("[::]:7890", true));
+        assert_eq!(plan(&cfg.bind, cfg.ipv6), Plan::DualStack(7890));
+        let cfg = Config::default();
+        assert_eq!(plan(&cfg.bind, cfg.ipv6), Plan::DualStack(7890));
+    }
+
+    #[test]
+    fn old_configs_get_ipv6_unless_they_opt_out() {
+        // A v1.0.1 config: `0.0.0.0` and no `ipv6` key.
+        let cfg = parse(r#"bind = "0.0.0.0:7890"
+[livekit]
+api_key = "k""#);
+        assert!(cfg.ipv6);
+        assert_eq!(plan(&cfg.bind, cfg.ipv6), Plan::DualStack(7890));
+        // The opt-out: IPv4 only, exactly as before.
+        let cfg = parse(r#"bind = "0.0.0.0:7890"
+ipv6 = false"#);
+        assert_eq!(plan(&cfg.bind, cfg.ipv6), Plan::Exact("0.0.0.0:7890".parse().unwrap()));
+        let cfg = parse(r#"bind = "[::]:7000"
+ipv6 = false"#);
+        assert_eq!(plan(&cfg.bind, cfg.ipv6), Plan::Exact("0.0.0.0:7000".parse().unwrap()));
+        // An explicit address stays exactly that (an IPv4 one stays IPv4-only).
+        for (bind, want) in [("192.0.2.10:7890", "192.0.2.10:7890"), ("127.0.0.1:7997", "127.0.0.1:7997"), ("[2001:db8::1]:7890", "[2001:db8::1]:7890"), (" [::1]:0 ", "[::1]:0")] {
+            assert_eq!(plan(bind, true), Plan::Exact(want.parse().unwrap()), "{bind}");
+        }
+        // A host name is left to the system, as before.
+        assert_eq!(plan("localhost:7890", true), Plan::Named("localhost:7890".into()));
+    }
 }

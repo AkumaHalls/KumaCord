@@ -44,8 +44,15 @@ pub fn root_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("VOX_HOST_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
-    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    base.join("concord").join("host")
+    if let Some(d) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(d).join("concord").join("host");
+    }
+    // macOS: ~/Library/Application Support/concord/host (the temp dir would lose the server).
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join("Library").join("Application Support").join("concord").join("host");
+    }
+    std::env::temp_dir().join("concord").join("host")
 }
 
 /// Where the downloaded voice server lives.

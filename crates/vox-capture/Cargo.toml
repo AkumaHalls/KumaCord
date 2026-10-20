@@ -3,7 +3,7 @@ name = "vox-capture"
 edition.workspace = true
 version.workspace = true
 publish.workspace = true
-description = "Windows screen/window capture (GPU) and per-process audio capture"
+description = "Screen/window capture, per-app audio capture and cameras (Windows: GPU + WASAPI; macOS: ScreenCaptureKit + AVFoundation)"
 
 [dependencies]
 thiserror = { workspace = true }
@@ -52,6 +52,44 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# macOS: ScreenCaptureKit (screens, windows, app sound), AVFoundation (cameras), AppKit (app icons).
+# Only the headers used are enabled; CoreVideo / CoreMedia / CoreGraphics C calls are declared in
+# `src/mac/ffi.rs`.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+block2 = "0.6.2"
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "block2", "objc2"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSNotification", "NSObject", "NSOperation", "NSString", "NSValue"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFString", "CFCGTypes"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMBase", "CMFormatDescription", "CMSampleBuffer", "CMSync", "CMTime"] }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "dispatch2",
+    "libc",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "objc2-core-media",
+    "SCError",
+    "SCScreenshotManager",
+    "SCShareableContent",
+    "SCStream",
+] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "dispatch2",
+    "objc2-core-foundation",
+    "objc2-core-media",
+    "AVCaptureDevice",
+    "AVCaptureInput",
+    "AVCaptureOutputBase",
+    "AVCaptureSession",
+    "AVCaptureVideoDataOutput",
+    "AVMediaFormat",
+] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "objc2-core-graphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSRunningApplication"] }
 
 [dev-dependencies]
 vox-log = { workspace = true }

@@ -3,6 +3,11 @@
 //! Both streams live on one dedicated thread (cpal streams are not `Send` on every platform);
 //! dropping [`AudioIo`] stops and joins it.
 //!
+//! A stream the system invalidates while in use (macOS: the device's sample rate changed, e.g.
+//! another app or the Bluetooth headset switched modes; any OS: the device went away) is reopened
+//! on that thread by itself, with the same settings, retrying with a growing delay while the
+//! device is missing: nobody has to leave and rejoin the room for the microphone to come back.
+//!
 //! Mic: device -> mono f32 -> (resample to 48 kHz) -> 10 ms i16 chunks -> WebRTC APM
 //! (AEC3 + AGC + HPF, plus its noise suppressor at the "Padrão" level) -> AI denoiser (RNNoise at
 //! "IA leve", see `audio::denoise`) -> voice changer ("Modificador de voz", `audio::voicefx`; a
@@ -109,6 +114,7 @@ pub fn new_voice_apm(noise: &NoiseControl) -> SharedApm {
 }
 
 /// Where the processed mic chunks go.
+#[derive(Clone)]
 pub enum MicSink {
     /// Published to the room.
     Source(NativeAudioSource),
@@ -118,6 +124,7 @@ pub enum MicSink {
     Discard,
 }
 
+#[derive(Clone)]
 pub struct MicConfig {
     pub device: Option<String>,
     pub sink: MicSink,
@@ -131,6 +138,7 @@ pub struct MicConfig {
     pub noise: Arc<NoiseControl>,
 }
 
+#[derive(Clone)]
 pub struct PlaybackConfig {
     pub device: Option<String>,
     pub mixer: Arc<Mixer>,
@@ -147,7 +155,7 @@ pub const DEVICE_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 const DEVICE_CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct AudioIo {
-    stop: Option<std::sync::mpsc::Sender<()>>,
+    stop: Option<std::sync::mpsc::Sender<Ctl>>,
     thread: Option<JoinHandle<()>>,
     abandoned: Arc<AtomicBool>,
     pub mic_ok: bool,
@@ -163,13 +171,33 @@ enum Opened {
     Playback(Result<(), String>),
 }
 
+/// What the audio thread is told.
+enum Ctl {
+    Stop,
+    /// The system invalidated a stream (`mic`: the microphone, else the speakers): reopen it.
+    Reopen { mic: bool },
+}
+
+/// Delays between attempts to reopen a lost stream: quick at first (a sample-rate change is over
+/// in a moment), then every 5 s while the device stays missing.
+fn reopen_delay(attempt: u32) -> Duration {
+    const STEPS_MS: [u64; 5] = [300, 1000, 2000, 3000, 5000];
+    Duration::from_millis(STEPS_MS[(attempt as usize).min(STEPS_MS.len() - 1)])
+}
+
+/// Errors after which a cpal stream is dead and must be built again.
+fn stream_lost(kind: cpal::ErrorKind) -> bool {
+    matches!(kind, cpal::ErrorKind::StreamInvalidated | cpal::ErrorKind::DeviceNotAvailable)
+}
+
 impl AudioIo {
     /// Open the requested streams. Device failures are logged and reported via `mic_ok` /
     /// `mic_error` (and the playback twins); they never fail the voice session (a user without
     /// a mic can still listen). A device that does not answer within [`DEVICE_OPEN_TIMEOUT`] is
     /// reported as failed and closed if it ever finishes opening.
     pub fn start(mic: Option<MicConfig>, playback: Option<PlaybackConfig>) -> AudioIo {
-        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<Ctl>();
+        let reopen_tx = stop_tx.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Opened>();
         let want_mic = mic.is_some();
         let want_out = playback.is_some();
@@ -179,9 +207,15 @@ impl AudioIo {
             .name("vox-audio-io".into())
             .spawn(move || {
                 let host = cpal::default_host();
-                let mic_stream = mic.and_then(|cfg| {
+                let lost = |mic: bool| {
+                    let tx = reopen_tx.clone();
+                    move || {
+                        let _ = tx.send(Ctl::Reopen { mic });
+                    }
+                };
+                let mut mic_stream = mic.as_ref().and_then(|cfg| {
                     let started = std::time::Instant::now();
-                    let res = open_mic(&host, cfg);
+                    let res = open_mic(&host, cfg.clone(), lost(true));
                     let _ = ready_tx.send(Opened::Mic(match &res {
                         Ok(_) => Ok(()),
                         Err(e) => Err(format!("{e:#}")),
@@ -200,9 +234,9 @@ impl AudioIo {
                 if gave_up.load(Ordering::Relaxed) {
                     return; // the caller already moved on; do not keep the mic open
                 }
-                let out_stream = playback.and_then(|cfg| {
+                let mut out_stream = playback.as_ref().and_then(|cfg| {
                     let started = std::time::Instant::now();
-                    let res = open_playback(&host, cfg);
+                    let res = open_playback(&host, cfg.clone(), lost(false));
                     let _ = ready_tx.send(Opened::Playback(match &res {
                         Ok(_) => Ok(()),
                         Err(e) => Err(format!("{e:#}")),
@@ -221,7 +255,69 @@ impl AudioIo {
                 if gave_up.load(Ordering::Relaxed) {
                     return;
                 }
-                let _ = stop_rx.recv();
+                // Until told to stop: reopen what the system invalidates. `pending`: the streams
+                // waiting to be reopened, and the attempt number of each.
+                let mut pending: [Option<u32>; 2] = [None, None];
+                loop {
+                    let wait = pending.iter().flatten().map(|a| reopen_delay(*a)).min();
+                    let msg = match wait {
+                        Some(d) => match stop_rx.recv_timeout(d) {
+                            Ok(m) => Some(m),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Some(Ctl::Stop),
+                        },
+                        None => Some(stop_rx.recv().unwrap_or(Ctl::Stop)),
+                    };
+                    match msg {
+                        Some(Ctl::Stop) => break,
+                        Some(Ctl::Reopen { mic: is_mic }) => {
+                            let i = usize::from(!is_mic);
+                            if pending[i].is_none() {
+                                warn!(stream = if is_mic { "microphone" } else { "speakers" }, "audio stream lost; reopening it");
+                                pending[i] = Some(0);
+                                // Drop the dead stream now (it may still hold the device).
+                                if is_mic {
+                                    mic_stream = None;
+                                } else {
+                                    out_stream = None;
+                                }
+                            }
+                        }
+                        None => {
+                            // A retry is due.
+                            if let (Some(n), Some(cfg)) = (pending[0], mic.as_ref()) {
+                                match open_mic(&host, cfg.clone(), lost(true)) {
+                                    Ok(s) => {
+                                        info!(attempt = n + 1, "microphone reopened");
+                                        mic_stream = Some(s);
+                                        pending[0] = None;
+                                    }
+                                    Err(e) => {
+                                        if n < 3 || n % 12 == 0 {
+                                            warn!(attempt = n + 1, error = %format!("{e:#}"), "microphone not back yet");
+                                        }
+                                        pending[0] = Some(n + 1);
+                                    }
+                                }
+                            }
+                            if let (Some(n), Some(cfg)) = (pending[1], playback.as_ref()) {
+                                match open_playback(&host, cfg.clone(), lost(false)) {
+                                    Ok(s) => {
+                                        info!(attempt = n + 1, "speaker output reopened");
+                                        out_stream = Some(s);
+                                        pending[1] = None;
+                                    }
+                                    Err(e) => {
+                                        if n < 3 || n % 12 == 0 {
+                                            warn!(attempt = n + 1, error = %format!("{e:#}"), "speaker output not back yet");
+                                        }
+                                        pending[1] = Some(n + 1);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 drop(mic_stream);
                 drop(out_stream);
             })
@@ -262,7 +358,10 @@ impl AudioIo {
 
 impl Drop for AudioIo {
     fn drop(&mut self) {
-        drop(self.stop.take());
+        // (The streams' error callbacks hold senders too: say it, do not just hang up.)
+        if let Some(tx) = self.stop.take() {
+            let _ = tx.send(Ctl::Stop);
+        }
         let Some(t) = self.thread.take() else { return };
         // A wedged audio driver must not wedge leaving the room: wait a little, then let go.
         let deadline = std::time::Instant::now() + if self.abandoned.load(Ordering::Relaxed) { Duration::ZERO } else { DEVICE_CLOSE_TIMEOUT };
@@ -367,6 +466,14 @@ impl SinkState {
     }
 }
 
+impl Drop for SinkState {
+    fn drop(&mut self) {
+        if let SinkState::Loopback { mixer, id, .. } = self {
+            mixer.remove_source(*id);
+        }
+    }
+}
+
 struct MicState {
     channels: usize,
     sink: SinkState,
@@ -451,7 +558,7 @@ impl MicState {
     }
 }
 
-fn open_mic(host: &cpal::Host, cfg: MicConfig) -> Result<cpal::Stream> {
+fn open_mic(host: &cpal::Host, cfg: MicConfig, on_lost: impl Fn() + Send + 'static) -> Result<cpal::Stream> {
     let device = find_device(host, cfg.device.as_deref(), true)?;
     let supported = device.default_input_config().context("default input config")?;
     let config: StreamConfig = supported.config();
@@ -474,17 +581,17 @@ fn open_mic(host: &cpal::Host, cfg: MicConfig) -> Result<cpal::Stream> {
         was_muted: false,
     };
     let stream = match supported.sample_format() {
-        SampleFormat::F32 => build_mic::<f32>(&device, &config, state)?,
-        SampleFormat::I16 => build_mic::<i16>(&device, &config, state)?,
-        SampleFormat::I32 => build_mic::<i32>(&device, &config, state)?,
-        SampleFormat::U16 => build_mic::<u16>(&device, &config, state)?,
+        SampleFormat::F32 => build_mic::<f32>(&device, &config, state, on_lost)?,
+        SampleFormat::I16 => build_mic::<i16>(&device, &config, state, on_lost)?,
+        SampleFormat::I32 => build_mic::<i32>(&device, &config, state, on_lost)?,
+        SampleFormat::U16 => build_mic::<u16>(&device, &config, state, on_lost)?,
         other => return Err(anyhow!("unsupported mic sample format {other:?}")),
     };
     stream.play().context("start mic stream")?;
     Ok(stream)
 }
 
-fn build_mic<T: SizedSample>(device: &cpal::Device, config: &StreamConfig, mut state: MicState) -> Result<cpal::Stream>
+fn build_mic<T: SizedSample>(device: &cpal::Device, config: &StreamConfig, mut state: MicState, on_lost: impl Fn() + Send + 'static) -> Result<cpal::Stream>
 where
     f32: FromSample<T>,
 {
@@ -493,9 +600,13 @@ where
         .build_input_stream::<T, _, _>(
             *config,
             move |data: &[T], _| state.on_data(data),
-            |e| {
-                if ERR_LOG.ready(vox_log::STATS_INTERVAL) {
-                    warn!(error = %e, "microphone stream error");
+            move |e| {
+                let lost = stream_lost(e.kind());
+                if lost || ERR_LOG.ready(vox_log::STATS_INTERVAL) {
+                    warn!(error = %e, lost, "microphone stream error");
+                }
+                if lost {
+                    on_lost();
                 }
             },
             None,
@@ -572,7 +683,7 @@ impl PlaybackState {
     }
 }
 
-fn open_playback(host: &cpal::Host, cfg: PlaybackConfig) -> Result<cpal::Stream> {
+fn open_playback(host: &cpal::Host, cfg: PlaybackConfig, on_lost: impl Fn() + Send + 'static) -> Result<cpal::Stream> {
     let device = find_device(host, cfg.device.as_deref(), false)?;
     let supported = device.default_output_config().context("default output config")?;
     let config: StreamConfig = supported.config();
@@ -593,10 +704,10 @@ fn open_playback(host: &cpal::Host, cfg: PlaybackConfig) -> Result<cpal::Stream>
         fifo: VecDeque::with_capacity(MIX_10MS * 8),
     };
     let stream = match supported.sample_format() {
-        SampleFormat::F32 => build_out::<f32>(&device, &config, state)?,
-        SampleFormat::I16 => build_out::<i16>(&device, &config, state)?,
-        SampleFormat::I32 => build_out::<i32>(&device, &config, state)?,
-        SampleFormat::U16 => build_out::<u16>(&device, &config, state)?,
+        SampleFormat::F32 => build_out::<f32>(&device, &config, state, on_lost)?,
+        SampleFormat::I16 => build_out::<i16>(&device, &config, state, on_lost)?,
+        SampleFormat::I32 => build_out::<i32>(&device, &config, state, on_lost)?,
+        SampleFormat::U16 => build_out::<u16>(&device, &config, state, on_lost)?,
         other => return Err(anyhow!("unsupported output sample format {other:?}")),
     };
     stream.play().context("start output stream")?;
@@ -607,15 +718,20 @@ fn build_out<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: &StreamConfig,
     mut state: PlaybackState,
+    on_lost: impl Fn() + Send + 'static,
 ) -> Result<cpal::Stream> {
     static ERR_LOG: vox_log::RateLimiter = vox_log::RateLimiter::new();
     device
         .build_output_stream::<T, _, _>(
             *config,
             move |out: &mut [T], _| state.on_data(out),
-            |e| {
-                if ERR_LOG.ready(vox_log::STATS_INTERVAL) {
-                    warn!(error = %e, "speaker stream error");
+            move |e| {
+                let lost = stream_lost(e.kind());
+                if lost || ERR_LOG.ready(vox_log::STATS_INTERVAL) {
+                    warn!(error = %e, lost, "speaker stream error");
+                }
+                if lost {
+                    on_lost();
                 }
             },
             None,
@@ -863,6 +979,29 @@ mod tests {
                 println!("           (DeepFilterNet worker alone: {:?} per frame)", st.denoiser.dfn().frame_time());
             }
         }
+    }
+
+    #[test]
+    fn lost_streams_are_reopened_with_a_growing_delay() {
+        assert!(stream_lost(cpal::ErrorKind::StreamInvalidated), "macOS: the device's sample rate changed");
+        assert!(stream_lost(cpal::ErrorKind::DeviceNotAvailable), "unplugged");
+        for k in [cpal::ErrorKind::Xrun, cpal::ErrorKind::DeviceChanged, cpal::ErrorKind::BackendError, cpal::ErrorKind::RealtimeDenied] {
+            assert!(!stream_lost(k), "{k:?} keeps the stream");
+        }
+        let d: Vec<Duration> = (0..8).map(reopen_delay).collect();
+        assert_eq!(d[0], Duration::from_millis(300));
+        assert!(d.windows(2).all(|w| w[0] <= w[1]));
+        assert_eq!(d[7], Duration::from_secs(5), "then every 5 s");
+    }
+
+    #[test]
+    fn a_loopback_sink_leaves_the_mixer_when_dropped() {
+        let mixer = Arc::new(Mixer::new());
+        let before = mixer.source_count();
+        let sink = SinkState::new(MicSink::Loopback(mixer.clone()));
+        assert_eq!(mixer.source_count(), before + 1);
+        drop(sink);
+        assert_eq!(mixer.source_count(), before);
     }
 
     #[test]

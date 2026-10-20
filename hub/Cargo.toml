@@ -25,6 +25,9 @@ axum = { version = "0.8.9", features = ["ws"] }
 hyper = { version = "1.12", features = ["server", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio", "server", "service", "http1"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
+# v1.0.2: one listening socket for IPv4 and IPv6 (`[::]` with IPV6_V6ONLY off, `listen.rs`); already
+# in the tree through tokio / hyper-util.
+socket2 = "0.6"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 toml = { version = "1.1.6", default-features = false, features = ["parse", "serde"] }
 hmac = "0.13.0"
@@ -49,6 +52,11 @@ miniz_oxide = "0.8"
 
 [target."cfg(windows)".dependencies]
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
+
+[target."cfg(unix)".dependencies]
+# The interface addresses (getifaddrs) on macOS: invites need to know when the app is on the
+# host's LAN.
+libc = "0.2"
 
 [dev-dependencies]
 futures-util = "0.3.34"

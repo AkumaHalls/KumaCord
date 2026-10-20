@@ -134,6 +134,9 @@ pub enum Role {
     /// card and is not sent, while a message that only contains the word is; then Configurações →
     /// Sobre. Partners: one or more `idle` clients (the members on the card).
     Calladex,
+    /// v1.1 macOS (M2): watch a stream drawn by the app itself, pinned, fullscreen, popped out and
+    /// back (see `autotest_macview.rs`). Partner: anyone live (`vox-cli share h264file`).
+    MacView,
 }
 
 #[path = "autotest_roles.rs"]
@@ -188,6 +191,8 @@ mod navtest;
 mod stagetest;
 #[path = "autotest_shots3b.rs"]
 mod shots3b;
+#[path = "autotest_macview.rs"]
+mod macview;
 
 /// Command-line parameters of an autotest run.
 #[derive(Default)]
@@ -510,6 +515,7 @@ impl Auto {
             Role::Shots3bB => self.run_shots3b_b(app),
             Role::Shots3bHost => self.run_shots3b_host(app),
             Role::Calladex => self.run_calladex(app),
+            Role::MacView => self.run_mac_view(app),
         }
     }
 

@@ -20,6 +20,7 @@ mod layout;
 mod links;
 mod meter;
 mod migrate;
+mod platform;
 mod previews;
 mod profile;
 mod ptt;
@@ -33,6 +34,8 @@ mod sources;
 mod theme;
 mod tray;
 mod ui_kit;
+#[cfg(target_os = "macos")]
+mod video_gl;
 mod voice_fx;
 
 use std::path::PathBuf;
@@ -182,6 +185,7 @@ fn main() {
             "shots3b-b" => Role::Shots3bB,
             "shots3b-host" => Role::Shots3bHost,
             "calladex" => Role::Calladex,
+            "mac-view" => Role::MacView,
             _ => Role::Idle,
         };
         tracing::info!(role = r, own_settings_dir = args.settings_dir.is_some(), "AUTOTEST mode (the real settings are not read or written)");
@@ -215,6 +219,11 @@ fn main() {
         crate::settings::set_dir(dir);
     }
     let mut settings = if persist || crate::settings::dir_overridden() { Settings::load() } else { Settings::default() };
+    // macOS: saved passwords live in the Keychain; drop the ones no settings file mentions.
+    #[cfg(target_os = "macos")]
+    if persist || crate::settings::dir_overridden() {
+        crate::settings::keychain_gc();
+    }
     if !persist {
         // Autotest: alert sounds only run when VOX_NO_PLAYBACK is set (then they are just logged),
         // so an unattended test can never make a noise.
@@ -254,6 +263,11 @@ fn main() {
     {
         // The viewer thread wakes the UI when a stream changes place by itself (pop-out closed).
         let r = repaint.clone();
+        // macOS: this is every new video frame (the app draws the video): one repaint each, not
+        // the two a plain request asks egui for.
+        #[cfg(target_os = "macos")]
+        vox_client_core::golive::Viewer::set_waker(move || r.wake_once());
+        #[cfg(not(target_os = "macos"))]
         vox_client_core::golive::Viewer::set_waker(move || r.wake());
     }
     let backend = Backend::start(repaint.clone());

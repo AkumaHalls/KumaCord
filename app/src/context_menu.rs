@@ -361,7 +361,13 @@ fn my_sections(f: &Facts) -> Vec<(Sec, Vec<Row>)> {
             item(Id::MuteMic)
         });
         v.push(item(Id::Deafen));
-        v.push(if f.my_cam_starting { off(Id::CameraToggle, "Ligando a câmera...") } else { item(Id::CameraToggle) });
+        v.push(if f.my_cam_starting {
+            off(Id::CameraToggle, "Ligando a câmera...")
+        } else if !f.my_cam_on && crate::platform::camera_soon() {
+            off(Id::CameraToggle, "Câmera: em breve no Mac")
+        } else {
+            item(Id::CameraToggle)
+        });
         v.push(item(Id::CameraSettings));
         if !f.my_no_mic && !f.my_in_dm_call {
             v.push(item(Id::VoiceFx));

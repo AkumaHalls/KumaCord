@@ -1966,6 +1966,9 @@ impl eframe::App for App {
             }
         }
         self.video.want.clear();
+        // macOS: the new video frames go into their textures before anything is drawn.
+        #[cfg(target_os = "macos")]
+        self.mac_video_upload(ui.ctx(), frame);
         if let Some(g) = self.kit.as_mut() {
             egui::CentralPanel::default_margins().show(ui, |ui| crate::ui_kit::gallery(ui, g));
             return;

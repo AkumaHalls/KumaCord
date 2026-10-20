@@ -33,7 +33,8 @@ The interface is in Portuguese (pt-BR). People, servers and conversations in the
 | Windows 11, NVIDIA RTX (NVENC) | Works: voice, cameras, Go Live with app audio, hosting |
 | CPU encoding (no hardware encoder, or acceleration turned off) | Works: tested by forcing the CPU encoder on Windows 11 |
 | Laptops with two GPUs (AMD/Intel + NVIDIA) | Supported, little real-world testing |
-| Windows on ARM, macOS, Linux | Not supported yet |
+| macOS on Apple Silicon (M1 or later) | Works: chat, voice, watching and sharing (screen, window, app audio, camera). Not yet: menu bar icon, notifications, global push-to-talk, hosting from the app |
+| Windows on ARM, Intel Macs, Linux | Not supported yet |
 
 ## Quick start with Claude
 
@@ -54,7 +55,8 @@ The [CLAUDE.md](CLAUDE.md) file in the root tells Claude how to download or buil
 
 On the [Releases](../../releases) page:
 
-- **`concord-v1.0.1-PUBLICO.zip`** is the app. Extract the folder (don't run it from inside the zip) and open `concord.exe`.
+- **`concord-v1.0.2-PUBLICO.zip`** is the Windows app. Extract the folder (don't run it from inside the zip) and open `concord.exe`.
+- **`concord-1.0.2-mac-arm64.zip`** is the Mac app (Apple Silicon, macOS 13 or later). Drag `concord.app` to Applications; `LEIA-ME-MAC.txt` explains the first open and the permissions.
 - **`concord-servidor-v1.0.2.zip`** is the standalone server (optional, see below).
 
 The executables aren't digitally signed. The first time, Windows may show "Windows protected your PC": choose "More info" and then "Run anyway". Download concord only from this repository or from the person who hosts your group.

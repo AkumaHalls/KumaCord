@@ -633,6 +633,11 @@ impl App {
             }
             return;
         }
+        // macOS: the voice server (LiveKit) has no official macOS build to download yet (M4).
+        if crate::platform::HOSTING_SOON {
+            notice(ui, ui_kit::Notice::Info, &format!("Hospedar um servidor pelo app: {}. Por enquanto, entre no servidor de um amigo com o endereço ou um convite.", crate::platform::SOON_MAC.to_lowercase()));
+            return;
+        }
         let busy = self.host.preparing.is_some();
         ui_kit::field_label(ui, "Seu nome");
         ui.add(ui_kit::field(&mut self.form.user).hint_text("como os outros vão ver você").desired_width(ui.available_width().min(420.0)));

@@ -106,3 +106,13 @@ pub fn hide(hwnd: isize) {
         unsafe { ShowWindow(hwnd as _, SW_HIDE) };
     }
 }
+
+// Other platforms (macOS): window handles are not HWNDs; the background mode is a no-op there.
+#[cfg(not(windows))]
+pub fn keep_behind(_hwnd: isize, _taskbar: bool) {}
+#[cfg(not(windows))]
+pub fn show_behind(_hwnd: isize) {}
+#[cfg(not(windows))]
+pub fn fullscreen_behind(_hwnd: isize, _on: bool) {}
+#[cfg(not(windows))]
+pub fn hide(_hwnd: isize) {}

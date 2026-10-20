@@ -905,7 +905,12 @@ fn open_file_dialog(owner: Option<isize>) -> Option<PathBuf> {
     Some(PathBuf::from(std::ffi::OsString::from_wide(&file[..len])))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn open_file_dialog(owner: Option<isize>) -> Option<PathBuf> {
+    crate::filedlg::open(owner, "Escolher o som", ("Áudio", "*.wav;*.mp3;*.ogg;*.flac"), false).ok()?.into_iter().next()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn open_file_dialog(_owner: Option<isize>) -> Option<PathBuf> {
     None
 }
@@ -945,18 +950,18 @@ mod tests {
             analyzed: String::new(),
             want_analyze: false,
         };
-        set_path(&mut f, PathBuf::from(r"C:\sons\buzina de carro.mp3"));
+        set_path(&mut f, PathBuf::from("sons/buzina de carro.mp3"));
         assert_eq!((f.name.as_str(), f.error.is_none()), ("buzina de carro", true));
-        set_path(&mut f, PathBuf::from(r"C:\sons\outra.wav"));
+        set_path(&mut f, PathBuf::from("sons/outra.wav"));
         assert_eq!(f.name, "outra", "still the file's name: nobody typed one");
         f.name = "meu nome".into();
         f.name_edited = true;
-        set_path(&mut f, PathBuf::from(r"C:\sons\terceira.ogg"));
+        set_path(&mut f, PathBuf::from("sons/terceira.ogg"));
         assert_eq!(f.name, "meu nome");
-        set_path(&mut f, PathBuf::from(format!(r"C:\sons\{}.wav", "x".repeat(60))));
+        set_path(&mut f, PathBuf::from(format!("sons/{}.wav", "x".repeat(60))));
         assert_eq!(f.name, "meu nome");
         f.name_edited = false;
-        set_path(&mut f, PathBuf::from(format!(r"C:\sons\{}.wav", "x".repeat(60))));
+        set_path(&mut f, PathBuf::from(format!("sons/{}.wav", "x".repeat(60))));
         assert_eq!(f.name.chars().count(), SOUND_NAME_MAX);
     }
 }

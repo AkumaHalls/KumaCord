@@ -57,9 +57,14 @@ pub struct Viewer(Impl);
 
 #[derive(Clone)]
 enum Impl {
+    /// (Never made on macOS, where winit's event loop belongs to the app's main thread.)
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     Winit(WinitViewer),
     #[cfg(windows)]
     Native(super::viewer_native::NativeViewer),
+    /// macOS: the app draws the frames itself (textures in its own window).
+    #[cfg(target_os = "macos")]
+    Tex(super::viewer_tex::TexViewer),
 }
 
 #[derive(Clone)]
@@ -77,6 +82,8 @@ enum StreamImpl {
     Winit(WinitViewer),
     #[cfg(windows)]
     Native(super::viewer_native::NativeStream),
+    #[cfg(target_os = "macos")]
+    Tex(super::viewer_tex::TexStream),
     /// Nowhere to show it (camera tiles need the native viewer): frames are dropped.
     Null,
 }
@@ -104,6 +111,8 @@ impl ViewerStream {
             }
             #[cfg(windows)]
             StreamImpl::Native(s) => s.submit(frame),
+            #[cfg(target_os = "macos")]
+            StreamImpl::Tex(s) => s.submit(frame),
             StreamImpl::Null => drop(frame),
         }
     }
@@ -115,6 +124,8 @@ impl ViewerStream {
         match &self.0 {
             #[cfg(windows)]
             StreamImpl::Native(s) => s.submit_nv12(f),
+            #[cfg(target_os = "macos")]
+            StreamImpl::Tex(s) => s.submit_nv12(f),
             StreamImpl::Winit(_) => {
                 if let Some(frame) = super::camera::preview_frame(f) {
                     self.submit(frame);
@@ -191,6 +202,9 @@ impl Viewer {
             Impl::Winit(_) => false,
             #[cfg(windows)]
             Impl::Native(_) => true,
+            // (Tiles, inline video and pop-outs: what callers ask "native" for.)
+            #[cfg(target_os = "macos")]
+            Impl::Tex(_) => true,
         }
     }
 
@@ -204,6 +218,8 @@ impl Viewer {
             }
             #[cfg(windows)]
             Impl::Native(v) => ViewerStream(StreamImpl::Native(v.open(key, title, OPEN_INLINE.load(Ordering::Acquire), Default::default(), notify))),
+            #[cfg(target_os = "macos")]
+            Impl::Tex(v) => ViewerStream(StreamImpl::Tex(v.open(key, title, OPEN_INLINE.load(Ordering::Acquire), TileStyle::default(), false, notify))),
         }
     }
 
@@ -221,6 +237,8 @@ impl Viewer {
                 let style = super::d3d::DrawStyle { mirror: style.mirror, fill: style.fill };
                 ViewerStream(StreamImpl::Native(v.open(key, key, true, style, notify)))
             }
+            #[cfg(target_os = "macos")]
+            Impl::Tex(v) => ViewerStream(StreamImpl::Tex(v.open(key, key, true, style, true, notify))),
         }
     }
 
@@ -233,6 +251,8 @@ impl Viewer {
             }
             #[cfg(windows)]
             Impl::Native(v) => v.close(key),
+            #[cfg(target_os = "macos")]
+            Impl::Tex(v) => v.close(key),
         }
     }
 
@@ -240,6 +260,10 @@ impl Viewer {
     pub fn set_title(&self, key: &str, title: &str) {
         #[cfg(windows)]
         if let Impl::Native(v) = &self.0 {
+            v.retitle(key, title);
+        }
+        #[cfg(target_os = "macos")]
+        if let Impl::Tex(v) = &self.0 {
             v.retitle(key, title);
         }
         let _ = (key, title);
@@ -272,6 +296,10 @@ impl Viewer {
         if let Impl::Native(v) = &self.0 {
             v.pop_out(key, out);
         }
+        #[cfg(target_os = "macos")]
+        if let Impl::Tex(v) = &self.0 {
+            v.pop_out(key, out);
+        }
         let _ = (key, out);
     }
 
@@ -283,6 +311,10 @@ impl Viewer {
         if let Impl::Native(v) = &self.0 {
             v.set_max_fps(key, fps);
         }
+        #[cfg(target_os = "macos")]
+        if let Impl::Tex(v) = &self.0 {
+            v.set_max_fps(key, fps);
+        }
         let _ = (key, fps);
     }
 
@@ -292,6 +324,8 @@ impl Viewer {
             Impl::Winit(_) => Vec::new(),
             #[cfg(windows)]
             Impl::Native(v) => v.keys(),
+            #[cfg(target_os = "macos")]
+            Impl::Tex(v) => v.keys(),
         }
     }
 
@@ -307,18 +341,66 @@ impl Viewer {
                 fullscreen: s.fullscreen.load(Ordering::Acquire),
                 max_fps: s.max_fps.load(Ordering::Relaxed),
             }),
+            #[cfg(target_os = "macos")]
+            Impl::Tex(v) => v.shared(key).map(|s| StreamState {
+                popped_out: s.popped_out.load(Ordering::Acquire),
+                popout_hwnd: 0,
+                video: (s.video_w.load(Ordering::Relaxed), s.video_h.load(Ordering::Relaxed)),
+                presented: s.presented.load(Ordering::Relaxed),
+                fullscreen: s.fullscreen.load(Ordering::Acquire),
+                max_fps: s.max_fps.load(Ordering::Relaxed),
+            }),
+        }
+    }
+}
+
+/// macOS: the app draws every stream itself ([`super::viewer_tex`]).
+#[cfg(target_os = "macos")]
+impl Viewer {
+    fn tex(&self) -> Option<&super::viewer_tex::TexViewer> {
+        match &self.0 {
+            Impl::Tex(v) => Some(v),
+            Impl::Winit(_) => None,
+        }
+    }
+
+    /// A frame is waiting to be drawn for `key`.
+    pub fn has_frame(&self, key: &str) -> bool {
+        self.tex().is_some_and(|v| v.has_frame(key))
+    }
+
+    /// The newest frame of `key` not drawn yet (taking it lets the next one wake the UI again).
+    pub fn take_frame(&self, key: &str) -> Option<super::viewer_tex::TexFrame> {
+        self.tex()?.take_frame(key)
+    }
+
+    /// How `key` is drawn, its window title, and the frames replaced undrawn since the last call.
+    pub fn draw_info(&self, key: &str) -> Option<(TileStyle, String, u64)> {
+        self.tex()?.info(key)
+    }
+
+    /// The app made `key`'s own window fullscreen (or left it).
+    pub fn set_fullscreen(&self, key: &str, on: bool) {
+        if let Some(v) = self.tex() {
+            v.set_fullscreen(key, on);
         }
     }
 }
 
 fn spawn_viewer() -> std::result::Result<Viewer, String> {
+    // macOS: winit's event loop must live on the main thread (the app's), so there is no viewer
+    // thread at all; the app draws the frames.
+    #[cfg(target_os = "macos")]
+    return Ok(Viewer(Impl::Tex(super::viewer_tex::TexViewer::default())));
     #[cfg(windows)]
     if PREFER_NATIVE.load(Ordering::Acquire) {
         return super::viewer_native::NativeViewer::spawn().map(|v| Viewer(Impl::Native(v)));
     }
-    spawn_winit_viewer().map(|v| Viewer(Impl::Winit(v)))
+    #[cfg(not(target_os = "macos"))]
+    return spawn_winit_viewer().map(|v| Viewer(Impl::Winit(v)));
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn spawn_winit_viewer() -> std::result::Result<WinitViewer, String> {
     let (tx, rx) = std::sync::mpsc::channel::<std::result::Result<EventLoopProxy<Cmd>, String>>();
     let mailbox = Arc::new(Mailbox { frame: Mutex::new(None), pending: AtomicBool::new(false), replaced: AtomicU64::new(0) });
@@ -409,7 +491,9 @@ struct App {
     /// Scratch ARGB buffer for letterboxed softbuffer draws.
     scaled: Vec<u8>,
     /// Use softbuffer even if D3D11 works (`VOX_VIEWER=soft`, or after D3D11 kept failing).
+    #[cfg_attr(not(windows), allow(dead_code))]
     force_soft: bool,
+    #[cfg_attr(not(windows), allow(dead_code))]
     d3d_failures: u32,
     stats: ViewStats,
 }

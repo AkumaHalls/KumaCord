@@ -223,7 +223,7 @@ impl KeyframeGate {
         self.last_idr_us = Some(now_us);
     }
 
-    #[cfg(test)]
+    /// A requested IDR not sent yet.
     pub fn pending(&self) -> bool {
         self.pending
     }

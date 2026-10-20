@@ -440,9 +440,9 @@ async fn voice_join(
     let server_muted = s.is_server_muted(user.id);
     let token = livekit_token::join_token_with(&lk.api_key, &lk.api_secret, &room, &user.id.to_string(), &user.username, now_ms() / 1000, server_muted);
     s.voice_guard.issued(user.id);
-    let host = livekit_host(&headers, &s.cfg.public_host);
-    tracing::info!(user = %user.username, room, %host, server_muted, "voice join");
-    Ok(Json(VoiceJoinResponse { livekit_url: format!("ws://{host}:{}", lk.signal_port), livekit_token: token, room }))
+    let livekit_url = livekit_url(&headers, &s.cfg);
+    tracing::info!(user = %user.username, room, url = %livekit_url, server_muted, "voice join");
+    Ok(Json(VoiceJoinResponse { livekit_url, livekit_token: token, room }))
 }
 
 #[derive(Deserialize)]
@@ -477,6 +477,14 @@ async fn link_preview_image(State(s): State<AppState>, _: AuthUser, Query(q): Qu
         jpeg,
     )
         .into_response())
+}
+
+/// The LiveKit URL for a client that reached the hub with these headers: `ws://<host>:<signal
+/// port>`, IPv6 hosts in brackets (`ws://[2001:db8::1]:7880`). A v1.0.1 app connects to it as
+/// given (its LiveKit SDK and its own port check both take a bracketed IPv6 host), and LiveKit
+/// listens on IPv6 as well as IPv4 by itself.
+pub(crate) fn livekit_url(headers: &header::HeaderMap, cfg: &crate::config::Config) -> String {
+    format!("ws://{}:{}", livekit_host(headers, &cfg.public_host), cfg.livekit.signal_port)
 }
 
 /// LiveKit runs on the same machine as the hub, so the host the client used to reach the hub
@@ -521,5 +529,22 @@ mod tests {
         assert_eq!(livekit_host(&with_host("[::1]:7890"), "1.2.3.4"), "[::1]");
         assert_eq!(livekit_host(&header::HeaderMap::new(), "1.2.3.4"), "1.2.3.4");
         assert_eq!(livekit_host(&header::HeaderMap::new(), "::1"), "[::1]");
+    }
+
+    /// v1.0.2: a client that reached the hub over IPv6 gets LiveKit at the same IPv6 address.
+    #[test]
+    fn livekit_url_keeps_ipv6_hosts_in_brackets() {
+        let cfg = crate::config::Config::default();
+        assert_eq!(livekit_url(&with_host("[2001:db8::1]:7890"), &cfg), "ws://[2001:db8::1]:7880");
+        assert_eq!(livekit_url(&with_host("[2001:db8::1]"), &cfg), "ws://[2001:db8::1]:7880");
+        assert_eq!(livekit_url(&with_host("[::1]:7997"), &cfg), "ws://[::1]:7880");
+        assert_eq!(livekit_url(&with_host("192.0.2.10:7890"), &cfg), "ws://192.0.2.10:7880");
+        let mut cfg = cfg;
+        cfg.public_host = "2001:db8::5".into();
+        cfg.livekit.signal_port = 7970;
+        assert_eq!(livekit_url(&header::HeaderMap::new(), &cfg), "ws://[2001:db8::5]:7970");
+        // What the app's LiveKit SDK does with it: a plain IPv6 host and the signal port.
+        let u = url::Url::parse(&livekit_url(&with_host("[2001:db8::1]:7890"), &cfg)).unwrap();
+        assert_eq!((u.host(), u.port()), (Some(url::Host::Ipv6("2001:db8::1".parse().unwrap())), Some(7970)));
     }
 }

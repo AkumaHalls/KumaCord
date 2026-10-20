@@ -15,6 +15,12 @@
 //!   `ws.rs`), so long-lived sockets count too.
 //! - **Request timeout** ([`Limits::request_timeout`], [`Limits::login_timeout`]): the time to
 //!   answer one request (body upload included), applied by [`timeout_layer`].
+//!
+//! v1.0.2: the hub may listen on several sockets (IPv4 and IPv6, `listen.rs`): each runs its own
+//! [`serve`] with the same [`Slots`], so the caps count all of them together. An IPv4 peer on a
+//! dual-stack socket is turned back into plain IPv4 here ([`crate::listen::canonical_peer`]), and
+//! an IPv6 peer counts against the per-address cap by its /64 network
+//! ([`crate::listen::peer_group`]).
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -105,7 +111,7 @@ impl Slots {
 
     /// A slot for a new connection from `ip`, or `None` when a cap is reached.
     pub fn take(&self, ip: IpAddr) -> Option<ConnSlot> {
-        let ip = ip.to_canonical();
+        let ip = crate::listen::peer_group(ip);
         let mut c = self.counts.lock().unwrap_or_else(|e| e.into_inner());
         let mine = c.per_ip.get(&ip).copied().unwrap_or(0);
         if c.total >= self.limits.max_conns || mine >= self.limits.max_conns_per_ip {
@@ -151,6 +157,7 @@ pub async fn serve(listener: TcpListener, app: Router, slots: Slots, mut shutdow
             },
             _ = crate::state::wait_shutdown(&mut shutdown) => break,
         };
+        let peer = crate::listen::canonical_peer(peer);
         let Some(slot) = slots.take(peer.ip()) else {
             refused += 1;
             if refused.is_power_of_two() {

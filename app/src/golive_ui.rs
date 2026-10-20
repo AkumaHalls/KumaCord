@@ -23,6 +23,34 @@ const SIZE: Vec2 = Vec2::new(820.0, 640.0);
 /// only, so a full grid or a short window pushed the footer out of the window.)
 const BESIDE_GRID: f32 = 416.0;
 
+/// macOS: the Screen Recording permission is off. Shows what to do and a button to System
+/// Settings; returns whether it is off. Nothing (and `false`) elsewhere.
+fn screen_permission_note(ui: &mut egui::Ui) -> bool {
+    if vox_capture::screen_capture_permission() == vox_capture::Permission::Granted {
+        return false;
+    }
+    note_colored(
+        ui,
+        format!(
+            "{} O macOS ainda não deixou o concord gravar a tela. Ligue o concord em Ajustes do Sistema > Privacidade e Segurança > Gravação de Tela e Áudio do Sistema e depois feche e abra o concord de novo.",
+            ph::WARNING
+        ),
+        false,
+        theme::AVISO,
+    );
+    if ui_kit::button(ui, Kind::Secondary, Some(ph::GEAR_SIX), "Abrir Ajustes do Sistema").clicked() {
+        // The first time this shows macOS's own prompt; afterwards the app is listed, switched off.
+        vox_capture::request_screen_capture_permission();
+        if let Some(url) = vox_capture::privacy_settings_url(false) {
+            if let Err(e) = std::process::Command::new("open").arg(url).spawn() {
+                tracing::warn!(error = %e, "cannot open System Settings");
+            }
+        }
+    }
+    ui.add_space(space::S);
+    true
+}
+
 impl App {
     pub(super) fn golive_window(&mut self, ctx: &egui::Context) {
         if !self.golive.open {
@@ -78,7 +106,10 @@ impl App {
             // Same kind and quality as the running live: a plain source switch.
             let switch_in_place = switching && mode == live_mode && (!audio_only || self.golive.audio_high == self.voice.share_audio_high);
             ui.add_space(space::M);
-            if let Some(e) = &self.golive.error {
+            // macOS: without Screen Recording there is nothing to list (screens, windows and an
+            // app's sound all need it). Say so plainly, with the way to System Settings.
+            let blocked = screen_permission_note(ui);
+            if let Some(e) = self.golive.error.as_ref().filter(|_| !blocked) {
                 note_colored(ui, format!("{} {e}", ph::WARNING), false, theme::AO_VIVO);
             }
             let out = crate::sources::show(

@@ -10,6 +10,12 @@
 //!
 //! Callbacks run on capture threads and must return fast (copy and hand off). Never log per
 //! frame — use `vox_log::RateLimiter` for periodic stats.
+//!
+//! macOS (`mac` module): ScreenCaptureKit for screens, windows and the shared app's sound,
+//! AVFoundation for cameras. Frames are IOSurface-backed NV12 `CVPixelBuffer`s scaled by
+//! ScreenCaptureKit / AVFoundation; [`retained_pixel_buffer`] hands one to libwebrtc's
+//! VideoToolbox encoder without a copy. There is no encoder in this crate on macOS (the
+//! [`EncoderBackend::VideoToolbox`] candidate runs inside libwebrtc on the raw path).
 
 use thiserror::Error;
 
@@ -19,7 +25,8 @@ pub enum CaptureError {
     NotFound(String),
     #[error("not supported on this system: {0}")]
     Unsupported(String),
-    #[error("windows api error: {0}")]
+    #[cfg_attr(not(target_os = "macos"), error("windows api error: {0}"))]
+    #[cfg_attr(target_os = "macos", error("macos api error: {0}"))]
     Os(String),
     #[error("capture stopped: {0}")]
     Stopped(String),
@@ -202,6 +209,11 @@ pub enum EncoderBackend {
     Nvenc,
     /// Media Foundation hardware H.264 MFT (AMD AMF, Intel QSV, NVIDIA).
     MediaFoundation,
+    /// macOS: Apple's hardware H.264 encoder, used by libwebrtc itself on the raw path
+    /// ([`start_video`] frames are IOSurface-backed and reach it without a copy). Never a
+    /// `start_video_encoded` backend.
+    #[cfg(target_os = "macos")]
+    VideoToolbox,
 }
 
 /// What the encoder gives up first when the network target can't carry the configured quality
@@ -283,6 +295,12 @@ impl EncoderControl {
     /// the encoder to a sane range.
     pub fn set_bitrate(&self, bps: u32) {
         self.shared.bitrate_bps.store(bps.max(1), Ordering::Relaxed);
+    }
+
+    /// Encoder side: is a keyframe request waiting (without consuming it)?
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn keyframe_requested(&self) -> bool {
+        self.shared.keyframe.load(Ordering::Relaxed)
     }
 
     /// Encoder side: consume a pending keyframe request.
@@ -1308,6 +1326,97 @@ pub fn window_icon(hwnd: isize, max_size: u32) -> Result<RgbaImage> {
     imp::window_icon(hwnd, max_size)
 }
 
+// ---------- Privacy permissions (macOS) ----------
+//
+// macOS asks the person before an app may record the screen (and the sound of other apps, which
+// ScreenCaptureKit delivers) or use a camera. Windows has nothing to ask here: every function
+// below says "allowed" there.
+
+/// A privacy permission's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permission {
+    Granted,
+    /// Refused (or blocked by a profile): only the person can change it, in System Settings.
+    Denied,
+    /// Never asked: the first use shows the system prompt.
+    NotDetermined,
+}
+
+/// Screen Recording (screens, windows, an app's sound, the picker's thumbnails). Cheap after the
+/// first call (the answer is kept and refreshed whenever a capture call learns it).
+pub fn screen_capture_permission() -> Permission {
+    #[cfg(target_os = "macos")]
+    {
+        mac::screen_permission()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Permission::Granted
+    }
+}
+
+/// Ask for Screen Recording: macOS shows its prompt the first time (later it only lists the app,
+/// switched off, in System Settings). Returns whether it is granted now. macOS applies a new grant
+/// only after the app restarts.
+pub fn request_screen_capture_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        mac::request_screen_permission()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Camera access.
+pub fn camera_permission() -> Permission {
+    #[cfg(target_os = "macos")]
+    {
+        mac::camera_permission()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Permission::Granted
+    }
+}
+
+/// Ask for the camera (the system prompt, the first time only); blocks until it is answered (at
+/// most a minute). Returns whether it is granted.
+pub fn request_camera_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        mac::request_camera_permission()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Where the person changes a permission: the System Settings page (`open` it). `None` off macOS.
+pub fn privacy_settings_url(camera: bool) -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        Some(if camera {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera"
+        } else {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        })
+    } else {
+        None
+    }
+}
+
+/// macOS: the IOSurface-backed `CVPixelBuffer` (NV12) behind a frame this crate delivered to a
+/// [`FrameCallback`] (screen capture or camera), retained once for the caller, who must release it
+/// or hand the reference to an API that takes it over (libwebrtc's
+/// `NativeBuffer::from_cv_pixel_buffer`). Call it during the callback; `None` for any other frame
+/// (one built elsewhere, the synthetic camera, a preview).
+#[cfg(target_os = "macos")]
+pub fn retained_pixel_buffer(frame: &Nv12Frame<'_>) -> Option<std::ptr::NonNull<std::ffi::c_void>> {
+    mac::retained_pixel_buffer(frame)
+}
+
 // Handles can be moved into async tasks / other threads by the client.
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
@@ -1332,9 +1441,18 @@ pub mod bench {
     pub use crate::win::bench::*;
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(target_os = "macos")]
+use mac as imp;
+
+/// Pure picture / sound helpers of the macOS backend (built for tests everywhere).
+#[cfg(any(target_os = "macos", test))]
+mod pixels;
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
-    //! Non-Windows stub so the workspace still type-checks on other hosts.
+    //! Stub for other hosts (Linux) so the workspace still type-checks.
     use super::*;
 
     pub struct VideoInner;

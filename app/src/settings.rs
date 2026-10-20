@@ -1,5 +1,6 @@
 //! `%APPDATA%\concord\settings.json`. The server password is only stored when the user ticks
-//! "Lembrar senha", and then only encrypted with Windows DPAPI (current user). The saved server
+//! "Lembrar senha", and then only encrypted with Windows DPAPI (current user) or, on macOS, kept in
+//! the login Keychain (settings.json holds only a reference, see `keychain`). The saved server
 //! list (v0.9.1) is `servers.json` next to it (see `servers.rs`).
 
 use std::collections::BTreeMap;
@@ -275,7 +276,15 @@ fn path() -> Option<PathBuf> {
     if let Some(d) = DIR.get() {
         return Some(d.join("settings.json"));
     }
-    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("concord").join("settings.json"))
+    if let Some(d) = std::env::var_os("APPDATA") {
+        return Some(PathBuf::from(d).join("concord").join("settings.json"));
+    }
+    // macOS: ~/Library/Application Support/concord (there is no %APPDATA%).
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        return Some(PathBuf::from(home).join("Library").join("Application Support").join("concord").join("settings.json"));
+    }
+    None
 }
 
 /// Where settings.json is (the autotest reads the files back).
@@ -424,12 +433,15 @@ impl Settings {
 
 /// Kept from before the rename to concord (v1.0.1): the passwords and tokens already saved were
 /// encrypted with it, and the migrated settings.json must still decrypt.
+#[cfg_attr(not(windows), allow(dead_code))]
 const ENTROPY: &[u8] = b"voxhub-settings-v1";
 
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 fn to_hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn from_hex(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return None;
@@ -505,14 +517,203 @@ pub(crate) fn unprotect(hex: &str) -> Option<String> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn protect(_plain: &str) -> Option<String> {
     None
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn unprotect(_hex: &str) -> Option<String> {
     None
+}
+
+// ---------------------------------------------------------------- macOS Keychain
+
+/// macOS: the secret goes to the login Keychain; settings.json keeps only an opaque reference.
+#[cfg(target_os = "macos")]
+pub(crate) fn protect(plain: &str) -> Option<String> {
+    keychain::protect(plain)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn unprotect(reference: &str) -> Option<String> {
+    keychain::unprotect(reference)
+}
+
+/// Saved passwords and login tokens on macOS (phase M1 of docs/PLANO-macOS.md).
+///
+/// - Every secret lives in ONE generic-password item of the login Keychain (service `concord`,
+///   account `secrets`): a small JSON map from random ids to secrets. settings.json and
+///   servers.json only hold `kc1:<id>` (32 random hex digits): no plaintext, no ciphertext.
+/// - One item, not one per secret: the app is signed ad hoc, so after an update macOS asks once
+///   ("Permitir Sempre") instead of once per saved password.
+/// - The same secret saved again reuses its id, and [`keychain_gc`] (at startup) drops the ids no
+///   file mentions any more, so the item does not grow with every login.
+/// - Autotests with their own settings folder use their own account (`secrets-test-<hash>`), so
+///   they never touch the real item. Unit tests keep the map in memory only (the real item
+///   functions have their own test).
+/// - Keychain unavailable (locked, access denied): nothing is saved (`None`), as before M1.
+#[cfg(target_os = "macos")]
+mod keychain {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, MutexGuard};
+
+    pub(super) const SERVICE: &str = "concord";
+    pub(super) const PREFIX: &str = "kc1:";
+    /// errSecItemNotFound
+    const NOT_FOUND: i32 = -25300;
+
+    /// The map as last read or written (`None`: not read yet).
+    static CACHE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+    fn account() -> String {
+        match super::DIR.get() {
+            Some(d) => {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                d.hash(&mut h);
+                format!("secrets-test-{:016x}", h.finish())
+            }
+            None => "secrets".to_string(),
+        }
+    }
+
+    /// A reference id: 16 random bytes, hex.
+    fn new_id() -> Option<String> {
+        use std::io::Read;
+        let mut b = [0u8; 16];
+        std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).ok()?;
+        Some(super::to_hex(&b))
+    }
+
+    pub(super) fn is_reference(s: &str) -> bool {
+        s.strip_prefix(PREFIX).is_some_and(|id| id.len() == 32 && id.bytes().all(|c| c.is_ascii_hexdigit()))
+    }
+
+    /// The item's bytes (`Ok(None)`: there is no item yet).
+    pub(super) fn item_get(account: &str) -> Result<Option<Vec<u8>>, String> {
+        match security_framework::passwords::get_generic_password(SERVICE, account) {
+            Ok(b) => Ok(Some(b)),
+            Err(e) if e.code() == NOT_FOUND => Ok(None),
+            Err(e) => Err(format!("{e} ({})", e.code())),
+        }
+    }
+
+    pub(super) fn item_set(account: &str, bytes: &[u8]) -> Result<(), String> {
+        security_framework::passwords::set_generic_password(SERVICE, account, bytes).map_err(|e| format!("{e} ({})", e.code()))
+    }
+
+    pub(super) fn item_delete(account: &str) -> Result<(), String> {
+        match security_framework::passwords::delete_generic_password(SERVICE, account) {
+            Err(e) if e.code() != NOT_FOUND => Err(format!("{e} ({})", e.code())),
+            _ => Ok(()),
+        }
+    }
+
+    #[cfg(not(test))]
+    fn load() -> Result<HashMap<String, String>, String> {
+        Ok(match item_get(&account())? {
+            Some(b) => serde_json::from_slice(&b).map_err(|e| format!("damaged item: {e}"))?,
+            None => HashMap::new(),
+        })
+    }
+
+    #[cfg(not(test))]
+    fn store(map: &HashMap<String, String>) -> Result<(), String> {
+        let a = account();
+        if map.is_empty() {
+            return item_delete(&a);
+        }
+        item_set(&a, serde_json::to_string(map).map_err(|e| e.to_string())?.as_bytes())
+    }
+
+    // Unit tests never touch the user's Keychain.
+    #[cfg(test)]
+    fn load() -> Result<HashMap<String, String>, String> {
+        Ok(HashMap::new())
+    }
+
+    #[cfg(test)]
+    fn store(_map: &HashMap<String, String>) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The cache, read from the Keychain on first use (`None`: it cannot be read).
+    fn cached() -> Option<MutexGuard<'static, Option<HashMap<String, String>>>> {
+        let mut cache = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+        if cache.is_none() {
+            match load() {
+                Ok(m) => *cache = Some(m),
+                Err(e) => {
+                    tracing::warn!(error = %e, "keychain: cannot read the saved secrets");
+                    return None;
+                }
+            }
+        }
+        Some(cache)
+    }
+
+    pub(super) fn protect(plain: &str) -> Option<String> {
+        let mut cache = cached()?;
+        let map = cache.as_mut()?;
+        if let Some(id) = map.iter().find(|(_, v)| v.as_str() == plain).map(|(k, _)| k.clone()) {
+            return Some(format!("{PREFIX}{id}"));
+        }
+        let id = new_id()?;
+        map.insert(id.clone(), plain.to_string());
+        match store(map) {
+            Ok(()) => Some(format!("{PREFIX}{id}")),
+            Err(e) => {
+                map.remove(&id);
+                tracing::warn!(error = %e, "keychain: cannot save a secret");
+                None
+            }
+        }
+    }
+
+    pub(super) fn unprotect(reference: &str) -> Option<String> {
+        if !is_reference(reference) {
+            return None;
+        }
+        let id = reference[PREFIX.len()..].to_ascii_lowercase();
+        cached()?.as_ref()?.get(&id).cloned()
+    }
+
+    /// Drop the entries whose reference is not in `text`; returns how many went.
+    pub(super) fn keep_referenced(map: &mut HashMap<String, String>, text: &str) -> usize {
+        let before = map.len();
+        map.retain(|id, _| text.contains(&format!("{PREFIX}{id}")));
+        before - map.len()
+    }
+
+    /// Forget every secret whose reference does not appear in `text` (the settings files).
+    pub(super) fn gc(text: &str) {
+        let Some(mut cache) = cached() else { return };
+        let Some(map) = cache.as_mut() else { return };
+        let dropped = keep_referenced(map, text);
+        if dropped == 0 {
+            return;
+        }
+        match store(map) {
+            Ok(()) => tracing::info!(dropped, kept = map.len(), "keychain: unused saved secrets removed"),
+            Err(e) => tracing::warn!(error = %e, "keychain: cannot clean up"),
+        }
+    }
+}
+
+/// macOS, at startup: drop the Keychain secrets that neither settings.json nor servers.json
+/// mention any more (a password saved again gets a new reference). An unreadable file: nothing is
+/// dropped.
+#[cfg(target_os = "macos")]
+pub fn keychain_gc() {
+    let Some(p) = path() else { return };
+    let read = |p: &Path| match std::fs::read_to_string(p) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(String::new()),
+        Err(_) => None,
+    };
+    let (Some(a), Some(b)) = (read(&p), read(&servers_path(&p))) else { return };
+    keychain::gc(&format!("{a}\n{b}"));
 }
 
 #[cfg(test)]
@@ -529,6 +730,38 @@ mod tests {
         let off = Settings { show_self_preview: false, ..Default::default() };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
         assert!(!back.show_self_preview);
+    }
+
+    /// macOS: the real Keychain item functions (its own account, removed at the end), and a saved
+    /// secret's reference is opaque and reused for the same secret.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_item_roundtrip_and_opaque_references() {
+        let account = format!("unit-test-{}", std::process::id());
+        match keychain::item_set(&account, b"{\"x\":\"y\"}") {
+            Ok(()) => {
+                assert_eq!(keychain::item_get(&account).unwrap().as_deref(), Some(&b"{\"x\":\"y\"}"[..]));
+                keychain::item_set(&account, b"{}").unwrap();
+                assert_eq!(keychain::item_get(&account).unwrap().as_deref(), Some(&b"{}"[..]), "replaced in place");
+                keychain::item_delete(&account).unwrap();
+                assert_eq!(keychain::item_get(&account).unwrap(), None);
+                keychain::item_delete(&account).unwrap();
+            }
+            // A session without a usable login Keychain (e.g. some SSH sessions): nothing to test.
+            Err(e) => eprintln!("keychain unavailable here, item test skipped: {e}"),
+        }
+        let r = protect("senha do Mac").unwrap();
+        assert!(keychain::is_reference(&r) && !r.contains("senha"), "{r}");
+        assert_eq!(protect("senha do Mac"), Some(r.clone()), "the same secret keeps its reference");
+        assert_ne!(protect("outra senha"), Some(r.clone()));
+        assert_eq!(unprotect(&r).as_deref(), Some("senha do Mac"));
+        assert_eq!(unprotect("kc1:00000000000000000000000000000000"), None);
+        assert_eq!(unprotect("01000000d08c9ddf"), None, "a Windows DPAPI value means nothing here");
+        // The startup clean-up keeps exactly what the files mention.
+        let mut m: std::collections::HashMap<String, String> = [("a".repeat(32), "1".into()), ("b".repeat(32), "2".into())].into_iter().collect();
+        let text = format!("{{\"password_enc\":\"kc1:{}\"}}", "a".repeat(32));
+        assert_eq!(keychain::keep_referenced(&mut m, &text), 1);
+        assert_eq!(m.keys().cloned().collect::<Vec<_>>(), vec!["a".repeat(32)]);
     }
 
     #[test]

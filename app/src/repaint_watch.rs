@@ -9,9 +9,10 @@
 //!
 //! The autotests' own tick (a frame every 100 ms while a role is still doing something) is not a
 //! loop: the role declares it ([`set_expected_fps`]) and the threshold rises by that much, and its
-//! call site is left out of the names. Video does not count either, because it never asks egui
-//! for a frame: watched streams and cameras present in their own native child windows (v1.0 phase
-//! 4 measured 1 to 4 backend wake-ups per 2 s while watching a 30 fps stream).
+//! call site is left out of the names. Video does not count either: on Windows it never asks egui
+//! for a frame (watched streams and cameras present in their own native child windows; v1.0 phase
+//! 4 measured 1 to 4 backend wake-ups per 2 s while watching a 30 fps stream), and on macOS, where
+//! egui draws them, a pass that drew a new picture counts as input ([`video_frame`]).
 //!
 //! Cheap: a few integers per frame; the causes are only collected while a loop is suspected.
 
@@ -56,9 +57,19 @@ pub struct Snapshot {
 
 static WATCH: Mutex<Option<Watch>> = Mutex::new(None);
 
+/// A new video picture was drawn this pass (macOS draws watched streams with egui, so a stream
+/// repaints the window at its frame rate on purpose: such frames count like input).
+static VIDEO_FRAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn video_frame() {
+    VIDEO_FRAME.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Call once per frame (from `logic`).
 pub fn frame(ctx: &egui::Context) {
-    let input = ctx.input(|i| !i.events.is_empty() || i.pointer.is_moving() || i.pointer.any_down());
+    let video = VIDEO_FRAME.swap(false, std::sync::atomic::Ordering::Relaxed);
+    let input = video || ctx.input(|i| !i.events.is_empty() || i.pointer.is_moving() || i.pointer.any_down());
     let collecting = WATCH.lock().map(|w| w.as_ref().is_some_and(|w| w.collecting)).unwrap_or(false);
     // (Outside the lock: egui's own lock is taken here.)
     let causes = if collecting && !input { ctx.repaint_causes() } else { Vec::new() };

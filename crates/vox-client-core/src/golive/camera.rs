@@ -166,6 +166,9 @@ pub fn camera_bitrate(width: u32, height: u32, fps: u32) -> u64 {
 
 /// Portuguese text for a camera that failed to start or stopped.
 pub fn camera_failure_pt(e: &CameraError) -> String {
+    if cfg!(target_os = "macos") && e.fault == CameraFault::AccessDenied {
+        return "O macOS não deixou o concord usar a câmera. Ligue o concord em Ajustes do Sistema > Privacidade e Segurança > Câmera.".into();
+    }
     match e.fault {
         CameraFault::NotFound => "Nenhuma câmera encontrada. Conecte uma câmera ou escolha outra em Configurações.".into(),
         CameraFault::InUse => "A câmera está sendo usada por outro programa. Feche o outro programa e tente de novo.".into(),
@@ -190,20 +193,19 @@ struct CameraTrack {
     publication: LocalTrackPublication,
     fps: u32,
     max_bitrate: u64,
+    /// libwebrtc's encoder for this sender (`PreEncoded` on the encoded path).
+    encoder: VideoEncoderBackend,
 }
 
 impl CameraTrack {
-    async fn publish(room: &Room, path: VideoPath, source: NativeVideoSource, fps: u32, max_bitrate: u64) -> Result<Self> {
+    async fn publish(room: &Room, path: VideoPath, source: NativeVideoSource, fps: u32, max_bitrate: u64, encoder: VideoEncoderBackend) -> Result<Self> {
         let track = LocalVideoTrack::create_video_track("camera", RtcVideoSource::Native(source.clone()));
         let opts = TrackPublishOptions {
             source: TrackSource::Camera,
             video_codec: VideoCodec::H264,
             simulcast: false,
             video_encoding: Some(VideoEncoding { max_bitrate, max_framerate: fps as f64 }),
-            video_encoder: match path {
-                VideoPath::Raw => VideoEncoderBackend::Auto,
-                VideoPath::Encoded => VideoEncoderBackend::PreEncoded,
-            },
+            video_encoder: encoder,
             ..Default::default()
         };
         let publication = room
@@ -212,7 +214,7 @@ impl CameraTrack {
             .await
             .map_err(|e| anyhow!("publish camera ({path:?} path): {e}"))?;
         info!(?path, fps, max_kbps = max_bitrate / 1000, "camera video published");
-        Ok(Self { path, source, track, publication, fps, max_bitrate })
+        Ok(Self { path, source, track, publication, fps, max_bitrate, encoder })
     }
 
     async fn unpublish(self, room: &Room) {
@@ -239,9 +241,9 @@ impl CameraPublication {
 
     /// Republish when the encoding settings changed (the old sender stays allocated until leave:
     /// SDK limitation, see `SharePublication`).
-    async fn drop_incompatible(&mut self, room: &Room, path: VideoPath, fps: u32, max_bitrate: u64) {
+    async fn drop_incompatible(&mut self, room: &Room, path: VideoPath, fps: u32, max_bitrate: u64, encoder: VideoEncoderBackend) {
         let slot = self.slot(path);
-        if slot.as_ref().is_some_and(|t| t.fps != fps || t.max_bitrate != max_bitrate) {
+        if slot.as_ref().is_some_and(|t| t.fps != fps || t.max_bitrate != max_bitrate || t.encoder != encoder) {
             info!(?path, fps, max_kbps = max_bitrate / 1000, "camera settings changed; republishing the camera track");
             if let Some(old) = slot.take() {
                 old.unpublish(room).await;
@@ -300,6 +302,8 @@ fn backend_name(b: Option<EncoderBackend>) -> &'static str {
         Some(EncoderBackend::Nvenc) => "nvenc",
         Some(EncoderBackend::MediaFoundation) => "mf",
         Some(EncoderBackend::Auto) => "auto",
+        #[cfg(target_os = "macos")]
+        Some(EncoderBackend::VideoToolbox) => "videotoolbox",
         None => "software",
     }
 }
@@ -340,7 +344,7 @@ impl ActiveCamera {
         let mut used = plan.last().cloned().expect("the plan ends with the processor");
         // Hardware encoders in plan order; an encoder that cannot start on its GPU hands over to
         // the next (camera trouble, like a camera in use, ends the start instead).
-        for attempt in plan.iter().filter(|a| !a.is_software()) {
+        for attempt in plan.iter().filter(|a| !a.is_software() && !encoders::in_libwebrtc(a)) {
             let cfg = CameraConfig { backend: attempt.backend.unwrap_or(EncoderBackend::Auto), adapter_luid: attempt.luid, ..cfg };
             let video_source = match &pubs.encoded {
                 Some(t) => t.source.clone(),
@@ -377,6 +381,8 @@ impl ActiveCamera {
                 }
             }
         }
+        // macOS: the plan's hardware encoder (VideoToolbox) runs inside libwebrtc, on the raw path.
+        let (raw_encoder, raw_hw) = encoders::raw_encoder(opts.encoder);
         if started.is_none() && last_err.is_none() {
             let video_source = match &pubs.raw {
                 Some(t) => t.source.clone(),
@@ -390,7 +396,12 @@ impl ActiveCamera {
                 .await
                 .map_err(|e| CameraError { fault: CameraFault::Other, detail: format!("camera start task: {e}") });
             match res.and_then(|r| r) {
-                Ok(cap) => started = Some((cap, VideoPath::Raw, video_source, Stage2::Raw(stage), None, Arc::new(Mutex::new(None)))),
+                Ok(cap) => {
+                    started = Some((cap, VideoPath::Raw, video_source, Stage2::Raw(stage), None, Arc::new(Mutex::new(None))));
+                    if let Some(a) = raw_hw {
+                        used = a;
+                    }
+                }
                 Err(e) => last_err = Some(e),
             }
         }
@@ -400,14 +411,18 @@ impl ActiveCamera {
             return Err(fail(anyhow!("camera start failed: {e}"), message, pubs));
         };
         let format = capture.format();
-        let backend = backend_name(capture.backend());
+        let backend = if path == VideoPath::Raw && encoders::in_libwebrtc(&used) { "videotoolbox" } else { backend_name(capture.backend()) };
         // The user's image settings, as soon as the device is open.
         capture.apply_controls(&opts.setup.controls);
 
         // 2. Publication (once per session and path), then unmute.
-        pubs.drop_incompatible(room, path, opts.fps, max_bitrate).await;
+        let encoder = match path {
+            VideoPath::Raw => raw_encoder,
+            VideoPath::Encoded => VideoEncoderBackend::PreEncoded,
+        };
+        pubs.drop_incompatible(room, path, opts.fps, max_bitrate, encoder).await;
         if pubs.slot(path).is_none() {
-            match CameraTrack::publish(room, path, video_source, opts.fps, max_bitrate).await {
+            match CameraTrack::publish(room, path, video_source, opts.fps, max_bitrate, encoder).await {
                 Ok(t) => *pubs.slot(path) = Some(t),
                 Err(e) => {
                     drop(capture);
@@ -470,9 +485,9 @@ impl ActiveCamera {
         self.capture.as_ref()
     }
 
-    /// `"nvenc"` / `"mf"` (pre-encoded) or `"software"`.
+    /// `"nvenc"` / `"mf"` (pre-encoded), `"videotoolbox"` (macOS, inside libwebrtc) or `"software"`.
     pub fn backend(&self) -> String {
-        self.encoder.as_ref().map(|(b, _)| b.clone()).unwrap_or_else(|| "software".into())
+        self.encoder.as_ref().map(|(b, _)| b.clone()).unwrap_or_else(|| if encoders::in_libwebrtc(&self.attempt) { "videotoolbox" } else { "software" }.into())
     }
 
     /// The encoder in use.

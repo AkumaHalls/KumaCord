@@ -55,6 +55,18 @@ fn log(what: &str) {
 }
 
 /// Kernel + user CPU time of this process, in 100 ns units.
+#[cfg(not(windows))]
+fn cpu_time() -> u64 {
+    0
+}
+
+#[cfg(not(windows))]
+fn window_state(_app: &App) -> (bool, bool) {
+    (true, false)
+}
+
+/// Kernel + user CPU time of this process, in 100 ns units.
+#[cfg(windows)]
 fn cpu_time() -> u64 {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
@@ -66,6 +78,7 @@ fn cpu_time() -> u64 {
     t(k) + t(u)
 }
 
+#[cfg(windows)]
 fn window_state(app: &App) -> (bool, bool) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible};
     let Some(h) = app.video.parent else { return (false, false) };

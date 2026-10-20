@@ -60,11 +60,18 @@ pub struct LogGuard {
     pub log_dir: PathBuf,
 }
 
-/// Default log directory: `%LOCALAPPDATA%\concord\logs\<app>` on Windows, `./logs/<app>` elsewhere.
+/// Default log directory: `%LOCALAPPDATA%\concord\logs\<app>` on Windows,
+/// `~/Library/Logs/concord/<app>` on macOS (an app opened from Finder starts in `/`, which it can't
+/// write), `./logs/<app>` elsewhere.
 pub fn default_log_dir(app: &str) -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(|d| PathBuf::from(d).join("concord").join("logs").join(app))
-        .unwrap_or_else(|| PathBuf::from("logs").join(app))
+    if let Some(d) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(d).join("concord").join("logs").join(app);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join("Library").join("Logs").join("concord").join(app);
+    }
+    PathBuf::from("logs").join(app)
 }
 
 /// Initialise logging to a rotating file (always) and stderr (when `console` is true).

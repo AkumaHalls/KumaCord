@@ -64,6 +64,9 @@ const MAX_CONSECUTIVE_ERRORS: u32 = 30;
 const MIN_CONTENT: i32 = 32;
 /// For window targets: how often to double-check the HWND still exists (backup for `Closed`).
 const WINDOW_CHECK_MS: u32 = 1000;
+/// Sinks that may ask for the last frame again ([`Sink::refreshes`]): how often the loop looks.
+/// A keyframe request only sets a flag, so a static source needs this poll to notice it.
+const REFRESH_POLL_MS: u32 = 50;
 
 /// Counters shared between the capture thread and the public handle.
 #[derive(Default)]
@@ -126,6 +129,16 @@ pub(crate) trait Sink {
     fn describe(&self) -> String;
     /// Frame-rate cap requested by the sink (degradation policy); applied by the pacer.
     fn fps_cap(&self) -> Option<u32> {
+        None
+    }
+    /// Whether this sink ever asks for [`Sink::refresh_after`] (the loop then polls for it).
+    fn refreshes(&self) -> bool {
+        false
+    }
+    /// The source is static (no new frame for a while) and the sink needs frames anyway (to
+    /// answer a keyframe request): re-submit the last converted frame once it has been static
+    /// this long. `None`: nothing needed.
+    fn refresh_after(&self) -> Option<std::time::Duration> {
         None
     }
 }
@@ -956,6 +969,10 @@ struct Capture<S: Sink> {
     stats_gate: vox_log::RateLimiter,
     /// Optional low-rate preview tap (item 8a), fed from the converter's output.
     preview: Option<PreviewTap>,
+    /// When the sink last got a frame (captured or re-sent), and how many were re-sent.
+    last_submit: Option<Instant>,
+    refreshes: u64,
+    last_window_check: Instant,
 }
 
 impl<S: Sink> Capture<S> {
@@ -1174,6 +1191,9 @@ impl<S: Sink> Capture<S> {
             consecutive_errors: 0,
             stats_gate: vox_log::RateLimiter::new(),
             preview,
+            last_submit: None,
+            refreshes: 0,
+            last_window_check: Instant::now(),
         })
     }
 
@@ -1189,7 +1209,10 @@ impl<S: Sink> Capture<S> {
         if let Some(p) = &self.preview {
             handles.extend(p.handles());
         }
-        let timeout = if self.hwnd.is_some() {
+        let refreshes = self.sink().refreshes();
+        let timeout = if refreshes {
+            REFRESH_POLL_MS
+        } else if self.hwnd.is_some() {
             WINDOW_CHECK_MS
         } else {
             INFINITE
@@ -1208,7 +1231,8 @@ impl<S: Sink> Capture<S> {
                     Ok(())
                 }
                 _ if r == WAIT_TIMEOUT => {
-                    if let Some(h) = self.hwnd {
+                    if let Some(h) = self.hwnd.filter(|_| self.last_window_check.elapsed().as_millis() >= WINDOW_CHECK_MS as u128) {
+                        self.last_window_check = Instant::now();
                         if !unsafe { IsWindow(Some(h)) }.as_bool() {
                             break "target window no longer exists".into();
                         }
@@ -1222,6 +1246,7 @@ impl<S: Sink> Capture<S> {
                     )
                 }
             };
+            let res = res.and_then(|()| if refreshes { self.maybe_refresh() } else { Ok(()) });
             if let Err(e) = res {
                 if let Some(fatal) = self.handle_error(e) {
                     break fatal;
@@ -1235,8 +1260,35 @@ impl<S: Sink> Capture<S> {
             target = ?self.target,
             delivered = s.delivered.load(Ordering::Relaxed),
             dropped = s.dropped.load(Ordering::Relaxed),
+            refreshes = self.refreshes,
             "video capture stopped"
         );
+    }
+
+    /// A static source (Windows.Graphics.Capture sends nothing while the target does not change)
+    /// whose sink wants a frame anyway ([`Sink::refresh_after`]): submit the last converted
+    /// picture again, with a fresh timestamp. Without this, a viewer who starts watching a static
+    /// window waits for the next change on screen for its first keyframe (a black tile).
+    fn maybe_refresh(&mut self) -> Result<()> {
+        let Some(after) = self.sink.as_ref().and_then(|s| s.refresh_after()) else { return Ok(()) };
+        // A frame held back by the pacer is on its way (the timer); nothing sent yet: nothing to repeat.
+        if self.deferred.is_some() || self.last_submit.is_none_or(|t| t.elapsed() < after) {
+            return Ok(());
+        }
+        let (w, h) = self.out_size;
+        let Some(out) = self.conv.output().cloned().filter(|_| w > 0 && h > 0) else { return Ok(()) };
+        if !self.sink().has_free() {
+            return Ok(());
+        }
+        let ts_us = monotonic_now_us();
+        let sink = self.sink.as_mut().expect("sink present until drop");
+        sink.submit(&self.ctx, &out, w, h, ts_us)?;
+        self.last_submit = Some(Instant::now());
+        self.refreshes += 1;
+        if self.refreshes == 1 {
+            tracing::info!(target = ?self.target, "static capture: re-sending the last frame while nothing on screen changes");
+        }
+        self.drain_sink()
     }
 
     /// A preview handle fired (index into `PreviewTap::handles`, offset by 5). Preview trouble
@@ -1405,6 +1457,7 @@ impl<S: Sink> Capture<S> {
         let out = self.conv.convert(&tex, src_w, src_h)?.clone();
         let sink = self.sink.as_mut().expect("sink present until drop");
         sink.submit(&self.ctx, &out, ow, oh, ts_us)?;
+        self.last_submit = Some(Instant::now());
         self.consecutive_errors = 0;
         if let Some(p) = self.preview.as_mut() {
             // After the encoder got its frame, and never able to fail it.

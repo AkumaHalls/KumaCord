@@ -1,10 +1,13 @@
 //! A self-animating window to use as a Go Live capture target in tests (no files, no audio).
 //!
-//! test_window [--fps 60] [--resize-every SECS] [--close-after SECS] [--physical-size WxH]
+//! test_window [--fps 60] [--resize-every SECS] [--close-after SECS] [--physical-size WxH] [--still] [--pos X,Y]
 //!
 //! Prints `hwnd=<n> pid=<n>` on startup. With `--resize-every`, it alternates between
 //! 1280x720 and 960x600 (logical) to exercise mid-stream resolution changes. With
-//! `--close-after`, it closes itself, so the sharer's capture stops.
+//! `--close-after`, it closes itself, so the sharer's capture stops. With `--still`, it draws a
+//! few frames and then stops animating (a static window: Windows.Graphics.Capture then delivers
+//! no new frames at all). `--pos` places it (physical pixels), e.g. off-screen, where the
+//! mouse never passes over it (a captured cursor makes frames too).
 //!
 //! A GUI program (no console window opens for it); the `hwnd=` line still reaches a redirected
 //! stdout.
@@ -28,6 +31,8 @@ type Win = (Rc<Window>, softbuffer::Surface<Rc<Window>, Rc<Window>>, softbuffer:
 struct App {
     physical: Option<(u32, u32)>,
     fps: u32,
+    still: bool,
+    pos: Option<(i32, i32)>,
     resize_every: Option<Duration>,
     close_after: Option<Duration>,
     start: Instant,
@@ -48,6 +53,9 @@ impl ApplicationHandler for App {
         let mut attrs = Window::default_attributes().with_title("vox test window").with_inner_size(LogicalSize::new(1280.0, 720.0)).with_active(false);
         if let Some((w, h)) = self.physical {
             attrs = attrs.with_inner_size(winit::dpi::PhysicalSize::new(w, h));
+        }
+        if let Some((x, y)) = self.pos {
+            attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(x, y));
         }
         let window = Rc::new(el.create_window(attrs).expect("create window"));
         let hwnd = match window.window_handle().map(|h| h.as_raw()) {
@@ -89,6 +97,10 @@ impl ApplicationHandler for App {
                 println!("resized to {}x{} (logical)", size.width, size.height);
             }
         }
+        if self.still && self.frame >= 10 {
+            el.set_control_flow(ControlFlow::Wait);
+            return;
+        }
         if now >= self.next {
             if let Some((w, _, _)) = &self.win {
                 w.request_redraw();
@@ -104,6 +116,9 @@ impl ApplicationHandler for App {
 
 impl App {
     fn draw(&mut self) {
+        if self.still && self.frame >= 10 {
+            return; // nothing new to show: no present, so the window's content stays unchanged
+        }
         let Some((w, surface, _)) = self.win.as_mut() else { return };
         let size = w.inner_size();
         let (Some(ww), Some(wh)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else { return };
@@ -142,6 +157,8 @@ fn main() {
     let el = EventLoop::new().expect("event loop");
     let mut app = App {
         fps: arg(&args, "--fps").unwrap_or(60.0) as u32,
+        still: args.iter().any(|a| a == "--still"),
+        pos: args.iter().position(|a| a == "--pos").and_then(|i| args.get(i + 1)).and_then(|v| v.split_once(',')).and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))),
         physical: args.iter().position(|a| a == "--physical-size").and_then(|i| args.get(i + 1)).and_then(|v| v.split_once('x')).and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))),
         resize_every: arg(&args, "--resize-every").map(Duration::from_secs_f64),
         close_after: arg(&args, "--close-after").map(Duration::from_secs_f64),

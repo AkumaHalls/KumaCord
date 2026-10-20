@@ -399,11 +399,16 @@ impl App {
                 CameraUi::Starting => (ph::VIDEO_CAMERA, "Ligando a câmera...".to_string(), IconState::Normal),
                 CameraUi::On { info, .. } => (ph::VIDEO_CAMERA, format!("Câmera ligada ({info}). Clique para desligar"), IconState::On),
             };
-            let cam = ui.add_enabled_ui(self.voice.camera != CameraUi::Starting, |ui| ui_kit::icon_button(ui, icon, &hover, state)).inner;
+            let cam_soon = self.voice.camera == CameraUi::Off && crate::platform::camera_soon();
+            let hover = if cam_soon { format!("Câmera: {}", crate::platform::SOON_MAC.to_lowercase()) } else { hover };
+            let cam = ui.add_enabled_ui(self.voice.camera != CameraUi::Starting && !cam_soon, |ui| ui_kit::icon_button(ui, icon, &hover, state)).inner;
             if cam.clicked() {
                 self.toggle_camera();
             }
             match self.voice.share {
+                Share::Off if crate::platform::screen_soon() => {
+                    ui.add_enabled_ui(false, |ui| ui_kit::icon_button(ui, ph::SCREENCAST, &format!("Transmitir: {}", crate::platform::SOON_MAC.to_lowercase()), IconState::Normal));
+                }
                 Share::Off => {
                     if ui_kit::icon_button(ui, ph::SCREENCAST, "Transmitir (Go Live)", IconState::Normal).clicked() {
                         self.open_golive();

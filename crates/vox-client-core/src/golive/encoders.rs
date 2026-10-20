@@ -357,6 +357,40 @@ pub fn plan(choice: EncoderChoice) -> Vec<Attempt> {
     list.into_iter().map(|c| st.attempt(c)).collect()
 }
 
+/// The attempt's encoder runs inside libwebrtc on the raw path (macOS: VideoToolbox), not in
+/// vox-capture: no pre-encoded capture is started for it.
+pub fn in_libwebrtc(a: &Attempt) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        a.backend == Some(EncoderBackend::VideoToolbox)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = a;
+        false
+    }
+}
+
+/// libwebrtc's encoder on the raw path for `choice`, and the hardware attempt it stands for. On
+/// macOS: VideoToolbox when the plan leads with it (frames reach it without a copy), else OpenH264
+/// (`Software`, hardware acceleration off or VideoToolbox demoted). Elsewhere the SDK default
+/// (OpenH264), as always, without looking at the plan.
+pub fn raw_encoder(choice: EncoderChoice) -> (livekit::options::VideoEncoderBackend, Option<Attempt>) {
+    use livekit::options::VideoEncoderBackend as B;
+    #[cfg(target_os = "macos")]
+    {
+        match plan(choice).into_iter().find(|a| !a.is_software()).filter(in_libwebrtc) {
+            Some(a) => (B::VideoToolbox, Some(a)),
+            None => (B::Software, None),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = choice;
+        (B::Auto, None)
+    }
+}
+
 /// "a > b > Processador" for logs.
 pub fn describe(plan: &[Attempt]) -> String {
     plan.iter().map(|a| a.label.as_str()).collect::<Vec<_>>().join(" > ")
@@ -401,6 +435,8 @@ pub fn snapshot() -> EncoderSnapshot {
         .map(|r| {
             let note = match (r.status, &r.result) {
                 _ if r.candidate.kind == EncoderKind::Software => "sempre funciona; usa mais CPU".to_string(),
+                #[cfg(target_os = "macos")]
+                (CandidateStatus::Untested, None) if r.candidate.kind == EncoderKind::VideoToolbox => "hardware do Mac, quase não usa o processador".to_string(),
                 (CandidateStatus::Failed, _) if r.failures >= gpu::MAX_RUNTIME_FAILURES => "falhou durante o uso".into(),
                 (CandidateStatus::Failed, Some(SelfTestResult { outcome: TestOutcome::Failed { reason }, .. })) => format!("falhou: {reason}"),
                 (CandidateStatus::Passed, Some(t)) => format!("✔ {:.1} ms por quadro", t.ms_per_frame).replace('.', ","),

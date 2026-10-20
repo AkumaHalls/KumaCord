@@ -411,6 +411,15 @@ impl Repaint {
         }
     }
 
+    /// Like [`wake`](Self::wake), but for one pass only: egui answers a plain repaint request
+    /// with two passes (to let things settle), which for a 60 fps video doubles the work.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn wake_once(&self) {
+        if let Some(c) = self.0.get() {
+            c.request_repaint_after(std::time::Duration::from_millis(1));
+        }
+    }
+
     /// The window is hidden in the tray (set by the app): nobody sees the meters.
     pub fn set_hidden(&self, hidden: bool) {
         self.1.store(hidden, std::sync::atomic::Ordering::Relaxed);
@@ -842,14 +851,22 @@ impl Controller {
                 let out = self.out.clone();
                 tokio::task::spawn_blocking(move || {
                     let mut error = None;
+                    let mut unsupported = false;
                     let windows = capture_call("list_windows", vox_capture::list_windows).unwrap_or_else(|e| {
+                        unsupported |= crate::platform::is_unsupported_any(&e);
                         error = Some(format!("{e:#}"));
                         Vec::new()
                     });
                     let monitors = capture_call("list_monitors", vox_capture::list_monitors).unwrap_or_else(|e| {
+                        unsupported |= crate::platform::is_unsupported_any(&e);
                         error.get_or_insert(format!("{e:#}"));
                         Vec::new()
                     });
+                    // macOS before its capture backend: say what it is, not an error code.
+                    crate::platform::note_screen_capture(unsupported);
+                    if unsupported && crate::platform::screen_soon() {
+                        error = Some(format!("Transmitir a tela, uma janela ou o som de um app: {}.", crate::platform::SOON_MAC.to_lowercase()));
+                    }
                     out.send(Ev::Sources { windows, monitors, error });
                 });
             }
@@ -1006,10 +1023,15 @@ impl Controller {
             Cmd::ListCameras => {
                 let out = self.out.clone();
                 tokio::task::spawn_blocking(move || match vox_capture::list_cameras() {
-                    Ok(list) => out.send(Ev::Cameras { list, error: None }),
+                    Ok(list) => {
+                        crate::platform::note_camera(false);
+                        out.send(Ev::Cameras { list, error: None })
+                    }
                     Err(e) => {
                         warn!(error = %e, "cannot list cameras");
-                        out.send(Ev::Cameras { list: Vec::new(), error: Some("Não foi possível listar as câmeras.".into()) })
+                        crate::platform::note_camera(crate::platform::is_unsupported(&e));
+                        let error = if crate::platform::camera_soon() { format!("Câmera: {}.", crate::platform::SOON_MAC.to_lowercase()) } else { "Não foi possível listar as câmeras.".into() };
+                        out.send(Ev::Cameras { list: Vec::new(), error: Some(error) })
                     }
                 });
             }

@@ -11,6 +11,8 @@ USAGE: concord-server [OPTIONS]
   --livekit-bin <PATH>  livekit-server executable (default ./bin/livekit-server.exe)
   --no-livekit          do not start LiveKit (tests)
   --console             also log to stderr
+  --no-diag             skip the connection diagnostics shown after start (IPv4 / IPv6, router,
+                        Windows Firewall)
   --log-dir <DIR>       log directory (default %LOCALAPPDATA%\\concord\\logs\\hub)
   --reset-password <NAME>
                         forget NAME's personal password and print a one-time code to log in
@@ -27,6 +29,7 @@ struct Cli {
     log_dir: Option<PathBuf>,
     reset_password: Option<String>,
     reset_owner: bool,
+    no_diag: bool,
 }
 
 fn parse_args() -> Result<Cli> {
@@ -41,6 +44,7 @@ fn parse_args() -> Result<Cli> {
         log_dir: None,
         reset_password: None,
         reset_owner: false,
+        no_diag: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -53,6 +57,7 @@ fn parse_args() -> Result<Cli> {
             "--reset-owner" => cli.reset_owner = true,
             "--no-livekit" => cli.opts.no_livekit = true,
             "--console" => cli.console = true,
+            "--no-diag" => cli.no_diag = true,
             "-h" | "--help" => {
                 print!("{HELP}");
                 std::process::exit(0);
@@ -78,12 +83,25 @@ fn main() -> Result<()> {
     }
     let _log = vox_log::init("hub", cli.log_dir.as_deref(), cli.console);
     let rt = voxhub_server::runtime()?;
-    let result = rt.block_on(serve_until(cli.opts, |_| async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::error!("cannot wait for ctrl+c: {e}");
-            return;
+    // v1.0.2: what the connection diagnostics check (in the background, after the start).
+    let livekit_exe = (!cli.opts.no_livekit).then(|| std::path::absolute(&cli.opts.livekit_bin).unwrap_or_else(|_| cli.opts.livekit_bin.clone()));
+    let no_diag = cli.no_diag;
+    let result = rt.block_on(serve_until(cli.opts, move |server| {
+        if !no_diag {
+            let lk = &server.config.livekit;
+            let hub_port = server.addr.port();
+            voxhub_server::diag::spawn(voxhub_server::diag::Input {
+                addrs: server.addrs.clone(),
+                dual_stack: server.dual_stack,
+                hub_port,
+                signal_port: lk.signal_port,
+                rtc_tcp_port: lk.rtc_tcp_port,
+                rtc_udp_port: lk.rtc_udp_port,
+                server_exe: std::env::current_exe().ok(),
+                livekit_exe,
+            });
         }
-        tracing::info!("ctrl+c received, shutting down");
+        wait_ctrl_c()
     }));
     if let Err(e) = &result {
         tracing::error!("fatal: {e:#}");
@@ -91,4 +109,12 @@ fn main() -> Result<()> {
     }
     tracing::info!("bye");
     result
+}
+
+async fn wait_ctrl_c() {
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        tracing::error!("cannot wait for ctrl+c: {e}");
+        return;
+    }
+    tracing::info!("ctrl+c received, shutting down");
 }

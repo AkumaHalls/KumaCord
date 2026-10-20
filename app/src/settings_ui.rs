@@ -407,6 +407,20 @@ impl App {
 
     fn ptt_section(&mut self, ui: &mut egui::Ui, ch: &mut Changes) {
         forms::group(ui, "Push-to-talk");
+        if !crate::platform::global_ptt() {
+            // macOS: a key that works in any app needs the Accessibility permission (phase M4).
+            row(ui, "Push-to-talk", |ui| {
+                let mut off = false;
+                ui.add_enabled(false, egui::Checkbox::new(&mut off, "Usar push-to-talk (tecla global)")).on_disabled_hover_text(crate::platform::SOON_MAC);
+            });
+            note(ui, format!("Push-to-talk: {}. Use o botão do microfone ou a detecção de voz.", crate::platform::SOON_MAC.to_lowercase()), true);
+            if self.settings.ptt_enabled {
+                // (A file from Windows: without the key the microphone would never open.)
+                self.settings.ptt_enabled = false;
+                ch.ptt = true;
+            }
+            return;
+        }
         row(ui, "Push-to-talk", |ui| {
             ch.ptt |= ui.checkbox(&mut self.settings.ptt_enabled, "Usar push-to-talk (tecla global)").changed();
         });
@@ -614,6 +628,8 @@ fn open_folder(dir: &std::path::Path) {
         return;
     }
     let _ = std::fs::create_dir_all(dir);
+    #[cfg(target_os = "macos")]
+    crate::platform::open(dir.as_os_str());
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;

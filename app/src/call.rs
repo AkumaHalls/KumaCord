@@ -211,6 +211,7 @@ pub struct VideoUi {
     pub clips: HashMap<String, Clip>,
     /// Placed rects (physical pixels) by stream, for logs and the autotest.
     pub placed: HashMap<String, (i32, i32, i32, i32)>,
+    #[cfg_attr(not(windows), allow(dead_code))]
     host_failed: bool,
     /// Watched streams drawn in the strip under the pinned cards this frame (drawn at
     /// [`STRIP_FPS`]).
@@ -221,6 +222,20 @@ pub struct VideoUi {
     pub visible_sent: HashMap<String, bool>,
     /// Watched streams silenced because others are pinned.
     pub focus_muted_sent: HashSet<String>,
+    /// macOS: the videos are textures the app draws itself (`video_gl.rs`).
+    #[cfg(target_os = "macos")]
+    pub mac: crate::video_gl::MacVideo,
+}
+
+impl VideoUi {
+    /// The video `key` goes in `rect` this frame, drawn with `painter` (its layer and clip).
+    pub fn put(&mut self, key: String, rect: Rect, painter: &egui::Painter) {
+        #[cfg(target_os = "macos")]
+        self.mac.paint_at.insert(key.clone(), (painter.layer_id(), painter.clip_rect()));
+        #[cfg(not(target_os = "macos"))]
+        let _ = painter;
+        self.want.insert(key, rect);
+    }
 }
 
 /// Points -> physical pixels of the client area (rounded edges, so neighbours never overlap).
@@ -558,7 +573,7 @@ impl App {
         let resp = ui.interact(rect, egui::Id::new("fullscreen_video"), Sense::click());
         exit |= resp.double_clicked();
         if let Some(k) = key {
-            self.video.want.insert(k, rect);
+            self.video.put(k, rect, ui.painter());
         }
         if exit {
             self.set_fullscreen(&ctx, false);
@@ -884,7 +899,7 @@ impl App {
             Some(vkey) => {
                 let body = video_body(rect, small);
                 painter.rect_filled(body, radius::ROW, Color32::BLACK);
-                self.video.want.insert(vkey, body);
+                self.video.put(vkey, body, painter);
                 placed = Some(body);
                 let (band, at) = tag_band(rect, small);
                 let actions = if me && !small && rect.width() >= 280.0 { 1 } else { 0 };
@@ -982,7 +997,7 @@ impl App {
             // produced while this card is on screen.
             let body = video_body(rect, small);
             painter.rect_filled(body, radius::ROW, Color32::BLACK);
-            self.video.want.insert(vox_client_core::golive::SELF_SHARE_KEY.to_string(), body);
+            self.video.put(vox_client_core::golive::SELF_SHARE_KEY.to_string(), body, painter);
             placed = Some(body);
             if base.on_hover_text(card_hover(pinned, false)).clicked() {
                 self.toggle_pin(tile.key);
@@ -1020,7 +1035,7 @@ impl App {
         } else if watching {
             let body = video_body(rect, small);
             painter.rect_filled(body, radius::ROW, Color32::BLACK);
-            self.video.want.insert(key.clone(), body);
+            self.video.put(key.clone(), body, painter);
             placed = Some(body);
             let resp = base.on_hover_text(card_hover(pinned, true));
             if resp.double_clicked() {
@@ -1168,11 +1183,14 @@ impl App {
             let layers = &self.video.want_layer;
             self.video.want.retain(|k, _| layers.contains_key(k));
         }
-        let clips = self.video_clips(ctx);
+        // What egui draws over each video. macOS: egui draws the videos itself, under its own
+        // popups, so nothing is cut out or hidden (the overlays are only known: logs, autotests).
+        let overlays = self.video_clips(ctx);
+        let clips = if cfg!(target_os = "macos") { HashMap::new() } else { overlays.clone() };
         // Only a video covered entirely is hidden (and the preview of my own live stops).
         let hidden: Vec<String> = clips.iter().filter(|(_, c)| **c == Clip::Hidden).map(|(k, _)| k.clone()).collect();
         self.sync_share_preview(ctx, &hidden);
-        self.note_clips(&clips);
+        self.note_clips(&overlays);
         self.video.covered = !clips.is_empty();
         if self.video.covered {
             // Re-check soon: the overlay may close without any further input.
@@ -1186,9 +1204,11 @@ impl App {
         self.sync_focus_audio();
         #[cfg(windows)]
         self.place_hosts(ctx, &keys, &clips);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        self.paint_videos(ctx, &keys);
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = keys;
-        self.video.clips = clips;
+        self.video.clips = overlays;
         self.video.want.clear();
         self.video.want_layer.clear();
         self.video.strip.clear();

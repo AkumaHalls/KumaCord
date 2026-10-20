@@ -214,20 +214,36 @@ pub fn capture_error(what: &str, e: vox_capture::CaptureError) -> anyhow::Error 
         E::NotFound(m) => format!("{what}: target not found ({m})"),
         E::Unsupported(m) => format!("{what}: not supported on this system ({m})"),
         E::Stopped(m) => format!("{what}: capture stopped ({m})"),
-        E::Os(m) => format!("{what}: Windows API error ({m})"),
+        E::Os(m) => format!("{what}: {} ({m})", if cfg!(windows) { "Windows API error" } else { "system error" }),
     };
     warn!(op = what, error = %e, "capture error");
     anyhow::Error::new(CaptureFailure { error: e, msg })
 }
 
+/// macOS: what to do when Screen Recording (which also covers an app's sound) is off for us.
+pub const SCREEN_PERMISSION_PT: &str = "O macOS não deixou o concord gravar a tela. Ligue o concord em Ajustes do Sistema > Privacidade e Segurança > Gravação de Tela e Áudio do Sistema e abra o concord de novo.";
+
+/// The capture failed because Screen Recording is off (macOS only; never on Windows).
+fn screen_permission_refused(e: &anyhow::Error) -> bool {
+    cfg!(target_os = "macos")
+        && matches!(e.downcast_ref::<CaptureFailure>().map(|f| &f.error), Some(vox_capture::CaptureError::Os(m)) if m.contains("Screen Recording permission"))
+}
+
+/// "Windows" in the Portuguese error texts, "macOS" on the Mac.
+const OS_NAME: &str = if cfg!(target_os = "macos") { "macOS" } else { "Windows" };
+
 /// Portuguese explanation of a failed audio capture start (audio-only shares).
 pub fn audio_failure_pt(e: &anyhow::Error) -> String {
     use vox_capture::CaptureError as E;
+    if screen_permission_refused(e) {
+        return SCREEN_PERMISSION_PT.into();
+    }
     match e.downcast_ref::<CaptureFailure>().map(|f| &f.error) {
         Some(E::NotFound(_)) => "Não foi possível capturar o som: o app não existe mais (foi fechado?).".into(),
+        Some(E::Unsupported(_)) if cfg!(target_os = "macos") => "Este macOS não deixa capturar o som de um app só (precisa do macOS 13 ou mais novo).".into(),
         Some(E::Unsupported(_)) => "Este Windows não deixa capturar o som de um app só (precisa do Windows 10 versão 2004 ou mais novo).".into(),
         Some(E::Stopped(_)) => "A captura de som parou assim que começou.".into(),
-        Some(E::Os(m)) => format!("Erro do Windows ao capturar o som: {m}"),
+        Some(E::Os(m)) => format!("Erro do {OS_NAME} ao capturar o som: {m}"),
         None => format!("Não foi possível iniciar a transmissão de áudio: {e:#}"),
     }
 }
@@ -235,11 +251,14 @@ pub fn audio_failure_pt(e: &anyhow::Error) -> String {
 /// Portuguese explanation of a failed capture start (for [`ActiveShare::switch_source`]).
 pub fn capture_failure_pt(e: &anyhow::Error) -> String {
     use vox_capture::CaptureError as E;
+    if screen_permission_refused(e) {
+        return SCREEN_PERMISSION_PT.into();
+    }
     match e.downcast_ref::<CaptureFailure>().map(|f| &f.error) {
         Some(E::NotFound(_)) => "A janela ou tela escolhida não existe mais (foi fechada?).".into(),
         Some(E::Unsupported(_)) => "Esta janela ou tela não pode ser capturada neste computador.".into(),
         Some(E::Stopped(_)) => "A captura parou assim que começou.".into(),
-        Some(E::Os(m)) => format!("Erro do Windows ao iniciar a captura: {m}"),
+        Some(E::Os(m)) => format!("Erro do {OS_NAME} ao iniciar a captura: {m}"),
         None => format!("{e:#}"),
     }
 }
@@ -471,9 +490,17 @@ impl EncStage {
 
 /// One raw frame, ready for the SDK (kept by a standby gate).
 pub(crate) struct RawFrame {
-    frame: VideoFrame<NV12Buffer>,
+    frame: RawBuffer,
     width: u32,
     height: u32,
+}
+
+/// The picture of a raw frame: our own NV12 copy, or (macOS) the capture's IOSurface-backed
+/// `CVPixelBuffer` itself, which libwebrtc's VideoToolbox encoder takes without a copy.
+pub(crate) enum RawBuffer {
+    Nv12(VideoFrame<NV12Buffer>),
+    #[cfg(target_os = "macos")]
+    Native(VideoFrame<livekit::webrtc::video_frame::native::NativeBuffer>),
 }
 
 /// The raw path's frame sink behind a gate.
@@ -495,7 +522,11 @@ impl RawStage {
     }
 
     fn submit(&mut self, o: RawFrame) {
-        self.source.capture_frame(&o.frame);
+        let _ = match &o.frame {
+            RawBuffer::Nv12(f) => self.source.capture_frame(f),
+            #[cfg(target_os = "macos")]
+            RawBuffer::Native(f) => self.source.capture_frame(f),
+        };
         self.counters.frame(o.width, o.height);
         self.stage.note_pass();
     }
@@ -598,20 +629,20 @@ struct VideoPublication {
     publication: LocalTrackPublication,
     fps: u32,
     max_bitrate: u64,
+    /// libwebrtc's encoder for this sender (`PreEncoded` on the encoded path).
+    encoder: VideoEncoderBackend,
 }
 
 impl VideoPublication {
-    async fn publish(room: &Room, path: VideoPath, source: NativeVideoSource, width: u32, height: u32, fps: u32, max_bitrate: u64) -> Result<Self> {
+    #[allow(clippy::too_many_arguments)]
+    async fn publish(room: &Room, path: VideoPath, source: NativeVideoSource, width: u32, height: u32, fps: u32, max_bitrate: u64, encoder: VideoEncoderBackend) -> Result<Self> {
         let track = LocalVideoTrack::create_video_track("screenshare", RtcVideoSource::Native(source.clone()));
         let publish = TrackPublishOptions {
             source: TrackSource::Screenshare,
             video_codec: VideoCodec::H264,
             simulcast: false,
             video_encoding: Some(VideoEncoding { max_bitrate, max_framerate: fps as f64 }),
-            video_encoder: match path {
-                VideoPath::Raw => VideoEncoderBackend::Auto,
-                VideoPath::Encoded => VideoEncoderBackend::PreEncoded,
-            },
+            video_encoder: encoder,
             ..Default::default()
         };
         let publication = room
@@ -629,11 +660,11 @@ impl VideoPublication {
             "screenshare video published (host upload: ~{:.1} Mbps per viewer at full quality)",
             max_bitrate as f64 / 1e6
         );
-        Ok(Self { path, source, track, publication, fps, max_bitrate })
+        Ok(Self { path, source, track, publication, fps, max_bitrate, encoder })
     }
 
-    fn compatible(&self, fps: u32, max_bitrate: u64) -> bool {
-        self.fps == fps && self.max_bitrate == max_bitrate
+    fn compatible(&self, fps: u32, max_bitrate: u64, encoder: VideoEncoderBackend) -> bool {
+        self.fps == fps && self.max_bitrate == max_bitrate && self.encoder == encoder
     }
 
     async fn unpublish(self, room: &Room) {
@@ -752,9 +783,9 @@ impl SharePublication {
 
     /// Drop the path's publication if its encoding settings don't match (the old sender stays
     /// allocated until leave: SDK limitation, see the type docs).
-    async fn drop_incompatible(&mut self, room: &Room, path: VideoPath, fps: u32, max_bitrate: u64) {
+    async fn drop_incompatible(&mut self, room: &Room, path: VideoPath, fps: u32, max_bitrate: u64, encoder: VideoEncoderBackend) {
         let slot = self.slot(path);
-        if slot.as_ref().is_some_and(|v| !v.compatible(fps, max_bitrate)) {
+        if slot.as_ref().is_some_and(|v| !v.compatible(fps, max_bitrate, encoder)) {
             info!(?path, fps, max_kbps = max_bitrate / 1000, "share settings changed; republishing screenshare track");
             if let Some(old) = slot.take() {
                 old.unpublish(room).await;
@@ -1038,11 +1069,11 @@ impl ActiveShare {
                     let plan = encoders::plan(opts.encoder);
                     info!(plan = %encoders::describe(&plan), "share encoder plan");
                     software = plan.iter().find(|a| a.is_software()).cloned();
-                    plan.into_iter().filter(|a| !a.is_software()).map(Some).collect()
+                    plan.into_iter().filter(|a| !a.is_software() && !encoders::in_libwebrtc(a)).map(Some).collect()
                 }
             };
             for attempt in attempts {
-                pubs.drop_incompatible(room, VideoPath::Encoded, fps, max_bitrate).await;
+                pubs.drop_incompatible(room, VideoPath::Encoded, fps, max_bitrate, VideoEncoderBackend::PreEncoded).await;
                 // Reuse the session's encoded source, or make a new one (published below, after
                 // the encoder started, so a failed start never shows viewers a dead track).
                 let video_source = match &pubs.encoded {
@@ -1059,7 +1090,7 @@ impl ActiveShare {
                         if pubs.encoded.is_none() {
                             // The encoder may already be producing; frames pushed before the track
                             // is published are dropped and the first subscriber's PLI gets an IDR.
-                            let v = VideoPublication::publish(room, VideoPath::Encoded, video_source, width, height, fps, max_bitrate).await?;
+                            let v = VideoPublication::publish(room, VideoPath::Encoded, video_source, width, height, fps, max_bitrate, VideoEncoderBackend::PreEncoded).await?;
                             pubs.encoded = Some(v);
                         }
                         // Per-frame "WebRTC encoded it" events (see `DropTracker`). This installs a
@@ -1078,16 +1109,21 @@ impl ActiveShare {
             }
         }
 
-        pubs.drop_incompatible(room, VideoPath::Raw, fps, max_bitrate).await;
+        // macOS: the plan's hardware encoder (VideoToolbox) runs inside libwebrtc, on this path.
+        let (encoder, hw_attempt) = encoders::raw_encoder(opts.encoder);
+        pubs.drop_incompatible(room, VideoPath::Raw, fps, max_bitrate, encoder).await;
         if pubs.raw.is_none() {
             let video_source = NativeVideoSource::new(VideoResolution { width, height }, true);
-            pubs.raw = Some(VideoPublication::publish(room, VideoPath::Raw, video_source, width, height, fps, max_bitrate).await?);
+            pubs.raw = Some(VideoPublication::publish(room, VideoPath::Raw, video_source, width, height, fps, max_bitrate, encoder).await?);
         }
         let video_source = pubs.raw.as_ref().expect("published above").source.clone();
         let producer = start_raw(source, opts, width, height, video_source, counters.clone(), false, preview)?;
-        info!(reason = raw_reason(source, opts.encoder), "share path: raw frames + software H.264 (OpenH264)");
+        match &hw_attempt {
+            Some(a) => info!(encoder = %a.label, "share path: raw frames + libwebrtc's hardware H.264 (VideoToolbox, frames passed without a copy)"),
+            None => info!(reason = raw_reason(source, opts.encoder), "share path: raw frames + software H.264 (OpenH264)"),
+        }
         let capture = matches!(source, ShareSource::Window(_) | ShareSource::Monitor(_));
-        let attempt = software.or_else(|| capture.then(|| encoders::plan(EncoderChoice::Software).remove(0)));
+        let attempt = hw_attempt.or(software).or_else(|| capture.then(|| encoders::plan(EncoderChoice::Software).remove(0)));
         Ok((VideoPath::Raw, producer, counters, None, attempt))
     }
 
@@ -1569,6 +1605,8 @@ fn start_encoded(
                 EncoderBackend::Nvenc => "nvenc",
                 EncoderBackend::MediaFoundation => "mf",
                 EncoderBackend::Auto => "auto",
+                #[cfg(target_os = "macos")]
+                EncoderBackend::VideoToolbox => "videotoolbox",
             };
             info!(?target, backend = name, max_fps = opts.fps, max_w = opts.width, max_h = opts.height, start_kbps = max_bitrate / 1000, degradation = ?opts.degradation, standby, "hardware-encoded capture started");
             Ok((VideoProducer::Encoded(cap, stage, tap), name.to_string()))
@@ -2111,11 +2149,20 @@ fn start_raw(
 }
 
 /// Copy one captured NV12 frame into a WebRTC NV12 buffer (two plane memcpys, no conversion;
-/// libwebrtc converts to I420 only if the encoder needs it).
+/// libwebrtc converts to I420 only if the encoder needs it). On macOS a captured frame is not
+/// copied at all: its pixel buffer goes to libwebrtc as is.
 fn build_nv12_frame(counters: &StreamCounters, f: &Nv12Frame<'_>) -> Option<RawFrame> {
     let (w, h) = (f.width, f.height);
     if w < 2 || h < 2 {
         return None;
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(pb) = vox_capture::retained_pixel_buffer(f) {
+        // SAFETY: a CVPixelBuffer retained once for us; `from_cv_pixel_buffer` takes that
+        // reference over (libwebrtc releases it with the frame).
+        let buffer = unsafe { livekit::webrtc::video_frame::native::NativeBuffer::from_cv_pixel_buffer(pb.as_ptr()) };
+        let frame = VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: f.timestamp_us, frame_metadata: None, buffer };
+        return Some(RawFrame { frame: RawBuffer::Native(frame), width: w, height: h });
     }
     let mut buf = NV12Buffer::new(w, h);
     let (dsy, dsuv) = buf.strides();
@@ -2128,7 +2175,7 @@ fn build_nv12_frame(counters: &StreamCounters, f: &Nv12Frame<'_>) -> Option<RawF
         return None;
     }
     let frame = VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: f.timestamp_us, frame_metadata: None, buffer: buf };
-    Some(RawFrame { frame, width: w, height: h })
+    Some(RawFrame { frame: RawBuffer::Nv12(frame), width: w, height: h })
 }
 
 pub(crate) fn copy_plane(src: &[u8], src_stride: usize, dst: &mut [u8], dst_stride: usize, row_bytes: usize, rows: usize) -> bool {

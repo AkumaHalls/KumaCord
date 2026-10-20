@@ -57,7 +57,8 @@ impl Auto {
             return Err(format!("{what}: the camera video is not clipped around the overlay (clip={clip:?})"));
         };
         let Some((_, _, w, h)) = placed else { return Err(format!("{what}: the camera video is not placed")) };
-        if !window.is_some_and(|(shown, region)| shown && region.is_some()) {
+        // (macOS: no video window; egui draws the overlay over the video it drew itself.)
+        if cfg!(windows) && !window.is_some_and(|(shown, region)| shown && region.is_some()) {
             return Err(format!("{what}: the video window is not shown with a region: {window:?}"));
         }
         // A point under the overlay is cut out; a point of what is left still shows.

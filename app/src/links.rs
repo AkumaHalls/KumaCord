@@ -138,6 +138,8 @@ pub fn open_url(url: &str) {
         tracing::info!(url, "background test mode: link not opened");
         return;
     }
+    #[cfg(target_os = "macos")]
+    crate::platform::open(std::ffi::OsStr::new(url));
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::Shell::ShellExecuteW;

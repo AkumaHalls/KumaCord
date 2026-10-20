@@ -123,6 +123,11 @@ pub enum EncoderKind {
     MediaFoundation,
     /// OpenH264 inside libwebrtc (the raw-frame path); not a vox-capture encoder.
     Software,
+    /// macOS: Apple's hardware encoder, inside libwebrtc on the raw path (see
+    /// [`EncoderBackend::VideoToolbox`]).
+    #[cfg(target_os = "macos")]
+    #[serde(rename = "videotoolbox")]
+    VideoToolbox,
 }
 
 impl EncoderKind {
@@ -131,6 +136,8 @@ impl EncoderKind {
             EncoderKind::Nvenc => "nvenc",
             EncoderKind::MediaFoundation => "mf",
             EncoderKind::Software => "software",
+            #[cfg(target_os = "macos")]
+            EncoderKind::VideoToolbox => "videotoolbox",
         }
     }
 }
@@ -162,6 +169,8 @@ impl EncoderCandidate {
             EncoderKind::Nvenc => Some(EncoderBackend::Nvenc),
             EncoderKind::MediaFoundation => Some(EncoderBackend::MediaFoundation),
             EncoderKind::Software => None,
+            #[cfg(target_os = "macos")]
+            EncoderKind::VideoToolbox => Some(EncoderBackend::VideoToolbox),
         }
     }
 
@@ -175,6 +184,8 @@ impl EncoderCandidate {
         let Some(g) = &self.gpu else { return 4 };
         match (self.kind, g.integrated, g.vendor()) {
             (EncoderKind::Software, ..) => 4,
+            #[cfg(target_os = "macos")]
+            (EncoderKind::VideoToolbox, ..) => 0,
             (EncoderKind::Nvenc, false, _) => 0,
             (_, false, _) => 1,
             (_, true, GpuVendor::Amd) => 3,
@@ -187,6 +198,10 @@ impl EncoderCandidate {
     /// offers both NVENC and Media Foundation.
     pub fn label_pt(&self, all: &[EncoderCandidate]) -> String {
         let Some(g) = &self.gpu else { return "Processador (sem aceleração)".into() };
+        #[cfg(target_os = "macos")]
+        if self.kind == EncoderKind::VideoToolbox {
+            return "Apple VideoToolbox".into();
+        }
         let name = g.name.trim();
         let twin = all.iter().any(|o| o.id != self.id && o.gpu.as_ref().is_some_and(|og| og.key() == g.key()));
         let same_name = all

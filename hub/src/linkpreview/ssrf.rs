@@ -191,8 +191,49 @@ pub fn interface_addresses() -> Vec<(IpAddr, u8)> {
     out
 }
 
-/// Every address of this machine's network interfaces (not on Windows: none known).
-#[cfg(not(windows))]
+/// Every address of this machine's network interfaces that are up, with its on-link prefix
+/// length (from the netmask). macOS / Unix: `getifaddrs`. Before v1.1 this was empty off Windows,
+/// so an app on a Mac never knew it was on the host's LAN and skipped an invite's LAN address.
+#[cfg(unix)]
+pub fn interface_addresses() -> Vec<(IpAddr, u8)> {
+    let mut out = Vec::new();
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills `list` with a linked list we only read and then free once.
+    unsafe {
+        if libc::getifaddrs(&mut list) != 0 {
+            return out;
+        }
+        let mut it = list;
+        while !it.is_null() {
+            let ifa = &*it;
+            it = ifa.ifa_next;
+            if ifa.ifa_addr.is_null() || ifa.ifa_flags & (libc::IFF_UP as libc::c_uint) == 0 {
+                continue;
+            }
+            let ones = |mask: &[u8]| mask.iter().map(|b| b.count_ones()).sum::<u32>() as u8;
+            match i32::from((*ifa.ifa_addr).sa_family) {
+                libc::AF_INET => {
+                    let a = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                    let ip = Ipv4Addr::from(u32::from_be(a.sin_addr.s_addr));
+                    let prefix = if ifa.ifa_netmask.is_null() { 32 } else { ones(&(*(ifa.ifa_netmask as *const libc::sockaddr_in)).sin_addr.s_addr.to_ne_bytes()) };
+                    out.push((IpAddr::V4(ip), prefix));
+                }
+                libc::AF_INET6 => {
+                    let a = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
+                    let ip = Ipv6Addr::from(a.sin6_addr.s6_addr);
+                    let prefix = if ifa.ifa_netmask.is_null() { 128 } else { ones(&(*(ifa.ifa_netmask as *const libc::sockaddr_in6)).sin6_addr.s6_addr) };
+                    out.push((IpAddr::V6(ip), prefix));
+                }
+                _ => {}
+            }
+        }
+        libc::freeifaddrs(list);
+    }
+    out
+}
+
+/// Every address of this machine's network interfaces (elsewhere: none known).
+#[cfg(not(any(windows, unix)))]
 pub fn interface_addresses() -> Vec<(IpAddr, u8)> {
     Vec::new()
 }
@@ -424,13 +465,14 @@ mod tests {
         assert!(!p.ip_ok(ip("2a01:4f8:1:2::10")));
     }
 
-    /// The real interface list: it has this machine's loopback, and every public address it has
-    /// (a global IPv6 address on a home network, say) ends up refused.
-    #[cfg(windows)]
+    /// The real interface list (Windows and macOS): it has this machine's loopback with its
+    /// prefix, and every public address it has (a global IPv6 address on a home network, say) ends
+    /// up refused.
+    #[cfg(any(windows, unix))]
     #[test]
     fn this_machines_addresses_are_found_and_refused() {
         let all = interface_addresses();
-        assert!(all.iter().any(|(a, _)| a.is_loopback()), "{all:?}");
+        assert!(all.iter().any(|(a, p)| a.is_loopback() && (*p == 8 || *p == 128)), "{all:?}");
         let p = Policy::new(vec![]);
         p.set_local_networks(local_networks());
         for (a, _) in all.iter().filter(|(a, _)| is_public_ip(*a)) {

@@ -300,7 +300,7 @@ pub fn write_image(owner: isize, img: &RgbaImage) -> Result<(), String> {
     #[cfg(not(windows))]
     {
         let _ = (owner, dib, png);
-        Err("Copiar só está disponível no Windows.".into())
+        Err(format!("Copiar imagem: {}.", crate::platform::SOON_MAC.to_lowercase()))
     }
 }
 

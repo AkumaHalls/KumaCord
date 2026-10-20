@@ -521,7 +521,7 @@ async fn block(State(s): State<AppState>, AuthUser(me): AuthUser, Path(other): P
 
 /// The LiveKit address for a call token (the same host the client used for the hub).
 pub fn livekit_url(s: &AppState, headers: &HeaderMap) -> String {
-    format!("ws://{}:{}", crate::api::livekit_host(headers, &s.cfg.public_host), s.cfg.livekit.signal_port)
+    crate::api::livekit_url(headers, &s.cfg)
 }
 
 #[cfg(test)]

@@ -1,0 +1,71 @@
+CONCORD - SERVIDOR DEDICADO (v1.0.2)
+====================================
+
+Dica: o jeito mais fácil de hospedar é pelo próprio app (concord.exe >
+"Criar / abrir servidor"). Este pacote é para quem quer um servidor
+separado, que fica ligado sem o app aberto.
+
+PASSO A PASSO
+1. Extraia esta pasta para um lugar fixo (ex.: Documentos\concord-servidor).
+   Não rode de dentro do .zip.
+2. Dê dois cliques em baixar-livekit.bat. Ele baixa a peça de voz
+   (LiveKit, do site oficial) e confere se o arquivo é o original.
+3. Dê dois cliques em liberar-firewall.bat e clique em "Sim" quando o
+   Windows pedir permissão de administrador. Ele libera o servidor e a
+   voz no Firewall do Windows em TODAS as redes (Privada e Pública), em
+   IPv4 e IPv6. Sem isso, quem é de fora não consegue entrar.
+   (Se o Windows ainda perguntar sobre o Firewall ao ligar o servidor,
+   marque também "Redes públicas" e clique em "Permitir".)
+4. Dê dois cliques em iniciar-servidor.bat.
+   - Na primeira vez ele cria a pasta "data" com o arquivo
+     data\config.toml (com chaves secretas geradas na hora).
+5. Feche o servidor (Ctrl+C), abra data\config.toml no Bloco de Notas e
+   coloque uma senha forte em server_password = "...". Salve e ligue de
+   novo pelo iniciar-servidor.bat.
+6. Abra o concord.exe NESTE MESMO PC e entre em: 127.0.0.1
+   Quem entra primeiro por este PC vira o Dono do servidor (o app pede
+   para você criar uma senha pessoal).
+7. Para os amigos entrarem pela internet, veja o DIAGNÓSTICO que o
+   servidor mostra ao ligar (abaixo) e escolha:
+   - IPv6 (o mais fácil, se a sua internet tiver): o servidor já escuta
+     em IPv6 e os convites criados nele levam o endereço IPv6 do PC.
+     Em geral não é preciso abrir portas; alguns roteadores bloqueiam
+     IPv6 vindo de fora: procure "firewall IPv6" nas configurações dele.
+   - Uma VPN como Tailscale ou ZeroTier (a mais segura: ninguém precisa
+     abrir portas, e funciona mesmo com CGNAT);
+   - ou abrir no roteador as portas TCP 7890, 7880, 7881 e UDP 7882
+     apontando para este PC (não funciona se a operadora usar CGNAT).
+   Depois, no app, use "Convidar" para gerar um código e mande para eles.
+
+DIAGNÓSTICO (novo na v1.0.2)
+Alguns segundos depois de ligar, a janela do servidor mostra:
+- onde ele escuta (IPv4 e IPv6);
+- o IPv6 público deste PC, se houver;
+- o IPv4 público e se a internet está atrás de CGNAT;
+- se o Firewall do Windows libera o servidor e a voz na rede em uso, e
+  se essa rede está marcada como Pública;
+- o que fazer ("rode liberar-firewall.bat", "use o IPv6", "use uma VPN").
+O mesmo texto fica no log do servidor. Nada é mudado por ele: só confere.
+
+FIREWALL DO WINDOWS
+- liberar-firewall.bat cria 3 regras chamadas "concord servidor (...)",
+  só para os programas desta pasta (bin\concord-server.exe e
+  bin\livekit-server.exe) e só nas portas do servidor (lidas do
+  data\config.toml). Rodar de novo substitui as regras.
+- Se o próprio Windows tiver criado um BLOQUEIO para esses programas (por
+  exemplo, quando a pergunta dele foi cancelada), o liberar-firewall.bat
+  desliga esse bloqueio (não apaga): um bloqueio vence qualquer liberação.
+- remover-firewall.bat apaga essas regras e religa esses bloqueios.
+- Para ver o que seria feito sem mudar nada: abra um Prompt de Comando
+  nesta pasta e rode "liberar-firewall.bat /teste".
+
+IPv4 SÓ (como antes da v1.0.2)
+O servidor escuta em IPv4 e IPv6 (bind = "[::]:7890" no config.toml;
+um config antigo com "0.0.0.0:7890" também passa a escutar nos dois).
+Para voltar a só IPv4, acrescente esta linha no data\config.toml:
+   ipv6 = false
+
+IMPORTANTE
+- A pasta "data" é secreta: ela tem a senha do servidor, as chaves e o
+  banco de dados com as mensagens. Nunca envie essa pasta para ninguém.
+- A conexão ainda não é criptografada. Leia o SECURITY.md do repositório.

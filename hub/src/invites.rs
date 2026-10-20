@@ -285,7 +285,9 @@ pub async fn create(State(s): State<AppState>, me: Authed, headers: HeaderMap, b
         .ok_or_else(|| ApiErr::new(StatusCode::CONFLICT, "too many active invites"))?;
     let detail = format!("#{} {} {}", invite.id, req.expires_secs.map_or("sem prazo".to_string(), |e| format!("{e}s")), max.map_or("ilimitado".to_string(), |m| format!("{m}x")));
     audit(&s, Some(by), AUDIT_INVITE_CREATE, None, detail).await;
-    Ok(Json(InviteCreated { invite, token: hex, hints: hints(&s, &headers) }))
+    // v1.0.2: with no public address of its own, the hub's global IPv6 (`ipv6.rs`).
+    let hints = crate::ipv6::with_ipv6(hints(&s, &headers), crate::listen::plan(&s.cfg.bind, s.cfg.ipv6).has_ipv6(), crate::ipv6::stable_ipv6());
+    Ok(Json(InviteCreated { invite, token: hex, hints }))
 }
 
 /// `GET /api/invites`

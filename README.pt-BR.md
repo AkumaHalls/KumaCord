@@ -53,7 +53,9 @@ App nativo em Rust, sem Electron e sem navegador embutido; o vídeo é codificad
 
 ## Baixar
 
-Na página de [**Releases**](../../releases), baixe o **`concord-v1.0.1-PUBLICO.zip`**, extraia a pasta (não rode de dentro do .zip) e abra o `concord.exe`.
+Na página de [**Releases**](../../releases), baixe o **`concord-v1.0.2-PUBLICO.zip`**, extraia a pasta (não rode de dentro do .zip) e abra o `concord.exe`.
+
+**No Mac** (Apple Silicon, M1 ou mais novo, macOS 13+): baixe o **`concord-1.0.2-mac-arm64.zip`**, arraste o `concord.app` para Aplicativos e siga o `LEIA-ME-MAC.txt` (primeira abertura e permissões). No Mac já funcionam chat, voz, assistir e transmitir (tela, janela, áudio do app e câmera); ainda faltam o ícone na barra de menus, as notificações, o push-to-talk global e hospedar pelo app.
 
 O executável não é assinado digitalmente. Na primeira vez o Windows pode mostrar "O Windows protegeu o computador": clique em "Mais informações" e depois em "Executar assim mesmo". Baixe só deste repositório ou de quem hospeda o seu grupo.
 
@@ -119,4 +121,4 @@ Feito por Cezar Callado · cezar.callado@gmail.com
 
 ---
 
-**English summary:** concord (called voxhub before v1.0.1) is a lightweight, self-hosted Discord-like app for Windows, written in Rust, for small groups of friends. It has text channels, DMs, replies, mentions and reactions, voice rooms with AI noise suppression, cameras, and Go Live screen sharing with per-app audio and hardware encoding. It also has private channels, invite codes, a saved server list, and one-click hosting from the app (or the standalone `concord-server.exe`). The server runs on one friend's PC. There is no TLS yet, so prefer a VPN and read `SECURITY.md`. Download `concord-v1.0.1-PUBLICO.zip` from Releases. Code: MIT. The logo is not MIT-licensed (see `THIRD-PARTY-NOTICES.md`). Made by Cezar Callado.
+**English summary:** concord (called voxhub before v1.0.1) is a lightweight, self-hosted Discord-like app for Windows, written in Rust, for small groups of friends. It has text channels, DMs, replies, mentions and reactions, voice rooms with AI noise suppression, cameras, and Go Live screen sharing with per-app audio and hardware encoding. It also has private channels, invite codes, a saved server list, and one-click hosting from the app (or the standalone `concord-server.exe`). The server runs on one friend's PC. There is no TLS yet, so prefer a VPN and read `SECURITY.md`. Download `concord-v1.0.2-PUBLICO.zip` from Releases. Code: MIT. The logo is not MIT-licensed (see `THIRD-PARTY-NOTICES.md`). Made by Cezar Callado.

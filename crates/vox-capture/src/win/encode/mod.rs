@@ -37,6 +37,13 @@ use crate::{
 pub(crate) const VENDOR_NVIDIA: u32 = 0x10DE;
 const MIN_BITRATE: u32 = 100_000;
 pub(crate) const MAX_BITRATE: u32 = 80_000_000;
+/// How long the source must have been static before a pending keyframe request re-sends the last
+/// frame (a real frame arriving sooner answers it anyway).
+const REFRESH_ON_KEYFRAME_REQUEST: std::time::Duration = std::time::Duration::from_millis(100);
+/// A static source re-sends its last frame this often. WebRTC's pass-through encoder only hands
+/// over a viewer's keyframe request (PLI) while encoding a frame we pushed, so without frames a
+/// new viewer's request is never even seen. Costs a near-empty P-frame per period.
+const REFRESH_IDLE: std::time::Duration = std::time::Duration::from_millis(500);
 /// Frames smaller than this are not encoded (dropped): below every HW encoder's minimum.
 const MIN_ENCODE_W: u32 = 128;
 const MIN_ENCODE_H: u32 = 64;
@@ -216,6 +223,19 @@ impl Sink for EncoderSink {
 
     fn has_free(&self) -> bool {
         self.enc.ready()
+    }
+
+    fn refreshes(&self) -> bool {
+        true
+    }
+
+    /// Windows.Graphics.Capture delivers no frames while the target does not change, and WebRTC
+    /// only passes a viewer's keyframe request on while encoding a frame. So a viewer who starts
+    /// watching a static window got no picture until something on it changed (a black tile).
+    /// The capture loop re-sends the last frame instead: every [`REFRESH_IDLE`] (which carries
+    /// the request over), and soon after a request arrived (which `submit` turns into the IDR).
+    fn refresh_after(&self) -> Option<std::time::Duration> {
+        Some(if self.control.keyframe_requested() || self.kf.pending() { REFRESH_ON_KEYFRAME_REQUEST } else { REFRESH_IDLE })
     }
 
     fn submit(

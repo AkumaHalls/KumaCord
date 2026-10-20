@@ -266,8 +266,10 @@ impl Throttle {
     }
 }
 
+/// The throttle key of a peer address. v1.0.2: an IPv6 peer by its /64 network (one connection
+/// gets a whole /64), see [`crate::listen::peer_group`].
 pub fn ip_key(ip: std::net::IpAddr) -> String {
-    format!("ip:{ip}")
+    format!("ip:{}", crate::listen::peer_group(ip))
 }
 
 pub fn user_key(name: &str) -> String {
