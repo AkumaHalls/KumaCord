@@ -1,0 +1,21 @@
+# KumaCord — stack do servidor AkumaLabs (Portainer: Stacks > Add stack > Repository,
+# ou compose no host). Os arquivos do servidor ficam em ./data.
+services:
+  kumacord:
+    build: .
+    image: kumacord:latest
+    container_name: kumacord
+    restart: unless-stopped
+    # Rode como o dono da pasta ./data (o padrão 1000 serve para a maioria dos
+    # hosts; se o seu usuario for outro uid, exporte KUMACORD_UID/KUMACORD_GID
+    # ou coloque-os num arquivo .env ao lado deste compose).
+    user: "${KUMACORD_UID:-1000}:${KUMACORD_GID:-1000}"
+    ports:
+      - "7890:7890"       # hub (HTTP/WebSocket do app)
+      - "7880:7880"       # LiveKit: sinalização
+      - "7881:7881"       # LiveKit: mídia via TCP (fallback)
+      - "7882:7882/udp"   # LiveKit: mídia via UDP (o caminho bom)
+    volumes:
+      - ./data:/data
+    # environment:
+    #   VOX_LOG: info      # debug/info/warn (opcional)

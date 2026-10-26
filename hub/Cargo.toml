@@ -1,0 +1,66 @@
+[package]
+name = "voxhub-server"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+description = "AkumaLabs' host-side server: text chat, presence, auth, LiveKit token issuing, LiveKit process supervisor"
+
+# The package keeps its old name (the library is `voxhub_server` for the app and the tests); the
+# program is `kumacord-server` in KumaCord.
+[[bin]]
+name = "kumacord-server"
+path = "src/main.rs"
+
+[dependencies]
+vox-log = { workspace = true }
+vox-proto = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { version = "0.8.9", features = ["ws"] }
+# The listener (`serve.rs`): hyper's HTTP/1 server with a timer, so header-read / idle timeouts
+# work, plus connection caps (versions already in the tree through axum).
+hyper = { version = "1.12", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "server", "service", "http1"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+# v1.0.2: one listening socket for IPv4 and IPv6 (`[::]` with IPV6_V6ONLY off, `listen.rs`); already
+# in the tree through tokio / hyper-util.
+socket2 = "0.6"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+toml = { version = "1.1.6", default-features = false, features = ["parse", "serde"] }
+hmac = "0.13.0"
+sha2 = "0.11.0"
+base64 = "0.23.1"
+getrandom = "0.4.3"
+# Item 12: personal passwords (argon2id).
+argon2 = "0.5"
+thiserror = { workspace = true }
+# Link previews (item 10): the hub fetches pages, so clients never touch arbitrary sites.
+# rustls with the ring provider only (aws-lc-rs would add ~2 MB to the exe).
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+url = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+# Host mode (the app's "Criar servidor"): UPnP port mapping on the router. Pure Rust, sync API on
+# the blocking pool, only a small HTTP/1 client (attohttpc, no TLS) and an XML parser: the smallest
+# maintained IGD client (the async variant would pull hyper's client side and HTTP/2).
+igd-next = { version = "0.18", default-features = false, features = ["io_sync"] }
+# Unzipping the downloaded voice server (already in the tree through `png`).
+miniz_oxide = "0.8"
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
+
+[target."cfg(unix)".dependencies]
+# The interface addresses (getifaddrs) on macOS: invites need to know when the app is on the
+# host's LAN.
+libc = "0.2"
+
+[dev-dependencies]
+futures-util = "0.3.34"
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+tempfile = "3.27.0"
+tokio-tungstenite = "0.30.0"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }

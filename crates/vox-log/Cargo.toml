@@ -1,0 +1,10 @@
+[package]
+name = "vox-log"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi", "tracing-log"] }
+tracing-appender = "0.2"

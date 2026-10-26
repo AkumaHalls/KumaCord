@@ -1,0 +1,76 @@
+name: Release
+
+# Dispara ao criar/pushar uma tag v* (ex.: v1.0.3). O GitHub Actions compila o
+# client, monta o instalador NSIS, assina com minisign (a chave privada é o
+# secret AKUMALABS_SIGNING_KEY) e publica a release com o latest.json — o feed
+# que o app consulta para avisar e atualizar os clientes.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build the client
+        run: cargo build --release -p voxhub-app
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          # O instalador do NSIS edita o PATH da MAQUINA, que os passos seguintes nao
+          # enxergam (o runner congela o PATH no inicio do job): registra a pasta no
+          # GITHUB_PATH (vale do proximo passo em diante) e confere o exe na hora.
+          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\NSIS"
+          & "C:\Program Files (x86)\NSIS\makensis.exe" /VERSION
+
+      - name: Install minisign (pinned)
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP\minisign.zip"
+          Invoke-WebRequest -Uri "https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-win64.zip" -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne "37b600344e20c19314b2e82813db2bfdcc408b77b876f7727889dbd46d539479") {
+            throw "hash do minisign divergiu ($hash) — confira o release oficial antes de seguir."
+          }
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\minisign" -Force
+          $exe = Get-ChildItem "$env:RUNNER_TEMP\minisign" -Recurse -Filter "minisign.exe" | Where-Object { $_.Directory.Name -eq "x86_64" } | Select-Object -First 1
+          Copy-Item $exe.FullName "$env:RUNNER_TEMP\minisign.exe"
+          Add-Content $env:GITHUB_PATH "$env:RUNNER_TEMP"
+          # GITHUB_PATH só vale a partir do PRÓXIMO passo: o sanity check chama o exe pelo caminho completo.
+          & "$env:RUNNER_TEMP\minisign.exe" -v
+
+      - name: Package, sign and manifest
+        shell: pwsh
+        env:
+          AKUMALABS_SIGNING_KEY: ${{ secrets.AKUMALABS_SIGNING_KEY }}
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          .\installer\release-assets.ps1 -Version $version
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: AkumaLabs ${{ github.ref_name }}
+          body_path: dist/release-body.md
+          files: |
+            dist/AkumaLabs-*-setup.exe
+            dist/AkumaLabs-*-setup.exe.sig
+            dist/AkumaLabs-*-Windows.zip
+            dist/latest.json

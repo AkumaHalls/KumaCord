@@ -1,0 +1,46 @@
+AkumaLabs — app de voz, tela e chat da comunidade
+====================================================
+
+COMO INSTALAR
+-------------
+1. Execute o instalador (AkumaLabs-*-setup.exe). Não pede administrador:
+   instala na sua pasta de usuário e cria o atalho no Menu Iniciar.
+2. Na primeira execução o Windows pode mostrar "O Windows protegeu o
+   computador" (o app não é assinado digitalmente). Clique em
+   "Mais informações" e depois em "Executar assim mesmo".
+
+ATUALIZAÇÕES AUTOMÁTICAS
+--------------------------
+O app verifica a cada inicialização (e em Configurações → Sobre →
+"Verificar atualizações"). Quando há versão nova ele avisa em qualquer
+tela e atualiza sozinho: baixa o instalador, confere a assinatura
+criptográfica e reinicia já na versão nova. Não dá para desligar isso
+por engano: instalador portátil (.zip) não tem atualização automática.
+
+COMO ENTRAR
+-----------
+- Digite seu nome (como os outros vão te ver).
+- Digite a SENHA DO SERVIDOR que a organização divulgou
+  (ou cole um CONVITE vox1-... recebido, se te enviarem um).
+- Clique em Conectar. Pronto: voz, vídeo, chat e compartilhamento de tela.
+
+Este app conecta apenas ao servidor oficial da AkumaLabs: não há campo
+de endereço nem opção de hospedar pelo app.
+
+ONDE FICAM SEUS DADOS
+---------------------
+Configurações e servidores salvos: %APPDATA%\AkumaLabs\
+Registros (logs): %LOCALAPPDATA%\AkumaLabs\logs
+(Desinstalar NÃO apaga essas pastas; apague na mão se quiser zerar tudo.)
+
+REQUISITOS
+----------
+- Windows 10 (2004+) ou Windows 11, 64 bits.
+- Fone de ouvido recomendado.
+- GPU com codificação H.264 ajuda na webcam e no compartilhamento de
+  tela; sem ela, o app codifica pelo processador (funciona do mesmo
+  jeito).
+
+SUPORTE
+-------
+Fale com a organização da comunidade. Código aberto (MIT).

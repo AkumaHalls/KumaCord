@@ -1,0 +1,21 @@
+/target
+/target-*
+/data
+/bin
+*.log
+/dist
+/releases
+/.claude/
+*.local.json
+
+# Never publish secrets or personal data
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.pem
+*.key
+*.pfx
+*.p12

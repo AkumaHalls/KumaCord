@@ -1,0 +1,51 @@
+AkumaLabs @VERSION@ para Mac (Apple Silicon: M1 ou mais novo, macOS 13 ou mais novo)
+=====================================================================================
+
+COMO ABRIR NA PRIMEIRA VEZ
+--------------------------
+1. Arraste o AkumaLabs.app para a pasta Aplicativos (ou deixe onde preferir).
+2. O AkumaLabs ainda não é assinado por um desenvolvedor registrado na Apple, então o Mac
+   não deixa abrir com dois cliques na primeira vez. Faça uma destas:
+   - Clique com o botão direito (ou Control + clique) no AkumaLabs.app e escolha "Abrir";
+     na janela que aparece, clique em "Abrir" de novo.
+   - Ou: tente abrir uma vez, depois vá em Ajustes do Sistema > Privacidade e Segurança,
+     role até o aviso sobre o AkumaLabs e clique em "Abrir Mesmo Assim".
+   Depois disso ele abre normalmente.
+
+PERMISSÕES QUE O MAC VAI PEDIR
+------------------------------
+- Microfone: para falar nas salas de voz e nas chamadas.
+- Câmera: só quando você ligar a sua câmera numa sala.
+- Gravação de Tela: só quando você for transmitir a tela ou uma janela (e o som de um app).
+  Depois de permitir, feche e abra o AkumaLabs de novo.
+- Rede Local: para falar com um servidor que está na sua casa (no mesmo Wi-Fi).
+  Sem ela, um servidor da rede de casa "não responde".
+- Chaves (Keychain): na primeira vez que o AkumaLabs guardar uma senha, e depois de cada
+  atualização, o Mac pode perguntar se ele pode usar o item "AkumaLabs" das suas chaves.
+  Clique em "Permitir Sempre". As senhas ficam nas Chaves do Mac, nunca num arquivo.
+Se negar alguma sem querer: Ajustes do Sistema > Privacidade e Segurança > (Microfone,
+Câmera, Gravação de Tela e Áudio do Sistema, Rede Local) e ligue o AkumaLabs.
+
+O QUE JÁ FUNCIONA
+-----------------
+- Entrar num servidor (endereço ou convite), lista de servidores, salvar a senha.
+- Chat, mensagens diretas, menções, respostas, reações, imagens, perfis.
+- Voz nas salas e chamadas, supressão de ruído, modificador de voz, soundboard.
+- Assistir às transmissões e às câmeras dos amigos (decodificação por hardware),
+  fixar, tela cheia e abrir numa janela separada.
+- Ligar a sua câmera e transmitir a tela, uma janela ou só o som de um app
+  (precisa das permissões de Câmera e de Gravação de Tela).
+- Convite de um servidor na mesma rede (mesmo Wi-Fi): o AkumaLabs usa o endereço da rede
+  de casa sozinho.
+- Se o microfone ou o fone mudar no meio da chamada (fone Bluetooth, outro app mudando o
+  áudio), o AkumaLabs reabre o dispositivo sozinho.
+
+AINDA NÃO (EM BREVE NO MAC)
+---------------------------
+- Push-to-talk com tecla global (use o botão do microfone ou a detecção de voz).
+- Hospedar um servidor pelo app ("Criar servidor"): entre no servidor de um amigo.
+- Copiar imagens para a área de transferência.
+- Ícone na barra de menus e notificações do macOS (fechar a janela fecha o app).
+
+Os registros (logs) ficam em ~/Library/Logs/AkumaLabs e as configurações em
+~/Library/Application Support/AkumaLabs.

@@ -1,0 +1,98 @@
+[package]
+name = "vox-capture"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+description = "Screen/window capture, per-app audio capture and cameras (Windows: GPU + WASAPI; macOS: ScreenCaptureKit + AVFoundation)"
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+vox-log = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-core = "0.62"
+windows-future = "0.3"
+windows = { version = "0.62.2", features = [
+    "Foundation",
+    "Graphics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Devices_Display",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Media_DirectShow",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_Performance",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_System_WindowsProgramming",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# macOS: ScreenCaptureKit (screens, windows, app sound), AVFoundation (cameras), AppKit (app icons).
+# Only the headers used are enabled; CoreVideo / CoreMedia / CoreGraphics C calls are declared in
+# `src/mac/ffi.rs`.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+block2 = "0.6.2"
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "block2", "objc2"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSNotification", "NSObject", "NSOperation", "NSString", "NSValue"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFString", "CFCGTypes"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMBase", "CMFormatDescription", "CMSampleBuffer", "CMSync", "CMTime"] }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "dispatch2",
+    "libc",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "objc2-core-media",
+    "SCError",
+    "SCScreenshotManager",
+    "SCShareableContent",
+    "SCStream",
+] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "dispatch2",
+    "objc2-core-foundation",
+    "objc2-core-media",
+    "AVCaptureDevice",
+    "AVCaptureInput",
+    "AVCaptureOutputBase",
+    "AVCaptureSession",
+    "AVCaptureVideoDataOutput",
+    "AVMediaFormat",
+] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "objc2-core-graphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSRunningApplication"] }
+
+[dev-dependencies]
+vox-log = { workspace = true }
+png = "0.17"
+hound = "3.5"
+serde_json = { workspace = true }
