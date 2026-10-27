@@ -7,8 +7,9 @@
 use eframe::egui::{self, Color32, RichText, Sense, Vec2};
 use vox_client_core::hub::HubClient;
 use vox_proto::{
-    Account, AuditEntry, ChannelId, ChannelKind, ClaimOwnerResponse, MemberInfo, MessageId, ModAction, PrivateAccess, ResetPasswordResponse, Role, ServerEvent,
-    SetPasswordRequest, SetPasswordResponse, User, UserId, PERSONAL_PASSWORD_MAX, PERSONAL_PASSWORD_MIN,
+    Account, AuditEntry, ChannelId, ChannelKind, ClaimOwnerResponse, CustomRole, CustomRoleRequest, MemberInfo, MessageId, ModAction, PrivateAccess, ResetPasswordResponse, Role,
+    ServerEvent, SetPasswordRequest, SetPasswordResponse, SetRoleRequest, SetUserCustomRolesRequest, TransferOwnerRequest, User, UserId, perm,
+    PERSONAL_PASSWORD_MAX, PERSONAL_PASSWORD_MIN,
 };
 
 use crate::app::{App, Center};
@@ -93,6 +94,13 @@ fn audit_action_pt(action: &str) -> String {
         vox_proto::AUDIT_INVITE_CREATE => "criou o convite".into(),
         vox_proto::AUDIT_INVITE_REVOKE => "revogou o convite".into(),
         vox_proto::AUDIT_INVITE_JOIN => "entrou com o convite".into(),
+        vox_proto::AUDIT_SET_BADGES => "mudou as badges de".into(),
+        vox_proto::AUDIT_BAN => "baniu".into(),
+        vox_proto::AUDIT_UNBAN => "removeu o banimento de".into(),
+        vox_proto::AUDIT_ROLE_CREATE => "criou o cargo".into(),
+        vox_proto::AUDIT_ROLE_UPDATE => "editou o cargo".into(),
+        vox_proto::AUDIT_ROLE_DELETE => "apagou o cargo".into(),
+        vox_proto::AUDIT_ROLE_ASSIGN => "mudou os cargos de".into(),
         other => other.to_string(),
     }
 }
@@ -164,6 +172,14 @@ pub enum AdminCmd {
     Ban { user: User, reason: String },
     /// v1.1: remove the ban.
     Unban { user: UserId },
+    /// v1.1: create a role (the reply carries it with the id).
+    CreateCustomRole { name: String, color: String, position: i64, allow: u64 },
+    /// v1.1: edit everything about one role.
+    UpdateCustomRole { role: CustomRole },
+    /// v1.1: delete a role (the memberships go with it).
+    DeleteCustomRole { id: i64 },
+    /// v1.1: a member's whole set of custom roles at once.
+    SetMemberCustomRoles { user: UserId, role_ids: Vec<i64> },
     ResetPassword { user: User },
     Audit { before: Option<i64> },
     /// v0.9: `private` makes it private from the start.
@@ -187,6 +203,8 @@ pub enum AdminReply {
     Audit(Vec<AuditEntry>),
     ResetCode(ResetPasswordResponse),
     Claimed(ClaimOwnerResponse),
+    /// v1.1: the freshly created custom role (with its id).
+    CustomRole(CustomRole),
 }
 
 pub async fn run_admin(hub: &HubClient, cmd: &AdminCmd) -> Result<AdminReply, String> {
@@ -203,6 +221,10 @@ pub async fn run_admin(hub: &HubClient, cmd: &AdminCmd) -> Result<AdminReply, St
         C::SetBadges { user, flags } => hub.set_badges(user, flags).await.map(|_| AdminReply::Done),
         C::Ban { user, reason } => hub.ban_user(user.id, &reason).await.map(|_| AdminReply::Done),
         C::Unban { user } => hub.unban_user(user).await.map(|_| AdminReply::Done),
+        C::CreateCustomRole { name, color, position, allow } => hub.create_custom_role(&name, &color, position, allow).await.map(AdminReply::CustomRole),
+        C::UpdateCustomRole { role } => hub.update_custom_role(&role).await.map(|_| AdminReply::Done),
+        C::DeleteCustomRole { id } => hub.delete_custom_role(id).await.map(|_| AdminReply::Done),
+        C::SetMemberCustomRoles { user, role_ids } => hub.set_custom_roles(user, &role_ids).await.map(|_| AdminReply::Done),
         C::ResetPassword { user } => hub.reset_password(user.id).await.map(AdminReply::ResetCode),
         C::Audit { before } => hub.audit_log(before, AUDIT_PAGE).await.map(AdminReply::Audit),
         C::CreateChannel { name, kind, private } => hub.create_channel(&name, kind, private).await.map(|_| AdminReply::Done),
@@ -283,6 +305,8 @@ pub enum ServerTab {
     /// "Membros e cargos".
     #[default]
     Members,
+    /// v1.1: the custom roles editor ("Cargos").
+    Roles,
     Channels,
     /// v0.8 (`host.rs`).
     Invites,
@@ -321,6 +345,12 @@ pub struct RolesUi {
     /// v1.1: the badge editor open for one member — the draft manual mask. It commits
     /// on "Salvar" (the popup stays open so several can be flipped before saving).
     pub badge_draft: Option<(UserId, u64)>,
+    /// v1.1: the server's custom roles (`Ready` and `CustomRolesChanged` keep it fresh).
+    pub custom: Vec<CustomRole>,
+    /// v1.1: the member whose cargo assignment editor is open (the draft id set).
+    pub cargo_draft: Option<(UserId, Vec<i64>)>,
+    /// v1.1: the role being created/edited (a new one starts with id = 0).
+    pub role_edit: Option<CustomRole>,
     pub confirm_delete: Option<ChannelId>,
     pub confirm_reset: Option<User>,
     /// v1.1: "Banir..." of this person, open as a dialog (the reason is typed inside).
@@ -574,6 +604,10 @@ impl App {
             ServerEvent::UserUpdated { user } => {
                 self.chatx.note_user(&user);
                 self.update_user(&user);
+            }
+            ServerEvent::CustomRolesChanged { roles } => {
+                // v1.1: the whole list swaps at once (created, edited, deleted, reordered).
+                self.roles.custom = roles;
             }
             ServerEvent::Moderated { action, by } => self.on_moderated(action, &by),
             _ => {}
@@ -1061,6 +1095,7 @@ impl App {
                 }
                 match tab {
                     ServerTab::Members => self.members_tab(ui),
+                    ServerTab::Roles => self.roles_tab(ui),
                     ServerTab::Channels => self.channels_tab(ui),
                     ServerTab::Invites => {
                         ui_kit::page_title(ui, "Convites", Some(crate::host::INVITE_HINT));
@@ -1267,6 +1302,57 @@ impl App {
                         self.roles.badge_draft = Some((id, draft));
                     }
                 }
+                // v1.1: the cargo assignment editor, the same way right under the row.
+                let editing_cargo = self.roles.cargo_draft.as_ref().is_some_and(|(uid, _)| *uid == m.user.id);
+                if let Some((uid, mut draft)) = self.roles.cargo_draft.take_if(|_| editing_cargo) {
+                    let mut keep = true;
+                    let customs = self.roles.custom.clone();
+                    let name = m.user.shown_name().to_owned();
+                    egui::Frame::new().fill(theme::NOITE).corner_radius(radius::ROW).inner_margin(egui::Margin::symmetric(14, 10)).outer_margin(egui::Margin { left: 28, right: 4, top: 2, bottom: 6 }).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        ui.label(RichText::new(format!("Cargos de {name}")).font(theme::semibold(13.0)).color(theme::GIZ));
+                        if customs.is_empty() {
+                            ui_kit::hint(ui, "Ainda não há cargos: crie um na aba \"Cargos\".");
+                        } else {
+                            ui_kit::hint(ui, "Marque os cargos dela; o mais alto pinta o nome.");
+                        }
+                        for r in &customs {
+                            let on = draft.contains(&r.id);
+                            let (rr, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), egui::Sense::click());
+                            if resp.clicked() {
+                                if on {
+                                    draft.retain(|x| *x != r.id);
+                                } else {
+                                    draft.push(r.id);
+                                }
+                            }
+                            if resp.hovered() {
+                                ui.painter().rect_filled(rr, radius::BUTTON, theme::ROW_HOVER);
+                            }
+                            let color = Color32::from_hex(r.color.get(1..).unwrap_or("99A7B5")).unwrap_or(theme::NEVOA);
+                            ui.painter().circle_filled(egui::pos2(rr.left() + 18.0, rr.center().y), 6.0, color);
+                            ui.painter().text(egui::pos2(rr.left() + 32.0, rr.center().y), egui::Align2::LEFT_CENTER, &r.name, theme::body(12.5), if on { theme::GIZ } else { theme::NEVOA });
+                            let mark = if on { ph::CHECK } else { " " };
+                            ui.painter().text(egui::pos2(rr.right() - 14.0, rr.center().y), egui::Align2::RIGHT_CENTER, mark, theme::body(12.5), if on { theme::ABAJUR } else { theme::NEVOA });
+                            let n = Self::PERMS.iter().filter(|(b, _, _)| r.allow & b != 0).count();
+                            resp.on_hover_text(format!("{} permissões", n));
+                        }
+                        ui.add_space(space::S);
+                        ui.horizontal(|ui| {
+                            if ui_kit::button_sized(ui, Kind::Primary, Size::Small, None, "Salvar cargos").clicked() {
+                                self.admin(AdminCmd::SetMemberCustomRoles { user: uid, role_ids: draft.clone() });
+                                keep = false;
+                            }
+                            if ui_kit::button_sized(ui, Kind::Ghost, Size::Small, None, "Cancelar").clicked() {
+                                keep = false;
+                            }
+                        });
+                    });
+                    if keep && self.roles.cargo_draft.is_none() {
+                        self.roles.cargo_draft = Some((uid, draft));
+                    }
+                }
             }
         });
     }
@@ -1299,6 +1385,12 @@ impl App {
                     // row never gets wide enough to wrap (the card tells the stories).
                     self.badges.row(ui, user.flags, 14.0, 3);
                 }
+                // v1.1: a member (no fixed colour) may paint with their highest custom role.
+                if crate::roles::role_color(theirs).is_none() {
+                    if let Some(c) = self.user_custom_color(&user) {
+                        ui.label(RichText::new(ph::CIRCLE).font(theme::body(9.0)).color(c)).on_hover_text("A cor é de um cargo");
+                    }
+                }
                 if m.has_password {
                     ui.label(RichText::new(ph::LOCK_SIMPLE).font(theme::body(13.0)).color(theme::NEVOA)).on_hover_text("Nome protegido por senha pessoal");
                 }
@@ -1328,6 +1420,14 @@ impl App {
                     any = true;
                     if ui_kit::menu_item(ui, ph::MEDAL, "Badges...", false, None) {
                         self.roles.badge_draft = Some((m.user.id, m.granted));
+                        ui.close();
+                    }
+                }
+                // v1.1: this person's custom roles.
+                if self.i_allow(perm::MANAGE_ROLES) {
+                    any = true;
+                    if ui_kit::menu_item(ui, ph::GAVEL, "Cargos...", false, None) {
+                        self.roles.cargo_draft = Some((m.user.id, m.user.role_ids.clone()));
                         ui.close();
                     }
                 }
@@ -1392,6 +1492,169 @@ impl App {
                 ui_kit::pill(ui, role_label(theirs), theme::MOVEL, role_color(theirs).unwrap_or(theme::NEVOA));
             }
         });
+    }
+
+    // ------------------------------------------------------------ "Cargos" (v1.1)
+
+    /// One permission of the editor matrix: its bit, its PT name and the story.
+    const PERMS: &[(u64, &str, &str)] = &[
+        (perm::VIEW_CHANNEL, "Ver canais", "Sem isto, os canais somem pra quem tem o cargo."),
+        (perm::SEND_MESSAGES, "Enviar mensagens", "Escrever nos canais de texto."),
+        (perm::ATTACH, "Enviar anexos", "Imagens e arquivos junto com a mensagem."),
+        (perm::REACT, "Reagir", "Os emojis embaixo das mensagens."),
+        (perm::CONNECT, "Entrar na voz", "Entrar nas salas."),
+        (perm::SPEAK, "Falar", "O microfone na voz."),
+        (perm::VIDEO, "Câmera", "Ligar a webcam."),
+        (perm::STREAM, "Go Live", "Compartilhar a tela."),
+        (perm::DELETE_MESSAGES, "Apagar mensagens", "As dos outros também (moderação)."),
+        (perm::MUTE_MEMBERS, "Silenciar no servidor", "O muting que vale pra todos."),
+        (perm::MOVE_MEMBERS, "Mover na voz", "Levar alguém pra outra sala."),
+        (perm::STOP_STREAMS, "Encerrar Go Live", "Parar a transmissão de alguém."),
+        (perm::DISCONNECT, "Desconectar da voz", "Tirar alguém da sala."),
+        (perm::BAN_MEMBERS, "Banir", "E também remover banimentos."),
+        (perm::MANAGE_CHANNELS, "Gerenciar canais", "Criar, renomear, reordenar, apagar."),
+        (perm::MANAGE_INVITES, "Gerenciar convites", "Criar e revogar convites."),
+        (perm::MANAGE_ROLES, "Gerenciar cargos", "Criar, editar e dar cargos."),
+        (perm::MANAGE_BADGES, "Gerenciar badges", "Conceder badges na mão."),
+        (perm::VIEW_AUDIT, "Registro de moderação", "Ler o registro."),
+        (perm::RESET_PASSWORDS, "Redefinir senhas", "Gerar os códigos de uso único."),
+        (perm::ADMINISTRATOR, "Administrador", "Tudo acima; não dá pra tirar de alguém com cargo menor."),
+    ];
+
+    /// The colour swatches of the editor (Discord's role palette, roughly).
+    const ROLE_SWATCHES: [Color32; 10] = [
+        Color32::from_rgb(0x99, 0xA7, 0xB5), Color32::from_rgb(0x1E, 0x21, 0x44),
+        Color32::from_rgb(0xE9, 0x1B, 0x62), Color32::from_rgb(0xD3, 0x83, 0x0C),
+        Color32::from_rgb(0xE6, 0x71, 0x0B), Color32::from_rgb(0x24, 0x80, 0x4A),
+        Color32::from_rgb(0x28, 0x9B, 0x11), Color32::from_rgb(0x1F, 0x8A, 0x71),
+        Color32::from_rgb(0x29, 0xA3, 0xA6), Color32::from_rgb(0x1D, 0x6F, 0xC9),
+    ];
+
+    fn roles_tab(&mut self, ui: &mut egui::Ui) {
+        let may_edit = self.i_allow(perm::MANAGE_ROLES);
+        ui_kit::page_title(ui, "Cargos", Some("Cargos seus, com cor, ordem e permissões — eles somam poder em cima dos cargos fixos (Membro, Moderador, Admin, Dono)."));
+        ui.add_space(space::S);
+        // The editor: creating (id = 0) or editing an existing one.
+        if let Some(mut role) = self.roles.role_edit.take() {
+            let creating = role.id == 0;
+            let mut keep = true;
+            egui::Frame::new().fill(theme::NOITE).corner_radius(radius::ROW).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = 6.0;
+                ui.label(RichText::new(if creating { "Novo cargo" } else { "Editando cargo" }).font(theme::semibold(13.5)).color(theme::GIZ));
+                ui.add(ui_kit::field(&mut role.name).hint_text("Nome do cargo (1 a 24)"));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Cor").font(theme::body(12.5)).color(theme::NEVOA));
+                    for sw in Self::ROLE_SWATCHES {
+                        let (r, resp) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::click());
+                        ui.painter().rect_filled(r, 4, sw);
+                        let mine = format!("#{:02X}{:02X}{:02X}", sw.r(), sw.g(), sw.b());
+                        if role.color != mine {
+                            ui.painter().rect_stroke(r, 4, egui::Stroke::new(1.0, theme::PAREDE), egui::StrokeKind::Inside);
+                        }
+                        if resp.clicked() {
+                            role.color = mine;
+                        }
+                        resp.on_hover_text(role.color.clone());
+                    }
+                });
+                egui::ComboBox::from_id_salt("role_position").width(120.0).selected_text(format!("Ordem: {}", role.position)).show_ui(ui, |ui| {
+                    for p in -3..=3i64 {
+                        ui.selectable_value(&mut role.position, p, p.to_string());
+                    }
+                });
+                ui.add_space(space::S);
+                ui.label(RichText::new("Permissões").font(theme::semibold(12.5)).color(theme::NEVOA));
+                egui::Grid::new("perm_matrix").spacing(egui::vec2(10.0, 2.0)).show(ui, |ui| {
+                    for (i, (bit, title, desc)) in Self::PERMS.iter().enumerate() {
+                        let on = role.allow & bit != 0;
+                        let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), egui::Sense::click());
+                        if resp.clicked() {
+                            role.allow ^= bit;
+                        }
+                        ui.painter().rect_filled(r, radius::BUTTON, if on { theme::ABAJUR.gamma_multiply(0.22) } else { theme::MOVEL.gamma_multiply(0.5) });
+                        let mark = if on { ph::CHECK } else { " " };
+                        ui.painter().text(egui::pos2(r.left() + 12.0, r.center().y), egui::Align2::LEFT_CENTER, mark, theme::body(12.0), if on { theme::ABAJUR } else { theme::NEVOA });
+                        ui.painter().text(egui::pos2(r.left() + 30.0, r.center().y), egui::Align2::LEFT_CENTER, *title, theme::body(12.0), if on { theme::GIZ } else { theme::NEVOA });
+                        resp.on_hover_text(*desc);
+                        if i % 2 == 1 {
+                            ui.end_row();
+                        }
+                    }
+                });
+                ui.add_space(space::S);
+                if may_edit {
+                    ui.horizontal(|ui| {
+                        if ui_kit::button(ui, Kind::Primary, None, if creating { "Criar cargo" } else { "Salvar" }).clicked() {
+                            if creating {
+                                self.admin(AdminCmd::CreateCustomRole { name: role.name.clone(), color: role.color.clone(), position: role.position, allow: role.allow });
+                            } else {
+                                self.admin(AdminCmd::UpdateCustomRole { role: role.clone() });
+                            }
+                            keep = false;
+                        }
+                        if ui_kit::button(ui, Kind::Ghost, None, "Cancelar").clicked() {
+                            keep = false;
+                        }
+                    });
+                }
+            });
+            if keep {
+                self.roles.role_edit = Some(role);
+            }
+            ui.add_space(space::M);
+        }
+        // The list.
+        ui_kit::section(ui, &format!("Cargos do servidor — {}", self.roles.custom.len()));
+        ui.add_space(space::S);
+        if self.roles.custom.is_empty() {
+            ui_kit::hint(ui, "Nenhum cargo seu ainda. \"Criar cargo\" monta um com cor e permissões.");
+        }
+        if may_edit && self.roles.role_edit.is_none() && ui_kit::button(ui, Kind::Secondary, Some(ph::PLUS), "Criar cargo").clicked() {
+            self.roles.role_edit = Some(CustomRole { id: 0, name: String::new(), color: "#99A7B5".into(), position: 0, allow: 0 });
+        }
+        ui.add_space(space::S);
+        let customs = self.roles.custom.clone();
+        egui::Grid::new("custom_roles").spacing(egui::vec2(8.0, 4.0)).show(ui, |ui| {
+            for r in &customs {
+                let color = Color32::from_hex(r.color.get(1..).unwrap_or("99A7B5")).unwrap_or(theme::NEVOA);
+                let (dot, _) = ui.allocate_exact_size(Vec2::splat(14.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot.center(), 6.0, color);
+                ui.label(RichText::new(&r.name).font(theme::semibold(13.0)).color(theme::GIZ));
+                let n = Self::PERMS.iter().filter(|(b, _, _)| r.allow & b != 0).count();
+                ui.label(RichText::new(format!("{n} permissões")).font(theme::body(11.5)).color(theme::NEVOA));
+                if may_edit {
+                    if ui_kit::button_sized(ui, Kind::Secondary, Size::Small, None, "Editar").clicked() {
+                        self.roles.role_edit = Some(r.clone());
+                    }
+                    if ui_kit::button_sized(ui, Kind::Danger, Size::Small, None, "Apagar").on_hover_text("Os membros que o têm ficam sem ele (e sem o que ele dava).").clicked() {
+                        self.admin(AdminCmd::DeleteCustomRole { id: r.id });
+                    }
+                }
+                ui.end_row();
+            }
+        });
+        ui.add_space(space::L);
+        ui_kit::hint(ui, "A ordem pinta: o cargo mais alto de alguém decide a cor do nome. Dar cargos a alguém é no \"⋯\" da pessoa, em \"Membros e cargos\".");
+    }
+
+    /// Whether I have a permission (my fixed role first, then what custom roles gave me).
+    pub fn i_allow(&self, bit: u64) -> bool {
+        if self.my_role().can_admin() {
+            return true;
+        }
+        let Some(me) = &self.me else { return false };
+        me.role_ids.iter().filter_map(|id| self.roles.custom.iter().find(|r| r.id == *id)).any(|r| r.allow & bit != 0)
+    }
+
+    /// Someone's custom-role colour: the paint of their highest role, if any (the fixed
+    /// role colour wins over it in the UI, matching how Discord paints).
+    pub fn user_custom_color(&self, user: &User) -> Option<Color32> {
+        user.role_ids
+            .iter()
+            .filter_map(|id| self.roles.custom.iter().find(|r| r.id == *id))
+            .max_by_key(|r| (r.position, r.id))
+            .and_then(|r| Color32::from_hex(r.color.get(1..).unwrap_or("99A7B5")).ok())
     }
 
     // ------------------------------------------------------------ "Canais"
@@ -1706,8 +1969,9 @@ impl App {
 }
 
 /// The pages of the server window, in order: (tab, icon, name).
-const SERVER_PAGES: [(ServerTab, &str, &str); 5] = [
+const SERVER_PAGES: [(ServerTab, &str, &str); 6] = [
     (ServerTab::Members, ph::USERS, "Membros e cargos"),
+    (ServerTab::Roles, ph::GAVEL, "Cargos"),
     (ServerTab::Channels, ph::HASH, "Canais"),
     (ServerTab::Invites, ph::ENVELOPE_SIMPLE, "Convites"),
     (ServerTab::Audit, ph::CLIPBOARD_TEXT, "Registro de moderação"),
@@ -1772,7 +2036,7 @@ mod tests {
 
     #[test]
     fn the_people_picker_offers_members_and_moderators_only() {
-        let info = |id, name: &str, role| MemberInfo { user: User { id, username: name.into(), role, flags: 0, avatar: None, display_name: None }, has_password: false, server_muted: false, created_at_ms: 0, granted: 0, banned: None };
+        let info = |id, name: &str, role| MemberInfo { user: User { id, username: name.into(), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None }, has_password: false, server_muted: false, created_at_ms: 0, granted: 0, banned: None };
         let ms = vec![info(1, "dono", Role::Owner), info(2, "adm", Role::Admin), info(3, "ana", Role::Member), info(4, "anabela", Role::Moderator), info(5, "bia", Role::Member)];
         let names = |v: Vec<&MemberInfo>| v.iter().map(|m| m.user.username.clone()).collect::<Vec<_>>();
         assert_eq!(names(pick_candidates(&ms, &[], "an")), ["ana", "anabela"]);
@@ -1786,5 +2050,19 @@ mod tests {
         assert_eq!(role_color(Role::Member), None);
         assert!(role_color(Role::Owner).is_some() && role_color(Role::Moderator) != role_color(Role::Admin));
         assert_eq!(role_label(Role::Moderator), "Moderador");
+    }
+
+    /// Every permission bit has a row in the editor matrix — a bit the proto learns can
+    /// never be invisible in the UI.
+    #[test]
+    fn the_permission_matrix_covers_every_grantable_bit() {
+        let mut covered = 0u64;
+        for (bit, title, desc) in App::PERMS {
+            assert_eq!(bit.count_ones(), 1, "{title} é um bit único");
+            assert!(!title.is_empty() && !desc.is_empty());
+            covered |= bit;
+        }
+        assert_eq!(covered, perm::GRANTABLE, "o editor cobre exatamente as permissões concedíveis");
+        assert_eq!(App::PERMS.len(), 21);
     }
 }

@@ -431,7 +431,7 @@ mod tests {
             r#"{"type":"reaction_changed","channel_id":1,"message_id":2,"emoji":"🎉","user_id":3,"added":true}"#
         );
         // `Ready` with the feature flags still parses in the old shape.
-        let ready = ServerEvent::Ready { user: User::new(1, "a"), channels: vec![], online: vec![], voice: vec![], account: None, chat: Some(ChatFeatures::ALL), server_id: None };
+        let ready = ServerEvent::Ready { user: User::new(1, "a"), channels: vec![], online: vec![], voice: vec![], account: None, chat: Some(ChatFeatures::ALL), server_id: None, custom_roles: None };
         let json = serde_json::to_string(&ready).unwrap();
         assert!(json.contains(r#""chat":{"mentions":true,"replies":true,"reactions":true,"private_channels":true}"#), "{json}");
         assert!(matches!(serde_json::from_str::<v070::ServerEvent>(&json), Ok(v070::ServerEvent::Ready { .. })));

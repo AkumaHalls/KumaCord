@@ -205,6 +205,10 @@ pub async fn start_tuned(opts: Options, previews: linkpreview::PreviewConfig, tu
     let attachments = attachments::AttachmentState::new(&opts.data_dir, &cfg);
     let slots = serve::Slots::new(tuning.limits.clone());
     let state = state::Shared::new(cfg.clone(), db, server_id, channels, server_muted, previews, lk_admin, attachments, tuning, shutdown_rx.clone());
+    // v1.1: the custom roles ride every `Ready` (loaded once here, swapped on every change).
+    if let Ok(roles) = state.db.call(|c| db::list_custom_roles(c)).await {
+        state.set_custom_roles(roles);
+    }
     owner::init(&state).await?;
     // Private channels: everybody's effective role, before anybody connects.
     access::init_roles(&state).await?;

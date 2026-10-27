@@ -1618,6 +1618,7 @@ impl App {
                     voice,
                     account,
                     chat,
+                    custom_roles,
                     ..
                 } => {
                     channels.sort_by_key(|c| (c.position, c.id));
@@ -1625,6 +1626,7 @@ impl App {
                     self.alert_policy.on_snapshot(std::time::Instant::now());
                     self.me = Some(user);
                     self.on_roles_ready(account);
+                    self.roles.custom = custom_roles.unwrap_or_default();
                     self.profile_on_ready();
                     self.dm_on_ready();
                     self.images_on_ready();
@@ -1733,6 +1735,7 @@ impl App {
                 ev @ (ServerEvent::MessageDeleted { .. }
                 | ServerEvent::ChannelsChanged { .. }
                 | ServerEvent::UserUpdated { .. }
+                | ServerEvent::CustomRolesChanged { .. }
                 | ServerEvent::Moderated { .. }) => self.on_roles_event(ev),
             },
         }

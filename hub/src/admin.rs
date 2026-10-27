@@ -16,6 +16,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use serde::Deserialize;
 use vox_proto::*;
+use rusqlite::OptionalExtension;
 
 use crate::api::{argon2_blocking, too_many, ApiErr, Authed};
 use crate::auth::{self, user_key};
@@ -376,8 +377,10 @@ pub async fn users(State(s): State<AppState>, me: Authed) -> ApiResult<Vec<Membe
                     reason: b.reason,
                     by: b.banned_by,
                 });
+                let mut user = r.user(&owner);
+                user.role_ids = db::custom_role_ids(c, r.id)?;
                 out.push(MemberInfo {
-                    user: r.user(&owner),
+                    user,
                     granted,
                     banned,
                     has_password: r.has_password(),
@@ -407,7 +410,7 @@ pub async fn set_role(State(s): State<AppState>, me: Authed, Path(id): Path<User
     }
     let to = req.role;
     s.db.call(move |c| db::set_role(c, id, to)).await?;
-    let user = target_row(&s, id).await?.user(&s.owner());
+    let user = user_with_roles(&s, id).await?;
     s.update_user(&user);
     // Their private channels follow the new role at once (v0.9).
     crate::access::reload_roles(&s).await;
@@ -431,7 +434,7 @@ pub async fn set_badges(State(s): State<AppState>, me: Authed, Path(id): Path<Us
     s.db.call(move |c| db::set_badge_grant(c, id, granted)).await?;
     let owner = s.owner().to_string();
     s.db.call(move |c| db::refresh_badges(c, id, &owner)).await?;
-    let user = target_row(&s, id).await?.user(&s.owner());
+    let user = user_with_roles(&s, id).await?;
     s.update_user(&user);
     let detail = format!("0x{before:x} -> 0x{granted:x}");
     audit(&s, Some(me.user.id), AUDIT_SET_BADGES, Some(id), detail).await;
@@ -481,6 +484,144 @@ pub async fn unban_user(State(s): State<AppState>, me: Authed, Path(id): Path<Us
         return Err(ApiErr::new(StatusCode::NOT_FOUND, "no ban to remove"));
     }
     audit(&s, Some(me.user.id), AUDIT_UNBAN, Some(id), String::new()).await;
+    Ok(ok())
+}
+
+// ---------------------------------------------------------------- custom roles (v1.1)
+
+/// The gate of the custom-role world: the fixed matrix first (Admin and above always
+/// pass), then whatever a custom role granted. This is the ONLY way a plain member ever
+/// gets a power, and it only ever adds.
+async fn may(s: &AppState, me: &Authed, bit: u64) -> bool {
+    if me.role.can_admin() {
+        return true;
+    }
+    let id = me.user.id;
+    s.db.call(move |c| db::custom_allow(c, id)).await.map(|a| a & bit != 0).unwrap_or(false)
+}
+
+/// One member's `User` with their custom roles filled in (what `UserUpdated` broadcasts).
+async fn user_with_roles(s: &AppState, id: UserId) -> Result<User, ApiErr> {
+    let mut u = target_row(s, id).await?.user(&s.owner());
+    u.role_ids = s.db.call(move |c| db::custom_role_ids(c, id)).await?;
+    Ok(u)
+}
+
+/// A role edit's shape, or the reason it is not one.
+fn role_request_check(req: &CustomRoleRequest) -> Result<(), &'static str> {
+    let name: String = req.name.trim().chars().collect();
+    let n = name.chars().count();
+    if !(1..=24).contains(&n) {
+        return Err("o nome do cargo precisa de 1 a 24 caracteres");
+    }
+    let c = req.color.trim().to_ascii_lowercase();
+    let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+    if !ok {
+        return Err("a cor precisa ser #rrggbb");
+    }
+    if req.allow & !perm::GRANTABLE != 0 {
+        return Err("permissões desconhecidas");
+    }
+    Ok(())
+}
+
+/// `GET /api/admin/custom-roles` (the editor's list; everybody gets the same list in
+/// `Ready` for the colors — this endpoint is for who may edit).
+pub async fn custom_roles(State(s): State<AppState>, me: Authed) -> ApiResult<Vec<CustomRole>> {
+    if !may(&s, &me, perm::MANAGE_ROLES).await {
+        return Err(forbidden());
+    }
+    Ok(Json(s.db.call(|c| db::list_custom_roles(c)).await?))
+}
+
+/// `POST /api/admin/custom-roles`: create.
+pub async fn create_custom_role(State(s): State<AppState>, me: Authed, body: Result<Json<CustomRoleRequest>, JsonRejection>) -> ApiResult<CustomRole> {
+    let Json(req) = body?;
+    if !may(&s, &me, perm::MANAGE_ROLES).await {
+        return Err(forbidden());
+    }
+    if let Err(why) = role_request_check(&req) {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, why));
+    }
+    let name: String = req.name.trim().chars().collect();
+    let color = req.color.trim().to_ascii_lowercase();
+    let role = s.db.call(move |c| db::create_custom_role(c, &name, &color, req.position, req.allow & perm::GRANTABLE)).await?;
+    let list = s.db.call(|c| db::list_custom_roles(c)).await?;
+    s.set_custom_roles(list);
+    audit(&s, Some(me.user.id), AUDIT_ROLE_CREATE, None, role.name.clone()).await;
+    Ok(Json(role))
+}
+
+/// `POST /api/admin/custom-roles/{id}`: edit everything about one role.
+pub async fn update_custom_role(State(s): State<AppState>, me: Authed, Path(id): Path<i64>, body: Result<Json<CustomRoleRequest>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    if !may(&s, &me, perm::MANAGE_ROLES).await {
+        return Err(forbidden());
+    }
+    if let Err(why) = role_request_check(&req) {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, why));
+    }
+    let name: String = req.name.trim().chars().collect();
+    let color = req.color.trim().to_ascii_lowercase();
+    let role = CustomRole { id, name: name.clone(), color, position: req.position, allow: req.allow & perm::GRANTABLE };
+    let changed = s.db.call(move |c| db::update_custom_role(c, &role)).await?;
+    if !changed {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "cargo não encontrado"));
+    }
+    let list = s.db.call(|c| db::list_custom_roles(c)).await?;
+    s.set_custom_roles(list);
+    audit(&s, Some(me.user.id), AUDIT_ROLE_UPDATE, None, name).await;
+    Ok(ok())
+}
+
+/// `DELETE /api/admin/custom-roles/{id}`: the memberships go with it.
+pub async fn delete_custom_role(State(s): State<AppState>, me: Authed, Path(id): Path<i64>) -> ApiResult<OkResponse> {
+    if !may(&s, &me, perm::MANAGE_ROLES).await {
+        return Err(forbidden());
+    }
+    let (name, gone) = s.db.call(move |c| {
+        let name: String = c.query_row("SELECT name FROM custom_roles WHERE id = ?1", [id], |r| r.get(0)).optional()?.unwrap_or_default();
+        Ok((name, db::delete_custom_role(c, id)?))
+    }).await?;
+    if !gone {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "cargo não encontrado"));
+    }
+    let list = s.db.call(|c| db::list_custom_roles(c)).await?;
+    s.set_custom_roles(list);
+    audit(&s, Some(me.user.id), AUDIT_ROLE_DELETE, None, name).await;
+    Ok(ok())
+}
+
+/// `POST /api/admin/users/{id}/custom-roles`: the member's whole set at once. Everybody
+/// sees the change at once (`UserUpdated` carries the new set).
+pub async fn set_user_custom_roles(State(s): State<AppState>, me: Authed, Path(id): Path<UserId>, body: Result<Json<SetUserCustomRolesRequest>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    if !may(&s, &me, perm::MANAGE_ROLES).await {
+        return Err(forbidden());
+    }
+    let _ = target_row(&s, id).await?;
+    // Every id must be a real role (a stale editor would silently strand assignments).
+    let ids = req.role_ids.clone();
+    let ids_check = ids.clone();
+    let exists = s.db.call(move |c| {
+        let mut ok = true;
+        for &r in &ids_check {
+            let have: Option<i64> = c.query_row("SELECT id FROM custom_roles WHERE id = ?1", [r], |x| x.get(0)).optional()?;
+            if have.is_none() {
+                ok = false;
+            }
+        }
+        Ok(ok)
+    }).await?;
+    if !exists {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "um dos cargos não existe mais"));
+    }
+    let ids_set = ids.clone();
+    s.db.call(move |c| db::set_custom_role_ids(c, id, &ids_set)).await?;
+    let user = user_with_roles(&s, id).await?;
+    s.update_user(&user);
+    let detail = format!("{} cargos", req.role_ids.len());
+    audit(&s, Some(me.user.id), AUDIT_ROLE_ASSIGN, Some(id), detail).await;
     Ok(ok())
 }
 

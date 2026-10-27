@@ -107,6 +107,9 @@ struct Inner {
     voice_buckets: HashMap<UserId, (f64, Instant)>,
     /// same, for reactions
     reaction_buckets: HashMap<UserId, (f64, Instant)>,
+    /// v1.1: the server's custom roles (the whole list — it is small — swapped whole on
+    /// every change; every `Ready` carries it).
+    custom_roles: Vec<vox_proto::CustomRole>,
     /// Users a moderator server-muted (mirrors the database).
     server_muted: HashSet<UserId>,
     /// Presence and custom status of everybody connected (an invisible person is in here too:
@@ -313,6 +316,20 @@ impl Shared {
     /// or duplicated).
     ///
     /// `presence` is what the person starts with (their stored presence and status); it is only
+    /// v1.1: the server's custom roles as `Ready` carries them (a fresh list on every change).
+    pub fn custom_roles(&self) -> Vec<vox_proto::CustomRole> {
+        self.lock().custom_roles.clone()
+    }
+
+    /// v1.1: replace the whole list (the admin endpoints call this after any change) and
+    /// tell everybody at once.
+    pub fn set_custom_roles(&self, roles: Vec<vox_proto::CustomRole>) {
+        let mut g = self.lock();
+        g.custom_roles = roles.clone();
+        drop(g);
+        self.broadcast(&ServerEvent::CustomRolesChanged { roles });
+    }
+
     /// used by their first connection. An invisible person is not announced and not listed for
     /// anybody else; every other person whose state is not plain "online, no status" is told to
     /// this connection right after `Ready` (as `PresenceChanged`, to this person's connections).
@@ -355,6 +372,7 @@ impl Shared {
             account: Some(account),
             chat: Some(vox_proto::ChatFeatures::ALL),
             server_id: Some(self.server_id.clone()),
+            custom_roles: Some(g.custom_roles.clone()),
         };
         (ready, rx)
     }

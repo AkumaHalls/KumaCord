@@ -45,6 +45,9 @@ pub fn router(state: AppState) -> Router {
 .route("/api/admin/users/{id}/badges", put(admin::set_badges))
 .route("/api/admin/users/{id}/ban", post(admin::ban_user))
 .route("/api/admin/users/{id}/unban", post(admin::unban_user))
+.route("/api/admin/custom-roles", get(admin::custom_roles).post(admin::create_custom_role))
+.route("/api/admin/custom-roles/{id}", post(admin::update_custom_role).delete(admin::delete_custom_role))
+.route("/api/admin/users/{id}/custom-roles", post(admin::set_user_custom_roles))
         .route("/api/admin/users/{id}/reset-password", post(admin::reset_password))
         .route("/api/admin/audit", get(admin::audit_log))
         // "quem hospeda vira dono"
@@ -367,7 +370,10 @@ async fn login(
     // recomputed value also replaces what the response would have shown.
     let (id_for_refresh, owner_for_refresh) = (row.id, owner.to_string());
     row.badges = s.db.call(move |c| db::refresh_badges(c, id_for_refresh, &owner_for_refresh)).await?;
-    let user = row.user(&owner);
+    let mut user = row.user(&owner);
+    // v1.1: the login response carries this user's custom roles (they colour everything).
+    let id_for_roles = row.id;
+    user.role_ids = s.db.call(move |c| db::custom_role_ids(c, id_for_roles)).await?;
     tracing::info!(%peer, user = %user.username, id = user.id, role = ?user.role, ?proof, ?admission, must_set_password = row.must_set_password(&owner), "login");
     Ok(Json(LoginResponse { token, user, server_name: s.cfg.server_name.clone(), device_token }))
 }

@@ -15,7 +15,7 @@ use url::Url;
 use vox_proto::{
     ApiError, AuditEntry, AvatarResponse, Channel, ChannelAccessRequest, ChannelCreateRequest, ChannelId, ChannelKind, ChannelRenameRequest, ChannelReorderRequest, ClaimOwnerRequest,
     ClaimOwnerResponse, ClientEvent, HealthResponse, LinkPreview, LoginRequest, LoginResponse, MemberInfo, Message as ChatMessage, MessageId, ModMoveRequest, ModMuteRequest,
-    OkResponse, PrivateAccess, BanInfo, BanRequest, ResetPasswordResponse, Role, ServerEvent, SetBadgesRequest, SetPasswordRequest, SetPasswordResponse, SetRoleRequest, TransferOwnerRequest, UserId,
+    OkResponse, PrivateAccess, BanInfo, BanRequest, CustomRole, CustomRoleRequest, ResetPasswordResponse, Role, ServerEvent, SetBadgesRequest, SetPasswordRequest, SetPasswordResponse, SetRoleRequest, SetUserCustomRolesRequest, TransferOwnerRequest, UserId,
     VoiceJoinResponse, PROTOCOL_VERSION,
 };
 
@@ -219,6 +219,32 @@ impl HubClient {
     /// `POST /api/admin/users/{id}/unban` (v1.1).
     pub async fn unban_user(&self, user: UserId) -> Result<()> {
         self.post::<_, OkResponse>("unban", &format!("api/admin/users/{user}/unban"), &serde_json::json!({})).await.map(|_| ())
+    }
+
+    /// `GET /api/admin/custom-roles` (v1.1): the editor's list.
+    pub async fn custom_roles(&self) -> Result<Vec<CustomRole>> {
+        self.get("custom roles", self.url("api/admin/custom-roles")?).await
+    }
+
+    /// `POST /api/admin/custom-roles` (v1.1): create, returns it with the id.
+    pub async fn create_custom_role(&self, name: &str, color: &str, position: i64, allow: u64) -> Result<CustomRole> {
+        self.post("create custom role", "api/admin/custom-roles", &CustomRoleRequest { name: name.to_owned(), color: color.to_owned(), position, allow }).await
+    }
+
+    /// `POST /api/admin/custom-roles/{id}` (v1.1): edit everything about one role.
+    pub async fn update_custom_role(&self, role: &CustomRole) -> Result<()> {
+        self.post::<_, OkResponse>("update custom role", &format!("api/admin/custom-roles/{}", role.id), &CustomRoleRequest { name: role.name.clone(), color: role.color.clone(), position: role.position, allow: role.allow }).await.map(|_| ())
+    }
+
+    /// `DELETE /api/admin/custom-roles/{id}` (v1.1).
+    pub async fn delete_custom_role(&self, id: i64) -> Result<()> {
+        let resp = self.auth(self.http.delete(self.url(&format!("api/admin/custom-roles/{id}"))?))?.send().await.context("delete custom role request")?;
+        Self::parse("delete custom role", resp).await.map(|_: OkResponse| ())
+    }
+
+    /// `POST /api/admin/users/{id}/custom-roles` (v1.1): the member's whole set at once.
+    pub async fn set_custom_roles(&self, user: UserId, role_ids: &[i64]) -> Result<()> {
+        self.post::<_, OkResponse>("set custom roles", &format!("api/admin/users/{user}/custom-roles"), &SetUserCustomRolesRequest { role_ids: role_ids.to_vec() }).await.map(|_| ())
     }
 
     /// `POST /api/admin/users/{id}/reset-password` (owner only)

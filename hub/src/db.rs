@@ -45,7 +45,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection, OptionalExtension};
-use vox_proto::{AuditEntry, Channel, ChannelKind, Message, Role, User, UserId, badge};
+use vox_proto::{AuditEntry, Channel, ChannelKind, CustomRole, Message, Role, User, UserId, badge, perm};
 
 use crate::util::now_ms;
 
@@ -205,7 +205,20 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
             banned_by INTEGER,
             at_ms INTEGER NOT NULL,
             reason TEXT NOT NULL DEFAULT ''
-        );",
+        );
+        CREATE TABLE IF NOT EXISTS custom_roles (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            color TEXT NOT NULL DEFAULT '#5865F2',
+            position INTEGER NOT NULL DEFAULT 0,
+            allow INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS custom_role_members (
+            role_id INTEGER NOT NULL REFERENCES custom_roles(id),
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            PRIMARY KEY (role_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS custom_role_members_user ON custom_role_members(user_id);",
     )?;
     crate::avatar::init(&tx)?;
     crate::profile::init(&tx)?;
@@ -287,7 +300,9 @@ impl UserRow {
     }
 
     pub fn user(&self, owner: &str) -> User {
-        User { id: self.id, username: self.username.clone(), role: self.role(owner), flags: self.badges, avatar: self.avatar.clone(), display_name: self.display_name.clone() }
+        // v1.1: `role_ids` is filled by the callers that know the database (login, the
+        // admin lists); a bare row keeps the default of none.
+        User { id: self.id, username: self.username.clone(), role: self.role(owner), flags: self.badges, role_ids: Vec::new(), avatar: self.avatar.clone(), display_name: self.display_name.clone() }
     }
 
     pub fn account(&self, owner: &str) -> vox_proto::Account {
@@ -625,7 +640,7 @@ pub fn list_messages(conn: &Connection, channel_id: i64, before: Option<i64>, li
 
 pub(crate) fn display_user(id: UserId, username: String, stored_role: &str, avatar: Option<String>, display_name: Option<String>, badges: u64, owner: &str) -> User {
     let role = if is_owner(&username, owner) { Role::Owner } else { Role::from_wire(stored_role).min(Role::Admin) };
-    User { id, username, role, flags: badges, avatar, display_name }
+    User { id, username, role, flags: badges, role_ids: Vec::new(), avatar, display_name }
 }
 
 // ---------------------------------------------------------------- badges (v1.1)
@@ -761,6 +776,77 @@ pub fn ban(conn: &Connection, id: UserId, by: Option<UserId>, reason: &str) -> r
 /// they still have to type the server password like anybody else).
 pub fn unban(conn: &Connection, id: UserId) -> rusqlite::Result<bool> {
     Ok(conn.execute("DELETE FROM banned WHERE user_id = ?1", [id])? > 0)
+}
+
+// ---------------------------------------------------------------- custom roles (v1.1)
+
+/// Every custom role, display order.
+pub fn list_custom_roles(conn: &Connection) -> rusqlite::Result<Vec<CustomRole>> {
+    let mut st = conn.prepare("SELECT id, name, color, position, allow FROM custom_roles ORDER BY position, id")?;
+    let rows = st.query_map([], |r| {
+        Ok(CustomRole {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            color: r.get(2)?,
+            position: r.get(3)?,
+            allow: r.get::<_, i64>(4)?.max(0) as u64,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Creates a role and returns it. The id comes from the hub's id mint (never reused).
+pub fn create_custom_role(conn: &Connection, name: &str, color: &str, position: i64, allow: u64) -> rusqlite::Result<CustomRole> {
+    crate::ids::insert_with(conn, crate::ids::Seq::CustomRoles, |id| {
+        conn.execute(
+            "INSERT INTO custom_roles (id, name, color, position, allow) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, name, color, position, allow as i64],
+        )?;
+        Ok(CustomRole { id, name: name.to_owned(), color: color.to_owned(), position, allow })
+    })
+}
+
+/// Updates name, colour, order and permissions in one go (`false`: no such role).
+pub fn update_custom_role(conn: &Connection, role: &CustomRole) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
+        "UPDATE custom_roles SET name = ?1, color = ?2, position = ?3, allow = ?4 WHERE id = ?5",
+        params![role.name, role.color, role.position, role.allow as i64, role.id],
+    )? > 0)
+}
+
+/// Deletes a role: the memberships follow it (the trigger below), the users keep going.
+pub fn delete_custom_role(conn: &Connection, id: i64) -> rusqlite::Result<bool> {
+    conn.execute("DELETE FROM custom_role_members WHERE role_id = ?1", [id])?;
+    Ok(conn.execute("DELETE FROM custom_roles WHERE id = ?1", [id])? > 0)
+}
+
+/// One user's custom role ids, display order.
+pub fn custom_role_ids(conn: &Connection, user: UserId) -> rusqlite::Result<Vec<i64>> {
+    let mut st = conn.prepare(
+        "SELECT m.role_id FROM custom_role_members m JOIN custom_roles r ON r.id = m.role_id
+         WHERE m.user_id = ?1 ORDER BY r.position, r.id",
+    )?;
+    let rows = st.query_map([user], |r| r.get(0))?;
+    rows.collect()
+}
+
+/// Replaces one user's assignments (empty clears them).
+pub fn set_custom_role_ids(conn: &Connection, user: UserId, role_ids: &[i64]) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM custom_role_members WHERE user_id = ?1", [user])?;
+    for &role in role_ids {
+        conn.execute("INSERT OR IGNORE INTO custom_role_members (role_id, user_id) VALUES (?1, ?2)", params![role, user])?;
+    }
+    Ok(())
+}
+
+/// The union of the permissions of one user's custom roles.
+pub fn custom_allow(conn: &Connection, user: UserId) -> rusqlite::Result<u64> {
+    let allow: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(r.allow), 0) FROM custom_role_members m JOIN custom_roles r ON r.id = m.role_id WHERE m.user_id = ?1",
+        [user],
+        |r| Ok(r.get::<_, i64>(0)?),
+    )?;
+    Ok(allow.max(0) as u64)
 }
 
 /// (channel, author id, content) of a message.
@@ -989,6 +1075,8 @@ mod tests {
 
     // ------------------------------------------------------------ bans (v1.1)
 
+    // ------------------------------------------------------------ bans (v1.1)
+
     #[test]
     fn a_ban_closes_the_door_and_an_unban_opens_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -1012,6 +1100,40 @@ mod tests {
             assert!(unban(c, id)?);
             assert!(ban_of(c, id)?.is_none());
             assert!(!unban(c, id)?, "unbanning twice is a no-op, not an error");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    // ------------------------------------------------------------ custom roles (v1.1)
+
+    #[test]
+    fn custom_roles_crud_and_assignments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("voxhub.db");
+        let db = Db::open(&path).unwrap();
+        db.call_now(|c| {
+            let owner = badge_user(c, "Akuma", 0)?;
+            let member = badge_user(c, "Bia", 0)?;
+            assert!(list_custom_roles(c)?.is_empty());
+            // Create, assign, and the union of permissions follows.
+            let vip = create_custom_role(c, "VIP", "#E91B62", 1, perm::BAN_MEMBERS | perm::VIEW_AUDIT)?;
+            let modx = create_custom_role(c, "Modix", "#29A3A6", 2, perm::MUTE_MEMBERS)?;
+            set_custom_role_ids(c, member, &[vip.id, modx.id])?;
+            assert_eq!(custom_role_ids(c, member)?, [vip.id, modx.id], "display order");
+            assert_eq!(custom_allow(c, member)?, perm::BAN_MEMBERS | perm::VIEW_AUDIT | perm::MUTE_MEMBERS);
+            assert_eq!(custom_allow(c, owner)?, 0, "nobody else gets anything");
+            // Replacing the set clears the old ones at once.
+            set_custom_role_ids(c, member, &[modx.id])?;
+            assert_eq!(custom_allow(c, member)?, perm::MUTE_MEMBERS);
+            // Editing keeps the memberships, deleting drops them.
+            let mut edited = modx.clone();
+            edited.allow = perm::MOVE_MEMBERS;
+            assert!(update_custom_role(c, &edited)?);
+            assert_eq!(custom_allow(c, member)?, perm::MOVE_MEMBERS);
+            assert!(delete_custom_role(c, modx.id)?);
+            assert!(custom_role_ids(c, member)?.is_empty());
+            assert!(!delete_custom_role(c, modx.id)?, "deleting twice is a no-op");
             Ok(())
         })
         .unwrap();

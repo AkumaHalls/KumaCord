@@ -139,6 +139,12 @@ pub struct User {
     /// live in [`badge`]; the app renders from its catalog, the hub is the only writer.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub flags: u64,
+    /// v1.1: this member's custom roles (the [`CustomRole`] ids assigned to them). Empty
+    /// everywhere a custom role was never assigned (the field stays out of the JSON, so
+    /// old hubs and old clients parse byte-identical to before); the definitions come in
+    /// `Ready` (and `CustomRolesChanged`), the assignment rides the user.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub role_ids: Vec<i64>,
     /// What people see instead of the username (profiles, v0.6): optional, at most
     /// [`DISPLAY_NAME_MAX`] characters. The username stays the login identity. Same
     /// compatibility rules as `avatar`: `default` for older hubs, absent from the JSON when unset
@@ -152,9 +158,81 @@ impl User {
     /// A plain member without a picture or a display name (what everybody was before items 12,
     /// "foto de perfil" and profiles).
     pub fn new(id: UserId, username: impl Into<String>) -> Self {
-        User { id, username: username.into(), role: Role::Member, flags: 0, avatar: None, display_name: None }
+        User { id, username: username.into(), role: Role::Member, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None }
     }
 }
+
+/// Permissions (v1.1, Discord-style): what a custom role grants. The fixed roles keep
+/// their matrix untouched — a custom role only ever ADDS powers on top of them (and the
+/// Owner/Admin matrix always wins). The hub is the only enforcer; the app gates its UI
+/// with the same bits. ADMINISTRATOR means every bit below it.
+pub mod perm {
+    /// See the channel at all (without it the channel is hidden, like a private one).
+    pub const VIEW_CHANNEL: u64 = 1 << 0;
+    /// Write in text channels.
+    pub const SEND_MESSAGES: u64 = 1 << 1;
+    /// Send attachments.
+    pub const ATTACH: u64 = 1 << 2;
+    /// React to messages.
+    pub const REACT: u64 = 1 << 3;
+    /// Join a voice room.
+    pub const CONNECT: u64 = 1 << 4;
+    /// Talk in a voice room.
+    pub const SPEAK: u64 = 1 << 5;
+    /// Turn the camera on.
+    pub const VIDEO: u64 = 1 << 6;
+    /// Go Live (share the screen).
+    pub const STREAM: u64 = 1 << 7;
+    /// Delete anybody's message.
+    pub const DELETE_MESSAGES: u64 = 1 << 8;
+    /// Server-mute someone.
+    pub const MUTE_MEMBERS: u64 = 1 << 9;
+    /// Move someone between voice rooms.
+    pub const MOVE_MEMBERS: u64 = 1 << 10;
+    /// End someone's Go Live.
+    pub const STOP_STREAMS: u64 = 1 << 11;
+    /// Disconnect someone from voice.
+    pub const DISCONNECT: u64 = 1 << 12;
+    /// Ban (and unban) members.
+    pub const BAN_MEMBERS: u64 = 1 << 13;
+    /// Create, rename, reorder, make private and delete channels.
+    pub const MANAGE_CHANNELS: u64 = 1 << 14;
+    /// Create and revoke invites.
+    pub const MANAGE_INVITES: u64 = 1 << 15;
+    /// Create, edit, delete custom roles and assign them.
+    pub const MANAGE_ROLES: u64 = 1 << 16;
+    /// Grant badges by hand.
+    pub const MANAGE_BADGES: u64 = 1 << 17;
+    /// Read the moderation log.
+    pub const VIEW_AUDIT: u64 = 1 << 18;
+    /// Reset personal passwords (and see the one-time codes).
+    pub const RESET_PASSWORDS: u64 = 1 << 19;
+    /// Everything above — and it cannot be taken from someone by a lower hand.
+    pub const ADMINISTRATOR: u64 = 1 << 20;
+
+    /// Every grantable bit.
+    pub const GRANTABLE: u64 = VIEW_CHANNEL | SEND_MESSAGES | ATTACH | REACT | CONNECT | SPEAK | VIDEO | STREAM
+        | DELETE_MESSAGES | MUTE_MEMBERS | MOVE_MEMBERS | STOP_STREAMS | DISCONNECT | BAN_MEMBERS
+        | MANAGE_CHANNELS | MANAGE_INVITES | MANAGE_ROLES | MANAGE_BADGES | VIEW_AUDIT | RESET_PASSWORDS
+        | ADMINISTRATOR;
+}
+
+/// One custom role (v1.1): a name, a colour, a rank and the permissions it grants.
+/// Positions order them for display (the highest paints the member's name); they have
+/// nothing to do with the fixed `Role` ladder, which stays above them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomRole {
+    pub id: i64,
+    /// 1-24 characters, unique.
+    pub name: String,
+    /// A `#rrggbb` colour for the name and the pill.
+    pub color: String,
+    /// Display order; the member's name takes the colour of their highest role.
+    pub position: i64,
+    /// The permissions it grants ([`perm`] bits).
+    pub allow: u64,
+}
+
 
 /// The badge bits of [`User::flags`] (v1.1). The classic Discord badges whose art we
 /// ship (`app/assets/badges/`), plus the tenure ladder and the "first members" award.
@@ -522,6 +600,23 @@ pub struct BanInfo {
     pub by: Option<UserId>,
 }
 
+/// `POST /api/admin/custom-roles` (create) and `POST /api/admin/custom-roles/{id}`
+/// (update): everything a [`CustomRole`] is, minus the id (the update's URL carries it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomRoleRequest {
+    pub name: String,
+    pub color: String,
+    pub position: i64,
+    pub allow: u64,
+}
+
+/// `POST /api/admin/users/{id}/custom-roles` (v1.1): the member's whole set of custom
+/// roles at once (empty clears it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetUserCustomRolesRequest {
+    pub role_ids: Vec<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResetPasswordResponse {
     /// One-time code the person types as their personal password; then they choose a new one.
@@ -618,6 +713,10 @@ pub const AUDIT_SET_ROLE: &str = "set_role";
 pub const AUDIT_SET_BADGES: &str = "set_badges";
 pub const AUDIT_BAN: &str = "ban";
 pub const AUDIT_UNBAN: &str = "unban";
+pub const AUDIT_ROLE_CREATE: &str = "role_create";
+pub const AUDIT_ROLE_UPDATE: &str = "role_update";
+pub const AUDIT_ROLE_DELETE: &str = "role_delete";
+pub const AUDIT_ROLE_ASSIGN: &str = "role_assign";
 pub const AUDIT_RESET_PASSWORD: &str = "reset_password";
 pub const AUDIT_CHANNEL_CREATE: &str = "channel_create";
 pub const AUDIT_CHANNEL_RENAME: &str = "channel_rename";
@@ -870,6 +969,10 @@ pub enum ServerEvent {
         /// older hub).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         server_id: Option<String>,
+        /// v1.1: the server's custom roles (absent: a hub without them). The assignments
+        /// ride each user (`role_ids`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        custom_roles: Option<Vec<CustomRole>>,
     },
     MessageCreated { message: Message },
     UserOnline { user: User },
@@ -885,6 +988,10 @@ pub enum ServerEvent {
     ChannelsChanged { channels: Vec<Channel> },
     /// Someone's role changed.
     UserUpdated { user: User },
+    /// v1.1: the custom roles changed (created, edited, deleted, or an assignment moved):
+    /// the full new list, to everybody. An older client logs and skips it, and its own
+    /// fixed-role UI keeps working unchanged.
+    CustomRolesChanged { roles: Vec<CustomRole> },
     /// Only to the target: a moderator acted on you.
     Moderated { action: ModAction, by: User },
     // ---- soundboard, no protocol bump (older clients log and skip events they do not know)
@@ -1024,7 +1131,7 @@ mod tests {
         let ev = ServerEvent::VoiceStateChanged { member: m.clone() };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(matches!(serde_json::from_str::<v020::ServerEvent>(&json), Ok(v020::ServerEvent::VoiceStateChanged { .. })));
-        let ready = ServerEvent::Ready { user: user(1), channels: vec![], online: vec![user(1)], voice: vec![m], account: None, chat: None, server_id: None };
+        let ready = ServerEvent::Ready { user: user(1), channels: vec![], online: vec![user(1)], voice: vec![m], account: None, chat: None, server_id: None, custom_roles: None };
         let json = serde_json::to_string(&ready).unwrap();
         assert!(matches!(serde_json::from_str::<v020::ServerEvent>(&json), Ok(v020::ServerEvent::Ready { .. })));
     }
@@ -1183,7 +1290,7 @@ mod tests {
     }
 
     fn role_user(id: i64, role: Role) -> User {
-        User { id, username: format!("u{id}"), role, flags: 0, avatar: None, display_name: None }
+        User { id, username: format!("u{id}"), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None }
     }
 
     #[test]
@@ -1248,6 +1355,7 @@ mod tests {
             account: Some(Account { has_password: true, must_set_password: false, ..Default::default() }),
             chat: None,
             server_id: Some("0123456789abcdef0123456789abcdef".into()),
+            custom_roles: None,
         };
         assert!(matches!(serde_json::from_str::<v041::ServerEvent>(&serde_json::to_string(&ready).unwrap()), Ok(v041::ServerEvent::Ready { .. })));
         let msg = Message { id: 1, channel_id: 1, author: admin.clone(), content: "oi".into(), created_at_ms: 5, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] };
@@ -1505,7 +1613,7 @@ mod tests {
         assert_eq!((old.user, old.channel_id, old.streaming), (user(4), Some(5), true));
         let ev = serde_json::to_string(&ServerEvent::VoiceStateChanged { member: m.clone() }).unwrap();
         assert!(matches!(serde_json::from_str::<v050::ServerEvent>(&ev), Ok(v050::ServerEvent::VoiceStateChanged { .. })));
-        let ready = serde_json::to_string(&ServerEvent::Ready { user: user(4), channels: vec![], online: vec![user(4)], voice: vec![m], account: None, chat: None, server_id: None }).unwrap();
+        let ready = serde_json::to_string(&ServerEvent::Ready { user: user(4), channels: vec![], online: vec![user(4)], voice: vec![m], account: None, chat: None, server_id: None, custom_roles: None }).unwrap();
         assert!(matches!(serde_json::from_str::<v050::ServerEvent>(&ready), Ok(v050::ServerEvent::Ready { voice, .. }) if voice.len() == 1));
     }
 
@@ -1615,7 +1723,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Channel>(&only_staff).unwrap().private, Some(PrivateAccess::default()));
         // Inside the events an old app parses.
         for ev in [
-            ServerEvent::Ready { user: user(1), channels: vec![ch.clone()], online: vec![], voice: vec![], account: None, chat: Some(ChatFeatures::ALL), server_id: None },
+            ServerEvent::Ready { user: user(1), channels: vec![ch.clone()], online: vec![], voice: vec![], account: None, chat: Some(ChatFeatures::ALL), server_id: None, custom_roles: None },
             ServerEvent::ChannelsChanged { channels: vec![ch.clone(), channel(6, None)] },
         ] {
             let json = serde_json::to_string(&ev).unwrap();

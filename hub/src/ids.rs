@@ -30,10 +30,11 @@ pub enum Seq {
     Sounds,
     Invites,
     AuditLog,
+    CustomRoles,
 }
 
 impl Seq {
-    pub const ALL: [Seq; 8] = [Seq::Channels, Seq::Messages, Seq::Attachments, Seq::DmConversations, Seq::DmMessages, Seq::Sounds, Seq::Invites, Seq::AuditLog];
+    pub const ALL: [Seq; 9] = [Seq::Channels, Seq::Messages, Seq::Attachments, Seq::DmConversations, Seq::DmMessages, Seq::Sounds, Seq::Invites, Seq::AuditLog, Seq::CustomRoles];
 
     pub fn table(self) -> &'static str {
         match self {
@@ -45,6 +46,7 @@ impl Seq {
             Seq::Sounds => "sounds",
             Seq::Invites => "invites",
             Seq::AuditLog => "audit_log",
+            Seq::CustomRoles => "custom_roles",
         }
     }
 }
