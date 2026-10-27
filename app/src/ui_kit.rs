@@ -371,8 +371,8 @@ pub fn paint_card_label(painter: &egui::Painter, card: Rect, icon: Option<(&str,
 /// A popup / menu frame: [`theme::MOVEL`], hairline outline, radius 10 and the only shadow in the app.
 pub fn popup_frame(ui_style: &egui::Style) -> Frame {
     Frame::new()
-        .fill(theme::MOVEL)
-        .stroke(Stroke::new(stroke::HAIRLINE, theme::RISCO))
+        .fill(theme::MENU)
+        .stroke(Stroke::new(stroke::HAIRLINE, Color32::from_rgb(0x1A, 0x1B, 0x1E)))
         .corner_radius(radius::POPUP)
         .inner_margin(Margin::same(6))
         .shadow(ui_style.visuals.popup_shadow)
@@ -393,7 +393,7 @@ pub fn menu_row_ex(ui: &mut Ui, icon: &str, icon_color: Option<Color32>, text: &
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
         if resp.hovered() || open {
-            p.rect_filled(rect, radius::ROW, if danger { theme::PERIGO_FUNDO } else { theme::MOVEL_HOVER });
+            p.rect_filled(rect, 4, if danger { theme::PERIGO_FUNDO } else { theme::MOVEL });
         }
         let on = ui.is_enabled();
         let fg = if danger { theme::AO_VIVO } else { theme::GIZ };
@@ -452,14 +452,14 @@ pub fn menu_choice(ui: &mut Ui, current: bool, text: &str) -> Response {
 /// as [`popup_frame`] (a submenu's frame comes from its parent's `window_fill`).
 pub fn menu_style(style: &mut egui::Style) {
     egui::containers::menu::menu_style(style);
-    style.visuals.window_fill = theme::MOVEL;
+    style.visuals.window_fill = theme::MENU;
     style.visuals.window_stroke = Stroke::new(stroke::HAIRLINE, theme::RISCO);
     style.spacing.item_spacing.y = 1.0;
     // egui's own widgets (a checkbox's box, a slider's rail) are filled with [`theme::MOVEL`], the
     // menu's own colour, so they vanished in a menu: a step down to the wall's colour instead.
     for w in [&mut style.visuals.widgets.inactive, &mut style.visuals.widgets.noninteractive] {
-        w.bg_fill = theme::PAREDE;
-        w.weak_bg_fill = theme::PAREDE;
+        w.bg_fill = theme::MENU;
+        w.weak_bg_fill = theme::MENU;
     }
 }
 

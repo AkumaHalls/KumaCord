@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.8] — 2026-10-27
+
+### Mudado
+
+- **Os menus ficaram do Discord de verdade**: fundo quase-preto `#111214` (antes um bloco
+  cinza claro que parecia "quadrado" em cima do dark novo), itens com hover `#4E5058`
+  arredondados como os deles, e largura fina (~220 px, a medida do menu do Discord).
+
+- **O botão direito numa pessoa agora é o do Discord**:
+  - **Perfil** (era "Ver perfil"), **Mencionar** (novo — joga o @nome no chat),
+    **Mensagem** (era "Enviar mensagem"), Ligar, Copiar nome de usuário.
+  - **Banir...** agora também vive aqui (com o diálogo do motivo), para quem pode banir —
+    antes só existia no painel de membros.
+  - **Copiar ID do usuário** no rodapé, como o modo desenvolvedor deles.
+  - A ordem das seções segue a deles: perfil → voz → transmissão → câmera → moderação →
+    bloqueio → ID.
+
 ## [1.0.7] — 2026-10-27
 
 ### Mudado

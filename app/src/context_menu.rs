@@ -68,9 +68,11 @@ pub enum Id {
     // Person
     ViewProfile,
     EditProfile,
+    Mention,
     SendMessage,
     Call,
     CopyUsername,
+    CopyId,
     // Voice (same room)
     Volume,
     MuteLocal,
@@ -95,6 +97,7 @@ pub enum Id {
     ModSetRole,
     ModRemovePhoto,
     ModClearProfile,
+    Ban,
     // DMs
     Block,
     Unblock,
@@ -154,6 +157,10 @@ pub struct Facts {
     pub has_avatar: bool,
     /// There is something on their profile a moderator could clear (or we do not know yet).
     pub clearable: bool,
+    /// v1.1: I may ban this person (the perm + the hierarchy, but not myself or the owner).
+    pub can_ban: bool,
+    /// v1.1: they are already banned (the row becomes "Remover banimento", in the panel).
+    pub is_banned: bool,
     // --- my own entry
     pub presence_ok: bool,
     pub my_in_voice: bool,
@@ -234,10 +241,13 @@ pub fn disabled_reason(rows: &[Row], id: Id) -> Option<&'static str> {
 fn person_sections(f: &Facts) -> Vec<(Sec, Vec<Row>)> {
     let mut secs = Vec::new();
 
-    // 1. Profile / message / call / copy.
+    // 1. Profile / mention / message / call / copy (Discord's order).
     let mut p = Vec::new();
     if f.origin != Origin::Popout {
         p.push(item(Id::ViewProfile));
+    }
+    if !f.me {
+        p.push(item(Id::Mention));
     }
     if f.dms_ok {
         p.push(item(Id::SendMessage));
@@ -319,6 +329,10 @@ fn person_sections(f: &Facts) -> Vec<(Sec, Vec<Row>)> {
         if !m.is_empty() {
             m.insert(0, Row::Label("Moderação"));
         }
+        // v1.1: Discord keeps the ban in the person menu too, with the dialog after it.
+        if f.can_ban && !f.is_banned {
+            m.push(item(Id::Ban));
+        }
         secs.push((Sec::Moderation, m));
     } else if f.roles_ok && f.in_voice && f.live {
         // A member sees that stopping somebody's stream exists, and who may do it.
@@ -329,6 +343,8 @@ fn person_sections(f: &Facts) -> Vec<(Sec, Vec<Row>)> {
     if f.dms_ok {
         secs.push((Sec::Block, vec![item(if f.blocked { Id::Unblock } else { Id::Block })]));
     }
+    // 7. The id, like Discord's dev-mode item, for everyone.
+    secs.push((Sec::Profile, vec![item(Id::CopyId)]));
     secs
 }
 
@@ -549,6 +565,8 @@ impl App {
             theirs,
             has_avatar: user.avatar.is_some(),
             clearable,
+            can_ban: !me && theirs != Role::Owner && mine.outranks(theirs) && self.i_allow(vox_proto::perm::BAN_MEMBERS),
+            is_banned: self.roles.members.iter().any(|m| m.user.id == user.id && m.banned.is_some()),
             presence_ok: self.profile.supported == Some(true),
             my_in_voice: self.voice.channel.is_some(),
             my_no_mic: self.voice.no_mic,
@@ -575,10 +593,11 @@ impl App {
     pub(crate) fn person_menu_ui(&mut self, ui: &mut egui::Ui, user: &User, origin: Origin, lead: Lead, pos: Pos2) {
         let f = self.menu_facts(user, origin, lead);
         let mut list = rows(&f);
-        ui.set_min_width(250.0);
+        ui.set_min_width(200.0);
         // (And at most this wide: the rows take the width they are given, and a right-aligned part
-        // of the header stretched the menu to 600 points; v1.0 phase 4.)
-        ui.set_max_width(280.0);
+        // of the header stretched the menu to 600 points; v1.0 phase 4. Discord's own menu
+        // is a slim ~220-240 px — the mirror.)
+        ui.set_max_width(232.0);
         ui.spacing_mut().item_spacing.y = 1.0;
         self.menu_header(ui, user, &f);
         ui_kit::menu_separator(ui);
@@ -644,11 +663,13 @@ impl App {
             }
         };
         match id {
-            Id::ViewProfile => plain(ui, ph::USER, "Ver perfil", false),
+            Id::ViewProfile => plain(ui, ph::USER, "Perfil", false),
             Id::EditProfile => plain(ui, ph::PENCIL_SIMPLE, "Editar perfil", false),
-            Id::SendMessage => plain(ui, ph::CHAT_CIRCLE, "Enviar mensagem", false),
+            Id::Mention => plain(ui, ph::AT, "Mencionar", false),
+            Id::SendMessage => plain(ui, ph::CHAT_CIRCLE, "Mensagem", false),
             Id::Call => plain(ui, ph::PHONE, "Ligar", false),
             Id::CopyUsername => plain(ui, ph::COPY, "Copiar nome de usuário", false),
+            Id::CopyId => plain(ui, ph::CLIPBOARD_TEXT, "Copiar ID do usuário", false),
             Id::Volume | Id::MuteLocal => self.menu_voice_controls(ui, user, id),
             Id::StreamVolume | Id::StreamMute => self.menu_stream_controls(ui, user, id),
             Id::StreamWatch => plain(ui, ph::MONITOR, if f.audio_only { "Ouvir" } else { "Assistir" }, false),
@@ -665,6 +686,7 @@ impl App {
             Id::ModStopStream => plain(ui, ph::STOP, "Encerrar transmissão", true),
             Id::ModRemovePhoto => plain(ui, ph::IMAGE, "Remover foto", false),
             Id::ModClearProfile => plain(ui, ph::TRASH, "Limpar perfil...", true),
+            Id::Ban => plain(ui, ph::PROHIBIT, "Banir...", true),
             Id::Block => plain(ui, ph::PROHIBIT, "Bloquear", true),
             Id::Unblock => plain(ui, ph::CHECK, "Desbloquear", false),
             Id::MuteMic => plain(ui, ph::MICROPHONE, if f.my_muted { "Desmutar" } else { "Mutar" }, false),
@@ -815,11 +837,21 @@ impl App {
             Act::Item(id) => match id {
                 Id::ViewProfile => self.open_profile_at(user, pos),
                 Id::EditProfile => self.open_settings(),
+                Id::Mention => {
+                    // Discord's mention item: the @name lands in the input, ready to type.
+                    let at = format!("@{} ", user.username);
+                    self.input.push_str(&at);
+                    self.focus_input = true;
+                }
                 Id::SendMessage => self.open_dm(user.id),
                 Id::Call => self.call_user(user.id),
                 Id::CopyUsername => {
                     ctx.copy_text(user.username.clone());
                     self.toast(format!("Copiado: {}", user.username));
+                }
+                Id::CopyId => {
+                    ctx.copy_text(key.clone());
+                    self.toast(format!("Copiado: {}", user.id));
                 }
                 Id::StreamWatch => self.watch_focused(&key),
                 Id::StreamStop => self.unwatch(&key),
@@ -860,6 +892,7 @@ impl App {
                     let what = ModClearProfileRequest { bio: has_bio, status: has_status, display_name: has_name };
                     self.cmenu.confirm = Some(Confirm::Clear { user: user.clone(), what, has_bio, has_status, has_name });
                 }
+                Id::Ban => self.roles.confirm_ban = Some(user.clone()),
                 Id::Block => self.block_user(user, true),
                 Id::Unblock => self.block_user(user, false),
                 Id::MuteMic => self.toggle_mute(),
@@ -992,9 +1025,9 @@ mod tests {
     #[test]
     fn an_offline_member_gets_the_basics_only() {
         let f = base();
-        assert_eq!(ids(&rows(&f)), vec![Id::ViewProfile, Id::SendMessage, Id::Call, Id::CopyUsername, Id::Block]);
-        // Sections are separated.
-        assert_eq!(rows(&f).iter().filter(|r| **r == Row::Sep).count(), 1);
+        assert_eq!(ids(&rows(&f)), vec![Id::ViewProfile, Id::Mention, Id::SendMessage, Id::Call, Id::CopyUsername, Id::Block, Id::CopyId]);
+        // Sections are separated (profile / block / the id).
+        assert_eq!(rows(&f).iter().filter(|r| **r == Row::Sep).count(), 2);
     }
 
     #[test]
@@ -1155,9 +1188,9 @@ mod tests {
         // Already in a call with them: no "Ligar".
         let c = Facts { in_call_with: true, ..f.clone() };
         assert!(!has(&c, Id::Call));
-        // A hub without DMs: no message, call or block.
+        // A hub without DMs: no message, call or block — but the mention and the id stay.
         let n = Facts { dms_ok: false, ..f };
-        assert_eq!(ids(&rows(&n)), vec![Id::ViewProfile, Id::CopyUsername]);
+        assert_eq!(ids(&rows(&n)), vec![Id::ViewProfile, Id::Mention, Id::CopyUsername, Id::CopyId]);
     }
 
     #[test]

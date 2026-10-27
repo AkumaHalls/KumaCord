@@ -379,7 +379,8 @@ pub struct App {
     pub logs: HashMap<ChannelId, ChannelLog>,
     pub selected: Option<ChannelId>,
     pub input: String,
-    focus_input: bool,
+    /// The chat input asks for the keyboard focus (after a mention insert, for instance).
+    pub(crate) focus_input: bool,
     pub unread: HashMap<ChannelId, u32>,
     /// Bumped when a channel goes (v0.8.2): its message list starts from a fresh scroll state
     /// should the id ever come back.

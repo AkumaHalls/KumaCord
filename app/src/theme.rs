@@ -80,6 +80,10 @@ pub const AO_VIVO_HOVER: Color32 = Color32::from_rgb(0xE1, 0x3C, 0x40);
 pub const AO_VIVO_PRESSED: Color32 = Color32::from_rgb(0xC1, 0x30, 0x34);
 /// A quiet danger surface (an error notice, a destructive menu row under the pointer).
 pub const PERIGO_FUNDO: Color32 = Color32::from_rgb(0x47, 0x2B, 0x2F);
+/// The context menus and popups of the official client: near-black, so they sit
+/// *inside* the dark instead of a gray slab on top of it (v1.1.1 — the menus were
+/// the "square" look; they are the one surface Discord paints darker than the chat).
+pub const MENU: Color32 = Color32::from_rgb(0x11, 0x12, 0x14);
 /// The box of a checkbox or a radio button and a slider's rail (a step above [`MOVEL`]), and
 /// under the pointer.
 pub const CAIXA: Color32 = Color32::from_rgb(0x34, 0x47, 0x5B);
@@ -197,7 +201,7 @@ egui_phosphor::subset! {
             // (phase 3b: CARET_UP, CHECK_CIRCLE, CLIPBOARD_TEXT, PHONE_INCOMING, WARNING_CIRCLE for the server window,
             // the host panel, the ringing window and the notices.)
             CARET_UP, CHECK_CIRCLE, CLIPBOARD_TEXT, PHONE_INCOMING, WARNING_CIRCLE,
-            ARROW_BEND_UP_LEFT, ARROW_RIGHT, ARROW_SQUARE_OUT, ARROWS_CLOCKWISE, ARROWS_LEFT_RIGHT, CARET_DOWN,
+            ARROW_BEND_UP_LEFT, ARROW_RIGHT, ARROW_SQUARE_OUT, ARROWS_CLOCKWISE, ARROWS_LEFT_RIGHT, AT, CARET_DOWN,
             CARET_LEFT, CARET_RIGHT, CHAT_CENTERED_TEXT, CHAT_CIRCLE, CHECK, CIRCLE, COPY, CORNERS_IN, CORNERS_OUT, CROWN, DOTS_THREE,
             DOWNLOAD_SIMPLE, ENVELOPE_SIMPLE, EYE, EYE_SLASH, GAVEL, GEAR_SIX, HARD_DRIVES, HASH, HEADPHONES, IMAGE, INFO, LOCK_SIMPLE,
             MAGNIFYING_GLASS_PLUS, MASK_HAPPY, MEDAL, MICROPHONE, MICROPHONE_SLASH, MINUS, MONITOR, MUSIC_NOTES, PAPER_PLANE_RIGHT,
