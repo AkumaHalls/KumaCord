@@ -503,7 +503,7 @@ mod tests {
         let p: UserProfile = serde_json::from_str(r#"{"user":{"id":3,"username":"ana"}}"#).unwrap();
         assert_eq!((p.bio.as_str(), p.accent, p.status, p.presence, p.online, p.member_since_ms), ("", None, None, Presence::Online, false, 0));
         let full = UserProfile {
-            user: User { id: 3, username: "ana".into(), role: Role::Admin, avatar: None, display_name: Some("Ana".into()) },
+            user: User { id: 3, username: "ana".into(), role: Role::Admin, flags: 0, avatar: None, display_name: Some("Ana".into()) },
             bio: "oi".into(),
             accent: Some("#112233".into()),
             status: Some(CustomStatus { emoji: "🎮".into(), text: "x".into(), expires_at_ms: Some(5) }),
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn a_user_without_a_display_name_serialises_exactly_as_v052() {
-        let new = User { id: 7, username: "Ana".into(), role: Role::Moderator, avatar: Some("ab".into()), display_name: None };
+        let new = User { id: 7, username: "Ana".into(), role: Role::Moderator, flags: 0, avatar: Some("ab".into()), display_name: None };
         let old = v052::User { id: 7, username: "Ana".into(), role: Role::Moderator, avatar: Some("ab".into()) };
         assert_eq!(serde_json::to_string(&new).unwrap(), serde_json::to_string(&old).unwrap());
         assert_eq!(serde_json::to_string(&User::new(7, "Ana")).unwrap(), r#"{"id":7,"username":"Ana"}"#);

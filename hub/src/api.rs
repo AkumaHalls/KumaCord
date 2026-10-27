@@ -42,6 +42,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mod/users/{id}/stop-stream", post(admin::stop_stream))
         .route("/api/admin/users", get(admin::users))
         .route("/api/admin/users/{id}/role", post(admin::set_role))
+.route("/api/admin/users/{id}/badges", put(admin::set_badges))
         .route("/api/admin/users/{id}/reset-password", post(admin::reset_password))
         .route("/api/admin/audit", get(admin::audit_log))
         // "quem hospeda vira dono"
@@ -321,7 +322,7 @@ async fn login(
     let token = random_hex::<32>();
     let hash = sha256_hex(&token);
     let name = username.clone();
-    let row = if matches!(admission, crate::invites::Admission::Invite(_)) {
+    let mut row = if matches!(admission, crate::invites::Admission::Invite(_)) {
         // The name was free at the check; somebody may have taken it since (the use is spent).
         match s.db.call(move |c| db::login_new(c, &name, &hash)).await? {
             Some(row) => row,
@@ -350,6 +351,12 @@ async fn login(
         tracing::error!("claiming the server for {}: {e:#}", row.username);
     }
     let owner = s.owner();
+    // Badges (v1.1): a tenure tier or a first-members award may have crossed since the
+    // last login; refresh this one user's materialized flags before they are read — the
+    // row in hand may predate the UPDATE (a first login's INSERT has badges = 0), so the
+    // recomputed value also replaces what the response would have shown.
+    let (id_for_refresh, owner_for_refresh) = (row.id, owner.to_string());
+    row.badges = s.db.call(move |c| db::refresh_badges(c, id_for_refresh, &owner_for_refresh)).await?;
     let user = row.user(&owner);
     tracing::info!(%peer, user = %user.username, id = user.id, role = ?user.role, ?proof, ?admission, must_set_password = row.must_set_password(&owner), "login");
     Ok(Json(LoginResponse { token, user, server_name: s.cfg.server_name.clone(), device_token }))

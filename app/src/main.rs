@@ -7,6 +7,7 @@ mod app;
 mod avatars;
 mod autotest;
 mod backend;
+mod badges;
 mod brand;
 mod call;
 mod camera_cfg;

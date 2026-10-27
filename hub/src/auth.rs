@@ -293,6 +293,7 @@ mod tests {
             created_at_ms: 0,
             avatar: None,
             display_name: None,
+            badges: 0,
         }
     }
 

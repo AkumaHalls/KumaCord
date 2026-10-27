@@ -145,7 +145,21 @@ pub async fn start_with(opts: Options, previews: linkpreview::PreviewConfig) -> 
 /// [`start_with`] with explicit [`Tuning`] (tests).
 pub async fn start_tuned(opts: Options, previews: linkpreview::PreviewConfig, tuning: Tuning) -> Result<Server> {
     let cfg = config::load_or_create(&opts.data_dir)?;
+    // The hub's reqwest is `rustls-no-provider` on purpose (the ring provider, no aws-lc in
+    // the Docker build): install it before anything can build a client — `LiveKitAdmin::new`
+    // does this too; this is the belt to its suspenders if startup is ever reordered.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let db = db::Db::open(&opts.data_dir.join("voxhub.db")).context("opening database")?;
+    // Badges (v1.1): the tenure ladder and any first-members awards only move forward, and
+    // a hub that was down on the day a tier crossed would still show the old one — so
+    // everybody's materialized flags are recomputed at startup (cheap: one pass).
+    {
+        let owner = cfg.owner.clone();
+        let changed = db.call(move |c| db::recompute_badges(c, &owner)).await?;
+        if changed > 0 {
+            tracing::info!(changed, "badges recomputados na inicialização");
+        }
+    }
     // A database a newer hub marked as needing it (`access.rs`): say so loudly.
     if let Some(wanted) = db.call(|c| access::min_hub_version(c)).await? {
         if access::too_old(access::PRIVATE_MIN_HUB_VERSION, &wanted) {

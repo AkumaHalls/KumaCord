@@ -45,7 +45,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection, OptionalExtension};
-use vox_proto::{AuditEntry, Channel, ChannelKind, Message, Role, User, UserId};
+use vox_proto::{AuditEntry, Channel, ChannelKind, Message, Role, User, UserId, badge};
 
 use crate::util::now_ms;
 
@@ -167,6 +167,9 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         ("avatar_version", "TEXT"),
         // Profiles: what people see instead of the username (the rest is in `profiles`).
         ("display_name", "TEXT"),
+        // Badges (v1.1): the materialized effective flags — the automatic rules
+        // (`badge_grants` is the manual half) recompute them; see [`recompute_badges`].
+        ("badges", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         if !has_column(&tx, "users", column)? {
             tx.execute_batch(&format!("ALTER TABLE users ADD COLUMN {column} {decl}"))?;
@@ -192,6 +195,10 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
             action TEXT NOT NULL,
             target_id INTEGER,
             detail TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS badge_grants (
+            user_id INTEGER PRIMARY KEY REFERENCES users(id),
+            flags INTEGER NOT NULL DEFAULT 0
         );",
     )?;
     crate::avatar::init(&tx)?;
@@ -234,6 +241,9 @@ pub struct UserRow {
     pub avatar: Option<String>,
     /// What people see instead of the username, if the person chose one.
     pub display_name: Option<String>,
+    /// The effective badge flags (automatic rules OR the admin's grants), materialized in
+    /// the `users.badges` column by [`recompute_badges`] — the wire reads them from here.
+    pub badges: u64,
 }
 
 /// `owner` is `config.toml`'s owner name (empty = none); it is compared like SQLite's NOCASE.
@@ -271,7 +281,7 @@ impl UserRow {
     }
 
     pub fn user(&self, owner: &str) -> User {
-        User { id: self.id, username: self.username.clone(), role: self.role(owner), avatar: self.avatar.clone(), display_name: self.display_name.clone() }
+        User { id: self.id, username: self.username.clone(), role: self.role(owner), flags: self.badges, avatar: self.avatar.clone(), display_name: self.display_name.clone() }
     }
 
     pub fn account(&self, owner: &str) -> vox_proto::Account {
@@ -279,7 +289,7 @@ impl UserRow {
     }
 }
 
-const USER_COLS: &str = "u.id, u.username, u.role, u.password_hash, u.reset_hash, u.reset_expires_ms, u.server_muted, u.created_at_ms, u.avatar_version, u.display_name";
+const USER_COLS: &str = "u.id, u.username, u.role, u.password_hash, u.reset_hash, u.reset_expires_ms, u.server_muted, u.created_at_ms, u.avatar_version, u.display_name, u.badges";
 
 fn user_row(r: &rusqlite::Row) -> rusqlite::Result<UserRow> {
     Ok(UserRow {
@@ -293,6 +303,7 @@ fn user_row(r: &rusqlite::Row) -> rusqlite::Result<UserRow> {
         created_at_ms: r.get(7)?,
         avatar: r.get(8)?,
         display_name: r.get(9)?,
+        badges: r.get::<_, i64>(10)?.max(0) as u64,
     })
 }
 
@@ -579,7 +590,7 @@ pub fn insert_message_with(
 /// Newest first; `before` is an exclusive message-id cursor. Authors carry their current role.
 pub fn list_messages(conn: &Connection, channel_id: i64, before: Option<i64>, limit: i64, owner: &str) -> rusqlite::Result<Vec<Message>> {
     let mut st = conn.prepare(
-        "SELECT m.id, m.content, m.created_at_ms, u.id, u.username, u.role, u.avatar_version, u.display_name,
+        "SELECT m.id, m.content, m.created_at_ms, u.id, u.username, u.role, u.avatar_version, u.display_name, u.badges,
                 m.mentions, m.mention_everyone, m.reply_to FROM messages m
          JOIN users u ON u.id = m.user_id
          WHERE m.channel_id = ?1 AND m.id < ?2 ORDER BY m.id DESC LIMIT ?3",
@@ -590,14 +601,14 @@ pub fn list_messages(conn: &Connection, channel_id: i64, before: Option<i64>, li
             channel_id,
             content: r.get(1)?,
             created_at_ms: r.get(2)?,
-            author: display_user(r.get(3)?, r.get(4)?, &r.get::<_, String>(5)?, r.get(6)?, r.get(7)?, owner),
+            author: display_user(r.get(3)?, r.get(4)?, &r.get::<_, String>(5)?, r.get(6)?, r.get(7)?, r.get::<_, i64>(8)?.max(0) as u64, owner),
             attachments: Vec::new(),
             mentions: Vec::new(),
             mention_everyone: false,
             reply: None,
             reactions: Vec::new(),
         };
-        crate::chat::raw_fields(&mut m, &r.get::<_, String>(8)?, r.get::<_, i64>(9)? != 0, r.get(10)?);
+        crate::chat::raw_fields(&mut m, &r.get::<_, String>(9)?, r.get::<_, i64>(10)? != 0, r.get(11)?);
         Ok(m)
     })?;
     let mut msgs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -606,9 +617,100 @@ pub fn list_messages(conn: &Connection, channel_id: i64, before: Option<i64>, li
     Ok(msgs)
 }
 
-pub(crate) fn display_user(id: UserId, username: String, stored_role: &str, avatar: Option<String>, display_name: Option<String>, owner: &str) -> User {
+pub(crate) fn display_user(id: UserId, username: String, stored_role: &str, avatar: Option<String>, display_name: Option<String>, badges: u64, owner: &str) -> User {
     let role = if is_owner(&username, owner) { Role::Owner } else { Role::from_wire(stored_role).min(Role::Admin) };
-    User { id, username, role, avatar, display_name }
+    User { id, username, role, flags: badges, avatar, display_name }
+}
+
+// ---------------------------------------------------------------- badges (v1.1)
+
+/// The "first members" award covers the first accounts ever created (ids are row order in
+/// SQLite, so the rank is the creation order).
+pub const FIRST_MEMBERS_COUNT: i64 = 100;
+/// A tenure tier month, for the ladder: a 30-day month is close enough at this granularity.
+const MONTH_MS: i64 = 30 * 24 * 3600 * 1000;
+
+/// One user's manual grants — the half of the flags the admin sets by hand.
+pub fn badge_grant(conn: &Connection, id: UserId) -> rusqlite::Result<u64> {
+    Ok(conn.query_row("SELECT flags FROM badge_grants WHERE user_id = ?1", [id], |r| r.get::<_, i64>(0)).optional()?.unwrap_or(0).max(0) as u64)
+}
+
+/// Replaces one user's manual grants (0 leaves no row). The caller refreshes the
+/// materialized `users.badges` right after (see [`refresh_badges`]).
+pub fn set_badge_grant(conn: &Connection, id: UserId, flags: u64) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO badge_grants (user_id, flags) VALUES (?1, ?2) ON CONFLICT(user_id) DO UPDATE SET flags = ?2",
+        params![id, flags as i64],
+    )?;
+    Ok(())
+}
+
+/// The automatic badge bits: staff for the owner, the tenure ladder by account age, and
+/// the "first members" award by creation rank (1 = the first account ever).
+fn auto_badges(row: &UserRow, owner: &str, rank: i64) -> u64 {
+    let mut flags = 0u64;
+    if is_owner(&row.username, owner) {
+        flags |= badge::STAFF;
+    }
+    let months = ((now_ms() - row.created_at_ms).max(0) / MONTH_MS) as u64;
+    flags |= badge::tenure_bits(months);
+    if rank <= FIRST_MEMBERS_COUNT {
+        flags |= badge::FIRST_MEMBERS;
+    }
+    flags
+}
+
+/// Recomputes one user's materialized `users.badges` (manual grants OR the automatic
+/// rules) and returns them. Called after a grant change and on login, so a tier that
+/// crossed while the hub ran shows up without a restart.
+pub fn refresh_badges(conn: &Connection, id: UserId, owner: &str) -> rusqlite::Result<u64> {
+    let row: Option<UserRow> = conn.query_row(
+        &format!("SELECT {USER_COLS} FROM users u WHERE u.id = ?1"),
+        [id],
+        user_row,
+    ).optional()?;
+    let Some(row) = row else { return Ok(0) };
+    let rank = conn.query_row("SELECT COUNT(*) FROM users WHERE id < ?1", [id], |r| r.get::<_, i64>(0))?;
+    let flags = badge_grant(conn, id)? | auto_badges(&row, owner, rank);
+    if row.badges != flags {
+        conn.execute("UPDATE users SET badges = ?1 WHERE id = ?2", params![flags as i64, id])?;
+    }
+    Ok(flags)
+}
+
+/// Recomputes everybody at once (startup). Returns how many users changed.
+pub fn recompute_badges(conn: &Connection, owner: &str) -> rusqlite::Result<usize> {
+    let mut st = conn.prepare(
+        "SELECT u.id, u.username, u.created_at_ms, u.badges, COALESCE(g.flags, 0)
+         FROM users u LEFT JOIN badge_grants g ON g.user_id = u.id",
+    )?;
+    let rows = st.query_map([], |r| {
+        Ok((r.get::<_, UserId>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))
+    })?;
+    let mut changed = 0usize;
+    for row in rows {
+        let (id, username, created_at_ms, have, grant) = row?;
+        let row = UserRow {
+            id,
+            username,
+            stored_role: Role::Member,
+            password_hash: None,
+            reset_hash: None,
+            reset_expires_ms: None,
+            server_muted: false,
+            created_at_ms,
+            avatar: None,
+            display_name: None,
+            badges: have.max(0) as u64,
+        };
+        let rank = conn.query_row("SELECT COUNT(*) FROM users WHERE id < ?1", [id], |r| r.get::<_, i64>(0))?;
+        let flags = grant.max(0) as u64 | auto_badges(&row, owner, rank);
+        if have != flags as i64 {
+            conn.execute("UPDATE users SET badges = ?1 WHERE id = ?2", params![flags as i64, id])?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
 }
 
 /// (channel, author id, content) of a message.
@@ -639,7 +741,7 @@ pub fn audit(conn: &Connection, actor: Option<UserId>, action: &str, target: Opt
 /// Newest first; `before` is an exclusive id cursor.
 pub fn list_audit(conn: &Connection, before: Option<i64>, limit: i64, owner: &str) -> rusqlite::Result<Vec<AuditEntry>> {
     let mut st = conn.prepare(
-        "SELECT a.id, a.at_ms, a.action, a.detail, au.id, au.username, au.role, au.avatar_version, au.display_name, tu.id, tu.username, tu.role, tu.avatar_version, tu.display_name
+        "SELECT a.id, a.at_ms, a.action, a.detail, au.id, au.username, au.role, au.avatar_version, au.display_name, au.badges, tu.id, tu.username, tu.role, tu.avatar_version, tu.display_name, tu.badges
          FROM audit_log a
          LEFT JOIN users au ON au.id = a.actor_id
          LEFT JOIN users tu ON tu.id = a.target_id
@@ -649,11 +751,11 @@ pub fn list_audit(conn: &Connection, before: Option<i64>, limit: i64, owner: &st
         let person = |i: usize| -> rusqlite::Result<Option<User>> {
             let id: Option<i64> = r.get(i)?;
             Ok(match id {
-                Some(id) => Some(display_user(id, r.get(i + 1)?, &r.get::<_, String>(i + 2)?, r.get(i + 3)?, r.get(i + 4)?, owner)),
+                Some(id) => Some(display_user(id, r.get(i + 1)?, &r.get::<_, String>(i + 2)?, r.get(i + 3)?, r.get(i + 4)?, r.get::<_, i64>(i + 5)?.max(0) as u64, owner)),
                 None => None,
             })
         };
-        Ok(AuditEntry { id: r.get(0)?, at_ms: r.get(1)?, action: r.get(2)?, detail: r.get(3)?, actor: person(4)?, target: person(9)? })
+        Ok(AuditEntry { id: r.get(0)?, at_ms: r.get(1)?, action: r.get(2)?, detail: r.get(3)?, actor: person(4)?, target: person(10)? })
     })?;
     rows.collect()
 }
@@ -762,6 +864,74 @@ mod tests {
         db.call_now(|c| {
             assert!(user_for_session(c, "h")?.is_some(), "Ana has no personal password: kept");
             assert!(user_for_session(c, "d")?.is_none(), "dono has one: logs in again");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    // ------------------------------------------------------------ badges (v1.1)
+
+    /// Inserts a user of a known age in days and returns their id.
+    fn badge_user(c: &Connection, name: &str, age_days: i64) -> rusqlite::Result<UserId> {
+        c.execute(
+            "INSERT INTO users (username, created_at_ms) VALUES (?1, ?2)",
+            params![name, now_ms() - age_days * 24 * 3600 * 1000],
+        )?;
+        Ok(c.last_insert_rowid() as UserId)
+    }
+
+    #[test]
+    fn badges_start_empty_and_follow_manual_grants() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("voxhub.db");
+        let db = Db::open(&path).unwrap();
+        db.call_now(|c| {
+            let id = badge_user(c, "Ana", 0)?;
+            assert_eq!(find_user(c, "Ana")?.unwrap().badges, 0, "a fresh account has no badges");
+            set_badge_grant(c, id, badge::BUG_HUNTER | badge::HYPESQUAD)?;
+            let flags = refresh_badges(c, id, "")?;
+            assert_eq!(flags, badge::BUG_HUNTER | badge::HYPESQUAD | badge::FIRST_MEMBERS, "grants OR the first-members rule");
+            // Clearing the grants leaves only the automatic half.
+            set_badge_grant(c, id, 0)?;
+            assert_eq!(refresh_badges(c, id, "")?, badge::FIRST_MEMBERS);
+            // And the row's copy is what the wire reads.
+            assert_eq!(find_user(c, "Ana")?.unwrap().user("").flags, badge::FIRST_MEMBERS);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn the_tenure_ladder_follows_the_account_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("voxhub.db");
+        let db = Db::open(&path).unwrap();
+        db.call_now(|c| {
+            // 400 days ≈ 13 months: the 1, 3, 6 and 12 month tiers.
+            let id = badge_user(c, "Veterana", 400)?;
+            assert_eq!(refresh_badges(c, id, "")?, badge::FIRST_MEMBERS | badge::tenure_bits(13));
+            assert_eq!(find_user(c, "Veterana")?.unwrap().badges & badge::TENURE_24M, 0, "24 months not yet");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn the_owner_is_staff_and_the_startup_pass_covers_everybody() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("voxhub.db");
+        let db = Db::open(&path).unwrap();
+        db.call_now(|c| {
+            let owner_id = badge_user(c, "Akuma", 0)?;
+            let other = badge_user(c, "Bia", 0)?;
+            set_badge_grant(c, other, badge::PARTNER)?;
+            // The startup pass materializes both (nothing was computed yet).
+            assert_eq!(recompute_badges(c, "Akuma")?, 2, "both users changed");
+            assert_eq!(find_user(c, "Akuma")?.unwrap().badges, badge::STAFF | badge::FIRST_MEMBERS);
+            assert_eq!(find_user(c, "Bia")?.unwrap().badges, badge::PARTNER | badge::FIRST_MEMBERS);
+            // And it is idempotent: nothing changes the second time.
+            assert_eq!(recompute_badges(c, "Akuma")?, 0);
+            let _ = owner_id;
             Ok(())
         })
         .unwrap();

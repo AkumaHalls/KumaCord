@@ -130,6 +130,15 @@ pub struct User {
     /// (so it is byte-identical to before), ignored by older clients.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
+    /// Profile badges (v1.1, Discord-style): a bitfield computed by the hub — automatic
+    /// badges (staff = the owner, tenure tier by account age, first members by creation
+    /// order) OR-ed with the grants an admin sets by hand (`badge_grants`). Added with no
+    /// protocol bump, same rules as `role`: `default` keeps older hubs' JSON parsing
+    /// (everybody starts with none), `skip_serializing_if` keeps a badge-less user
+    /// byte-identical to before, older clients ignore the unknown field. The bit meanings
+    /// live in [`badge`]; the app renders from its catalog, the hub is the only writer.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub flags: u64,
     /// What people see instead of the username (profiles, v0.6): optional, at most
     /// [`DISPLAY_NAME_MAX`] characters. The username stays the login identity. Same
     /// compatibility rules as `avatar`: `default` for older hubs, absent from the JSON when unset
@@ -143,8 +152,83 @@ impl User {
     /// A plain member without a picture or a display name (what everybody was before items 12,
     /// "foto de perfil" and profiles).
     pub fn new(id: UserId, username: impl Into<String>) -> Self {
-        User { id, username: username.into(), role: Role::Member, avatar: None, display_name: None }
+        User { id, username: username.into(), role: Role::Member, flags: 0, avatar: None, display_name: None }
     }
+}
+
+/// The badge bits of [`User::flags`] (v1.1). The classic Discord badges whose art we
+/// ship (`app/assets/badges/`), plus the tenure ladder and the "first members" award.
+/// The hub is the only writer (automatic rules OR-ed with the admin's grants); the app
+/// renders the bits with this catalog. Bits not known to a client are ignored (and a
+/// client that knows a bit the hub never sets just never shows it).
+pub mod badge {
+    /// The owner (and whoever the owner marks as staff).
+    pub const STAFF: u64 = 1 << 0;
+    /// A partner of the community.
+    pub const PARTNER: u64 = 1 << 1;
+    /// A certified moderator.
+    pub const MODERATOR: u64 = 1 << 2;
+    /// The HypeSquad events badge.
+    pub const HYPESQUAD: u64 = 1 << 3;
+    /// HypeSquad houses (the fun quiz can pick one).
+    pub const BRAVERY: u64 = 1 << 4;
+    pub const BRILLIANCE: u64 = 1 << 5;
+    pub const BALANCE: u64 = 1 << 6;
+    /// Bug hunters of the AkumaLabs app.
+    pub const BUG_HUNTER: u64 = 1 << 7;
+    pub const BUG_HUNTER_GOLD: u64 = 1 << 8;
+    /// Verified / active developers of the app.
+    pub const VERIFIED_DEV: u64 = 1 << 9;
+    pub const ACTIVE_DEV: u64 = 1 << 10;
+    /// The first members of the server (hub rule: the first 100 accounts).
+    pub const FIRST_MEMBERS: u64 = 1 << 11;
+    /// Completed a quest (awarded by hand for events).
+    pub const QUEST: u64 = 1 << 12;
+    /// The tenure ladder (time in the server, from `users.created_at_ms`): one bit per
+    /// reached tier, so the client shows the highest and knows the whole history.
+    pub const TENURE_1M: u64 = 1 << 13;
+    pub const TENURE_3M: u64 = 1 << 14;
+    pub const TENURE_6M: u64 = 1 << 15;
+    pub const TENURE_12M: u64 = 1 << 16;
+    pub const TENURE_24M: u64 = 1 << 17;
+    pub const TENURE_36M: u64 = 1 << 18;
+    pub const TENURE_60M: u64 = 1 << 19;
+    pub const TENURE_72M: u64 = 1 << 20;
+
+    /// All the manually grantable bits (everything except the automatic rules; the
+    /// admin UI offers exactly these).
+    pub const GRANTABLE: u64 = STAFF | PARTNER | MODERATOR | HYPESQUAD | BRAVERY | BRILLIANCE | BALANCE
+        | BUG_HUNTER | BUG_HUNTER_GOLD | VERIFIED_DEV | ACTIVE_DEV | FIRST_MEMBERS | QUEST
+        | TENURE_1M | TENURE_3M | TENURE_6M | TENURE_12M | TENURE_24M | TENURE_36M | TENURE_60M | TENURE_72M;
+
+    /// The months of each tenure tier, aligned with the ladder bits above.
+    pub const TENURE_MONTHS: [(u64, u64); 8] = [
+        (TENURE_1M, 1),
+        (TENURE_3M, 3),
+        (TENURE_6M, 6),
+        (TENURE_12M, 12),
+        (TENURE_24M, 24),
+        (TENURE_36M, 36),
+        (TENURE_60M, 60),
+        (TENURE_72M, 72),
+    ];
+
+    /// The cumulative tenure bits for an age in whole months.
+    pub fn tenure_bits(months: u64) -> u64 {
+        let mut bits = 0;
+        for &(bit, m) in TENURE_MONTHS.iter() {
+            if months >= m {
+                bits |= bit;
+            }
+        }
+        bits
+    }
+}
+
+/// Serde helper: a user with no badges serialises without the field (byte-identical to
+/// the pre-flags JSON, the same trick `role` and `avatar` use).
+fn is_zero(f: &u64) -> bool {
+    *f == 0
 }
 
 /// Server roles (item 12), ordered `Member < Moderator < Admin < Owner`. The permission matrix
@@ -412,6 +496,13 @@ pub struct SetRoleRequest {
     pub role: Role,
 }
 
+/// `PUT /api/admin/users/{id}/badges` (v1.1): replace the member's manual badge grants.
+/// Bits outside [`badge::GRANTABLE`] are ignored by the hub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetBadgesRequest {
+    pub flags: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResetPasswordResponse {
     /// One-time code the person types as their personal password; then they choose a new one.
@@ -470,6 +561,11 @@ pub struct MemberInfo {
     pub has_password: bool,
     pub server_muted: bool,
     pub created_at_ms: i64,
+    /// The manual half of the user's badges (v1.1): what an admin granted by hand, so the
+    /// editor can tell them from the automatic rules (tenure, staff, first members).
+    /// Older hubs do not send it: everyone reads as having no grants.
+    #[serde(default)]
+    pub granted: u64,
 }
 
 /// One row of the moderation log (`GET /api/admin/audit`).
@@ -496,6 +592,7 @@ pub const AUDIT_MOVE: &str = "move";
 pub const AUDIT_STOP_STREAM: &str = "stop_stream";
 pub const AUDIT_DELETE_MESSAGE: &str = "delete_message";
 pub const AUDIT_SET_ROLE: &str = "set_role";
+pub const AUDIT_SET_BADGES: &str = "set_badges";
 pub const AUDIT_RESET_PASSWORD: &str = "reset_password";
 pub const AUDIT_CHANNEL_CREATE: &str = "channel_create";
 pub const AUDIT_CHANNEL_RENAME: &str = "channel_rename";
@@ -1059,7 +1156,7 @@ mod tests {
     }
 
     fn role_user(id: i64, role: Role) -> User {
-        User { id, username: format!("u{id}"), role, avatar: None, display_name: None }
+        User { id, username: format!("u{id}"), role, flags: 0, avatar: None, display_name: None }
     }
 
     #[test]
@@ -1201,6 +1298,34 @@ mod tests {
         let staff = role_user(2, Role::Admin);
         let old = v050roles::User { id: 2, username: "u2".into(), role: Role::Admin };
         assert_eq!(serde_json::to_string(&staff).unwrap(), serde_json::to_string(&old).unwrap());
+    }
+
+    #[test]
+    fn badges_travel_the_wire_and_default_to_none() {
+        // A badged user carries the field; a badge-less one stays byte-identical to before.
+        let mut u = User::new(7, "Ana");
+        u.flags = badge::STAFF | badge::TENURE_12M;
+        let json = serde_json::to_string(&u).unwrap();
+        assert!(json.contains(r#""flags":"#), "the flags field must appear: {json}");
+        // Old hubs: the field is absent.
+        let old: User = serde_json::from_str(r#"{"id":7,"username":"Ana"}"#).unwrap();
+        assert_eq!(old.flags, 0);
+        // And a round trip keeps the bits.
+        let back: User = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.flags, badge::STAFF | badge::TENURE_12M);
+    }
+
+    #[test]
+    fn the_tenure_ladder_is_cumulative_by_months() {
+        assert_eq!(badge::tenure_bits(0), 0);
+        assert_eq!(badge::tenure_bits(1), badge::TENURE_1M);
+        assert_eq!(badge::tenure_bits(2), badge::TENURE_1M);
+        assert_eq!(badge::tenure_bits(11), badge::TENURE_1M | badge::TENURE_3M | badge::TENURE_6M);
+        assert_eq!(badge::tenure_bits(12), badge::TENURE_1M | badge::TENURE_3M | badge::TENURE_6M | badge::TENURE_12M);
+        let all = badge::tenure_bits(u64::MAX / 2); // any huge age: every tier reached
+        assert_eq!(all & badge::TENURE_72M, badge::TENURE_72M);
+        // Every grantable bit is a single, distinct power of two.
+        assert_eq!(badge::GRANTABLE.count_ones(), 21, "21 grantable badges");
     }
 
     #[test]

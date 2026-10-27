@@ -117,3 +117,13 @@ MIT and/or Apache-2.0; these are not (or not only):
 - **Zlib**: `foldhash`, `zlib-rs`. **CC0-1.0**: `tiny-keccak`.
 
 Host mode also brings in `igd-next` and `xmltree` (both MIT), for the router's UPnP.
+
+## Profile badges (v1.1)
+
+- Files: `app/assets/badges/*.png` (22 small images: the classic badge set and the
+  "tempo de casa" tenure ladder).
+- Source: Discord Inc.'s public badge icons (`cdn.discordapp.com/badge-icons/...` and the
+  tenure set), included at this project's decision as profile decorations — the community
+  reads them as a shared visual language. Discord and the badge artwork are property of
+  Discord Inc.; these files are NOT covered by the project's MIT license. Replace them
+  before reusing this code in another product.

@@ -158,6 +158,8 @@ pub enum AdminCmd {
     DeleteMessage { id: MessageId },
     ListUsers,
     SetRole { user: UserId, role: Role },
+    /// v1.1: replace the member's manual badge grants (the whole mask at once).
+    SetBadges { user: UserId, flags: u64 },
     ResetPassword { user: User },
     Audit { before: Option<i64> },
     /// v0.9: `private` makes it private from the start.
@@ -194,6 +196,7 @@ pub async fn run_admin(hub: &HubClient, cmd: &AdminCmd) -> Result<AdminReply, St
         C::DeleteMessage { id } => hub.delete_message(id).await.map(|_| AdminReply::Done),
         C::ListUsers => hub.admin_users().await.map(AdminReply::Users),
         C::SetRole { user, role } => hub.set_role(user, role).await.map(|_| AdminReply::Done),
+        C::SetBadges { user, flags } => hub.set_badges(user, flags).await.map(|_| AdminReply::Done),
         C::ResetPassword { user } => hub.reset_password(user.id).await.map(AdminReply::ResetCode),
         C::Audit { before } => hub.audit_log(before, AUDIT_PAGE).await.map(AdminReply::Audit),
         C::CreateChannel { name, kind, private } => hub.create_channel(&name, kind, private).await.map(|_| AdminReply::Done),
@@ -309,6 +312,9 @@ pub struct RolesUi {
     pub new_access: AccessDraft,
     /// The access editor open under one channel (v0.9).
     pub editing_access: Option<(ChannelId, AccessDraft)>,
+    /// v1.1: the badge editor open for one member — the draft manual mask. It commits
+    /// on "Salvar" (the popup stays open so several can be flipped before saving).
+    pub badge_draft: Option<(UserId, u64)>,
     pub confirm_delete: Option<ChannelId>,
     pub confirm_reset: Option<User>,
     /// "Transferir posse do servidor": waiting for the owner's confirmation for this person.
@@ -1163,6 +1169,63 @@ impl App {
             ui.spacing_mut().item_spacing.y = 0.0;
             for m in &members {
                 self.server_member_row(ui, m);
+                // v1.1: the badge editor open under this member, like the access editor
+                // under a channel ("Editar badges" in the row).
+                let editing = self.roles.badge_draft.as_ref().is_some_and(|(id, _)| *id == m.user.id);
+                if let Some((id, mut draft)) = self.roles.badge_draft.take_if(|_| editing) {
+                    let mut keep = true;
+                    let flags = m.user.flags;
+                    let granted = m.granted;
+                    let name = m.user.shown_name().to_owned();
+                    egui::Frame::new().fill(theme::NOITE).corner_radius(radius::ROW).inner_margin(egui::Margin::symmetric(14, 10)).outer_margin(egui::Margin { left: 28, right: 4, top: 2, bottom: 6 }).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        ui.label(egui::RichText::new(format!("Badges de {name}")).font(theme::semibold(13.0)).color(theme::GIZ));
+                        ui_kit::hint(ui, "Concedidas por você ficam salvas; as automáticas (tempo de casa, primeiros membros, staff) vêm por cima.");
+                        // The automatic ones, shown but never editable here.
+                        let auto = flags & !granted;
+                        if auto != 0 {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Automáticas:").font(theme::body(11.5)).color(theme::NEVOA));
+                                self.badges.row(ui, auto, 16.0);
+                            });
+                            ui.add_space(space::S);
+                        }
+                        // The catalog: one toggle per badge, art + name + story.
+                        for d in crate::badges::CATALOG {
+                            let on = draft & d.bit != 0;
+                            let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), egui::Sense::click());
+                            if resp.clicked() {
+                                draft ^= d.bit;
+                            }
+                            let mut row = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink2(Vec2::new(8.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                            row.spacing_mut().item_spacing.x = 8.0;
+                            if let Some(tex) = self.badges.get(row.ctx(), d.bit) {
+                                let (ir, _) = row.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
+                                row.painter().image(tex, ir, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)), if on { egui::Color32::WHITE } else { egui::Color32::WHITE.gamma_multiply(0.45) });
+                            }
+                            row.label(egui::RichText::new(d.title).font(theme::body(12.5)).color(if on { theme::GIZ } else { theme::NEVOA }));
+                            let mark = if on { ph::CHECK } else { "" };
+                            row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(mark).font(theme::body(13.0)).color(theme::ABAJUR));
+                            });
+                            resp.on_hover_text(format!("{}\n{}", d.title, d.desc));
+                        }
+                        ui.add_space(space::S);
+                        ui.horizontal(|ui| {
+                            if ui_kit::button_sized(ui, Kind::Primary, Size::Small, None, "Salvar badges").clicked() {
+                                self.admin(AdminCmd::SetBadges { user: id, flags: draft });
+                                keep = false;
+                            }
+                            if ui_kit::button_sized(ui, Kind::Ghost, Size::Small, None, "Cancelar").clicked() {
+                                keep = false;
+                            }
+                        });
+                    });
+                    if keep && self.roles.badge_draft.is_none() {
+                        self.roles.badge_draft = Some((id, draft));
+                    }
+                }
             }
         });
     }
@@ -1190,6 +1253,10 @@ impl App {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.label(role_name(user.shown_name(), theirs, Some(theme::GIZ)).font(theme::semibold(13.5)));
                 role_badge(ui, theirs);
+                if user.flags != 0 {
+                    // v1.1: their badges, tiny, next to the name (the card tells the stories).
+                    self.badges.row(ui, user.flags, 14.0);
+                }
                 if m.has_password {
                     ui.label(RichText::new(ph::LOCK_SIMPLE).font(theme::body(13.0)).color(theme::NEVOA)).on_hover_text("Nome protegido por senha pessoal");
                 }
@@ -1240,6 +1307,15 @@ impl App {
                 }
             } else if m.server_muted {
                 ui_kit::pill(ui, &format!("{} silenciada", crate::app::ICON_MUTED), theme::PERIGO_FUNDO, theme::AO_VIVO);
+            }
+            // v1.1: the badge editor — admins open it right under the row.
+            if mine.can_admin() {
+                let editing = self.roles.badge_draft.as_ref().is_some_and(|(id, _)| *id == m.user.id);
+                let b = ui_kit::icon_button(ui, ph::MEDAL, "Badges", if editing { IconState::On } else { IconState::Normal });
+                if b.clicked() {
+                    self.roles.badge_draft = if editing { None } else { Some((m.user.id, m.granted)) };
+                }
+                b.on_hover_text("Editar badges desta pessoa");
             }
             let editable = !me && theirs != Role::Owner && (mine == Role::Owner || theirs < mine) && mine.can_admin();
             if editable {
@@ -1639,7 +1715,7 @@ mod tests {
 
     #[test]
     fn the_people_picker_offers_members_and_moderators_only() {
-        let info = |id, name: &str, role| MemberInfo { user: User { id, username: name.into(), role, avatar: None, display_name: None }, has_password: false, server_muted: false, created_at_ms: 0 };
+        let info = |id, name: &str, role| MemberInfo { user: User { id, username: name.into(), role, flags: 0, avatar: None, display_name: None }, has_password: false, server_muted: false, created_at_ms: 0, granted: 0 };
         let ms = vec![info(1, "dono", Role::Owner), info(2, "adm", Role::Admin), info(3, "ana", Role::Member), info(4, "anabela", Role::Moderator), info(5, "bia", Role::Member)];
         let names = |v: Vec<&MemberInfo>| v.iter().map(|m| m.user.username.clone()).collect::<Vec<_>>();
         assert_eq!(names(pick_candidates(&ms, &[], "an")), ["ana", "anabela"]);

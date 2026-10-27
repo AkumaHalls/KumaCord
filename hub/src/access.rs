@@ -457,7 +457,8 @@ mod tests {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(
             "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, role TEXT NOT NULL DEFAULT 'member', password_hash TEXT, reset_hash TEXT,
-                reset_expires_ms INTEGER, server_muted INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER NOT NULL DEFAULT 0, avatar_version TEXT, display_name TEXT);
+                reset_expires_ms INTEGER, server_muted INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER NOT NULL DEFAULT 0, avatar_version TEXT, display_name TEXT, badges INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE badge_grants (user_id INTEGER PRIMARY KEY, flags INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE channels (id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('text','voice')), position INTEGER NOT NULL);
              CREATE TABLE server_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              INSERT INTO users (id, username) VALUES (3, 'Ana'), (4, 'Bia');

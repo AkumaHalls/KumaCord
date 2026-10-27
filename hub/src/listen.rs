@@ -213,6 +213,10 @@ mod tests {
     /// to the network.
     #[tokio::test]
     async fn ipv4_peers_on_a_dual_stack_socket_look_like_ipv4() {
+        // The production hub installs the ring provider in `LiveKitAdmin::new` at startup;
+        // this test builds the router directly, so it installs it the same way before any
+        // reqwest client exists (the `rustls-no-provider` feature panics without one).
+        let _ = rustls::crypto::ring::default_provider().install_default();
         use axum::extract::ConnectInfo;
         let std_l = v6_socket(Ipv4Addr::LOCALHOST.to_ipv6_mapped(), 0, false).unwrap();
         let l = TcpListener::from_std(std_l).unwrap();

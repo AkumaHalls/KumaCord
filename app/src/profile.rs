@@ -823,6 +823,12 @@ impl App {
                         crate::roles::role_badge(ui, role);
                     });
                     ui.label(RichText::new(format!("@{}", user.username)).font(theme::body(13.0)).color(theme::NEVOA));
+                    // v1.1: the badge row, Discord-style — up to ROW_MAX images plus a "+N",
+                    // each with its name and story on hover. Empty rows draw nothing.
+                    if user.flags != 0 {
+                        ui.add_space(4.0);
+                        self.badges.row(ui, user.flags, crate::badges::ROW_SIZE);
+                    }
                     // Presence, then the custom status.
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
@@ -877,7 +883,30 @@ impl App {
                         }
                         if let Some(p) = cached.as_ref().filter(|p| p.member_since_ms > 0) {
                             heading(ui, "Membro desde");
-                            ui.label(RichText::new(format_date_pt(p.member_since_ms, offset)).font(theme::body(13.0)).color(theme::TEXTO));
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format_date_pt(p.member_since_ms, offset)).font(theme::body(13.0)).color(theme::TEXTO));
+                                // v1.1: the tenure tier beside the date — with a golden glow
+                                // while this session has not seen this tier on them yet.
+                                if let Some(tier) = crate::badges::tenure_tier(user.flags) {
+                                    let seen = self.tenure_seen.get(&user.id).copied();
+                                    let fresh = seen.is_none_or(|s| s != tier);
+                                    if fresh {
+                                        self.tenure_seen.insert(user.id, tier);
+                                    }
+                                    let title = crate::badges::def(tier).map(|d| d.title).unwrap_or("Veterano(a)");
+                                    if let Some(id) = self.badges.get(ui.ctx(), tier) {
+                                        let (r, resp) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+                                        if fresh {
+                                            // The level-up shine: the chip lights up gold until
+                                            // this session has seen the new tier once.
+                                            ui.painter().rect_filled(r, 9, theme::ABAJUR.gamma_multiply(0.16));
+                                            ui.painter().rect_stroke(r, 9, egui::Stroke::new(1.0, theme::ABAJUR.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                                        }
+                                        ui.painter().image(id, r, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
+                                        resp.on_hover_text(title);
+                                    }
+                                }
+                            });
                         }
                     });
                     ui.add_space(space::L);

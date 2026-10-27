@@ -364,13 +364,25 @@ pub async fn users(State(s): State<AppState>, me: Authed) -> ApiResult<Vec<Membe
     if !me.role.can_admin() {
         return Err(forbidden());
     }
-    let rows = s.db.call(|c| db::list_users(c)).await?;
     let owner = s.owner().to_string();
-    Ok(Json(
-        rows.into_iter()
-            .map(|r| MemberInfo { user: r.user(&owner), has_password: r.has_password(), server_muted: r.server_muted, created_at_ms: r.created_at_ms })
-            .collect(),
-    ))
+    let infos = s
+        .db
+        .call(move |c| {
+            let mut out = Vec::new();
+            for r in db::list_users(c)? {
+                let granted = db::badge_grant(c, r.id)?;
+                out.push(MemberInfo {
+                    user: r.user(&owner),
+                    granted,
+                    has_password: r.has_password(),
+                    server_muted: r.server_muted,
+                    created_at_ms: r.created_at_ms,
+                });
+            }
+            Ok(out)
+        })
+        .await?;
+    Ok(Json(infos))
 }
 
 /// `POST /api/admin/users/{id}/role`
@@ -395,6 +407,28 @@ pub async fn set_role(State(s): State<AppState>, me: Authed, Path(id): Path<User
     crate::access::reload_roles(&s).await;
     let detail = format!("{} -> {}", current.wire_name(), to.wire_name());
     audit(&s, Some(me.user.id), AUDIT_SET_ROLE, Some(id), detail).await;
+    Ok(ok())
+}
+
+/// `PUT /api/admin/users/{id}/badges` (v1.1): replace the member's manual badge grants.
+/// The automatic rules (staff for the owner, tenure, first members) still apply on top;
+/// bits outside [`vox_proto::badge::GRANTABLE`] are dropped. Everybody sees the change
+/// at once through `UserUpdated`.
+pub async fn set_badges(State(s): State<AppState>, me: Authed, Path(id): Path<UserId>, body: Result<Json<SetBadgesRequest>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    if !me.role.can_admin() {
+        return Err(forbidden());
+    }
+    let _ = target_row(&s, id).await?;
+    let granted = req.flags & badge::GRANTABLE;
+    let before = s.db.call(move |c| db::badge_grant(c, id)).await?;
+    s.db.call(move |c| db::set_badge_grant(c, id, granted)).await?;
+    let owner = s.owner().to_string();
+    s.db.call(move |c| db::refresh_badges(c, id, &owner)).await?;
+    let user = target_row(&s, id).await?.user(&s.owner());
+    s.update_user(&user);
+    let detail = format!("0x{before:x} -> 0x{granted:x}");
+    audit(&s, Some(me.user.id), AUDIT_SET_BADGES, Some(id), detail).await;
     Ok(ok())
 }
 

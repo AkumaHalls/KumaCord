@@ -390,6 +390,11 @@ pub struct App {
     pub previews: PreviewStore,
     /// Profile pictures: the cache of what the hub sent, and the settings section.
     pub avatars: crate::avatars::Avatars,
+    /// The badge textures (decoded once per badge, tiny; `badges.rs`, v1.1).
+    pub badges: crate::badges::Textures,
+    /// v1.1: the tenure tier this session already saw per user — the "Membro desde" glows
+    /// when it rose, until the card is opened once (per session, like a fresh level-up).
+    pub tenure_seen: HashMap<UserId, u64>,
 
     pub voice: VoiceUi,
     pub center: Center,
@@ -513,6 +518,8 @@ impl App {
             sidebar_rows: Vec::new(),
             previews: PreviewStore::default(),
             avatars: Default::default(),
+            badges: Default::default(),
+            tenure_seen: Default::default(),
             voice: VoiceUi::default(),
             center: Center::Chat,
             call: CallUi::default(),

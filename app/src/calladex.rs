@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn entries_are_numbered_in_join_order_with_their_tipo() {
-        let u = |id, name: &str, role| User { id, username: name.into(), role, avatar: None, display_name: None };
+        let u = |id, name: &str, role| User { id, username: name.into(), role, flags: 0, avatar: None, display_name: None };
         let people = vec![u(9, "lua", Role::Member), u(2, "dono", Role::Owner), u(5, "sol", Role::Moderator), u(2, "dono", Role::Owner), u(7, "rio", Role::Admin)];
         let list = entries(people, |id| (id == 5).then_some(1_700_000_000_000), |_| Color32::WHITE);
         let shown: Vec<(String, &str, &str)> = list.iter().map(|e| (number(e.number), e.user.username.as_str(), e.tipo)).collect();

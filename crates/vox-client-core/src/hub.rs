@@ -15,7 +15,7 @@ use url::Url;
 use vox_proto::{
     ApiError, AuditEntry, AvatarResponse, Channel, ChannelAccessRequest, ChannelCreateRequest, ChannelId, ChannelKind, ChannelRenameRequest, ChannelReorderRequest, ClaimOwnerRequest,
     ClaimOwnerResponse, ClientEvent, HealthResponse, LinkPreview, LoginRequest, LoginResponse, MemberInfo, Message as ChatMessage, MessageId, ModMoveRequest, ModMuteRequest,
-    OkResponse, PrivateAccess, ResetPasswordResponse, Role, ServerEvent, SetPasswordRequest, SetPasswordResponse, SetRoleRequest, TransferOwnerRequest, UserId,
+    OkResponse, PrivateAccess, ResetPasswordResponse, Role, ServerEvent, SetBadgesRequest, SetPasswordRequest, SetPasswordResponse, SetRoleRequest, TransferOwnerRequest, UserId,
     VoiceJoinResponse, PROTOCOL_VERSION,
 };
 
@@ -153,6 +153,11 @@ impl HubClient {
         Self::parse(what, resp).await
     }
 
+    async fn put<B: Serialize, T: DeserializeOwned>(&self, what: &str, path: &str, body: &B) -> Result<T> {
+        let resp = self.auth(self.http.put(self.url(path)?))?.json(body).send().await.with_context(|| format!("{what} request"))?;
+        Self::parse(what, resp).await
+    }
+
     async fn get<T: DeserializeOwned>(&self, what: &str, url: Url) -> Result<T> {
         let resp = self.auth(self.http.get(url))?.send().await.with_context(|| format!("{what} request"))?;
         Self::parse(what, resp).await
@@ -198,6 +203,12 @@ impl HubClient {
     /// `POST /api/admin/users/{id}/role`
     pub async fn set_role(&self, user: UserId, role: Role) -> Result<()> {
         self.post::<_, OkResponse>("set role", &format!("api/admin/users/{user}/role"), &SetRoleRequest { role }).await.map(|_| ())
+    }
+
+    /// `PUT /api/admin/users/{id}/badges` (v1.1): replace their manual badge grants. The
+    /// hub drops bits it does not know and keeps the automatic rules on top.
+    pub async fn set_badges(&self, user: UserId, flags: u64) -> Result<()> {
+        self.put::<_, OkResponse>("set badges", &format!("api/admin/users/{user}/badges"), &SetBadgesRequest { flags }).await.map(|_| ())
     }
 
     /// `POST /api/admin/users/{id}/reset-password` (owner only)
