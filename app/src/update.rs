@@ -329,49 +329,42 @@ impl App {
         let _ = notes_len;
         egui::Area::new(egui::Id::new("update_notice"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 6.0))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 8.0))
             .show(ctx, |ui| {
-                // O card: um brilho dourado por baixo (o "cha" que faltava), o rail
-                // na esquerda e o conteúdo por cima.
-                let glow = egui::epaint::Shadow { offset: [0, 3], blur: 18, spread: 3, color: (if mandatory { WARN } else { GOLD }).gamma_multiply(0.35) };
+                // The mirror of Discord's "update ready" pill: a quiet dark card, the
+                // sparkle, the version arrow and one action. No stripe, no glow.
+                let accent = if mandatory { WARN } else { GOLD };
                 egui::Frame::new()
-                    .fill(theme::PAREDE)
-                    .stroke(egui::Stroke::new(1.0, if mandatory { WARN.gamma_multiply(0.6) } else { GOLD.gamma_multiply(0.55) }))
+                    .fill(theme::MENU)
+                    .stroke(egui::Stroke::new(1.0, theme::RISCO))
                     .corner_radius(theme::radius::POPUP)
-                    .shadow(glow)
-                    .inner_margin(egui::Margin::same(0))
+                    .inner_margin(egui::Margin::symmetric(14, 10))
+                    .shadow(egui::epaint::Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(80) })
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            // O rail: a tarja de cor na borda esquerda.
-                            let rail = if mandatory { WARN } else { GOLD };
-                            let h = ui.available_height().max(52.0);
-                            let (r, _) = ui.allocate_exact_size(egui::vec2(5.0, h), egui::Sense::hover());
-                            ui.painter().rect_filled(r, 2.0, rail);
-                            ui.add_space(12.0);
-                            ui.label(egui::RichText::new(ph::SPARKLE).font(theme::body(20.0)).color(rail));
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            ui.label(egui::RichText::new(ph::SPARKLE).font(theme::body(17.0)).color(accent));
                             ui.vertical(|ui| {
                                 ui.label(
                                     egui::RichText::new(if mandatory { "Atualização obrigatória" } else { "Atualização disponível" })
-                                        .font(theme::semibold(13.5))
+                                        .font(theme::semibold(13.0))
                                         .color(theme::GIZ),
                                 );
                                 ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).font(theme::body(11.5)).color(theme::NEVOA));
-                                    ui.label(egui::RichText::new(ph::ARROW_RIGHT).font(theme::body(11.5)).color(theme::NEVOA));
-                                    ui.label(egui::RichText::new(format!("v{version}")).font(theme::semibold(11.5)).color(rail));
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).font(theme::body(11.0)).color(theme::NEVOA));
+                                    ui.label(egui::RichText::new("→").font(theme::body(11.0)).color(theme::NEVOA));
+                                    ui.label(egui::RichText::new(format!("v{version}")).font(theme::semibold(11.0)).color(accent));
                                 });
                             });
-                            ui.add_space(10.0);
                             if ui_kit::button(ui, Kind::Secondary, None, if mandatory { "Atualizar agora" } else { "Ver detalhes" }).clicked() {
                                 self.update.window_open = true;
                             }
                             if !mandatory {
-                                ui.add_space(2.0);
                                 if ui_kit::icon_button(ui, ph::X, "Dispensar aviso de atualização", ui_kit::IconState::Normal).clicked() {
                                     self.update.notice_dismissed = true;
                                 }
                             }
-                            ui.add_space(12.0);
                         });
                     });
             });
@@ -400,7 +393,9 @@ impl App {
         let blink = self.update.blink;
         let mut open = true;
         let accent = if mandatory { WARN } else { GOLD };
-        let glow = egui::epaint::Shadow { offset: [0, 4], blur: 26, spread: 4, color: accent.gamma_multiply(0.30) };
+        // The mirror of Discord's "What's New" modal: a dark card with real breathing
+        // room (24 px), no stripes, no glow — the shadow is quiet black, the title is
+        // 20 px, the version is a small pill and the notes sit in an inset card.
         egui::Window::new("atualizacao")
             .title_bar(false)
             .resizable(false)
@@ -409,66 +404,86 @@ impl App {
             .frame(
                 egui::Frame::new()
                     .fill(theme::PAREDE)
-                    .stroke(egui::Stroke::new(1.0, if mandatory { WARN.gamma_multiply(0.55) } else { GOLD.gamma_multiply(0.45) }))
+                    .stroke(egui::Stroke::new(1.0, theme::RISCO))
                     .corner_radius(theme::radius::POPUP)
-                    .shadow(glow),
+                    .inner_margin(egui::Margin { left: 24, right: 24, top: 20, bottom: 16 })
+                    .shadow(egui::epaint::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(90) }),
             )
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.set_width(560.0);
-                ui.spacing_mut().item_spacing.y = 10.0;
-                // A faixa de marca no topo (como o aviso do KumaDrive, na cor da AkumaLabs).
-                {
-                    let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), egui::Sense::hover());
-                    ui.painter().rect_filled(r, 0.0, accent);
-                }
-                ui.add_space(10.0);
-                // Cabeçalho: o spark num chip da cor, título claro.
+                ui.set_width(480.0);
+                ui.spacing_mut().item_spacing.y = 8.0;
+                // Header: the sparkle inline with the title (no box, no stripe).
                 ui.horizontal(|ui| {
-                    let chip = accent.gamma_multiply(0.16);
-                    let (r, _) = ui.allocate_exact_size(egui::vec2(46.0, 46.0), egui::Sense::hover());
-                    ui.painter().rect_filled(r, theme::radius::BUTTON, chip);
-                    ui.painter().rect_stroke(r, theme::radius::BUTTON, egui::Stroke::new(1.0, accent.gamma_multiply(0.5)), egui::StrokeKind::Inside);
-                    let icon = ui.painter().layout_no_wrap(ph::SPARKLE.to_string(), theme::body(24.0), accent);
-                    ui.painter().galley(r.center() - icon.size() / 2.0, icon, accent);
-                    ui.add_space(4.0);
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(if mandatory { "Atualização obrigatória" } else { "Nova versão disponível" })
-                                .font(theme::display(19.0))
-                                .color(theme::GIZ),
-                        );
-                        ui.label(
-                            egui::RichText::new(if mandatory {
-                                "O tempo de adiamento acabou: atualize para continuar usando o app."
-                            } else {
-                                "Uma versão mais recente do AkumaLabs foi publicada. Atualize para receber as novidades e correções."
-                            })
-                            .font(theme::body(12.5))
-                            .color(theme::NEVOA),
-                        );
-                    });
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(ph::SPARKLE).font(theme::body(20.0)).color(accent));
+                    ui.label(
+                        egui::RichText::new(if mandatory { "Atualização obrigatória" } else { "Novidades do AkumaLabs" })
+                            .font(theme::display(20.0))
+                            .color(theme::GIZ),
+                    );
+                    // The version as a pill, right where the eye looks for it.
+                    if let Some(m) = &available {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(52.0, 22.0), egui::Sense::hover());
+                        ui.painter().rect_filled(r, theme::radius::PILL, accent.gamma_multiply(0.15));
+                        let txt = ui.painter().layout_no_wrap(format!("v{}", m.version), theme::semibold(11.5), accent);
+                        ui.painter().galley(r.center() - txt.size() / 2.0, txt, accent);
+                    }
                 });
-                ui.add_space(8.0);
+                // Subtitle: one muted line under the title.
+                ui.label(
+                    egui::RichText::new(if mandatory {
+                        "O tempo de adiamento acabou: atualize para continuar usando o app."
+                    } else {
+                        "Uma versão mais recente foi publicada e o app pode atualizar sozinho."
+                    })
+                    .font(theme::body(13.0))
+                    .color(theme::NEVOA),
+                );
+                ui.add_space(4.0);
                 if let Some(manifest) = &available {
-                    self.update_version_pair(ui, &manifest.version, accent);
-                    ui.add_space(6.0);
-                    self.update_notes(ui, manifest.notes.as_deref(), accent);
-                    ui.add_space(8.0);
-                    // O prazo: quanto resta de carência (ou o aviso de que acabou).
+                    // The notes in an inset card (Discord's release-notes area).
+                    let (fill, stroke) = (theme::NOITE, egui::Stroke::new(1.0, theme::RISCO));
+                    egui::Frame::new().fill(fill).stroke(stroke).corner_radius(theme::radius::BUTTON).inner_margin(egui::Margin::same(16)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new("NOVIDADES DESTA VERSÃO").font(theme::semibold(10.5)).color(theme::NEVOA));
+                            ui.add_space(4.0);
+                            let text = manifest.notes.as_deref().filter(|n| !n.trim().is_empty());
+                            match text {
+                                Some(n) if n.len() < 600 => {
+                                    ui.add(egui::Label::new(egui::RichText::new(n).font(theme::body(13.0)).color(theme::TEXTO)).wrap());
+                                }
+                                Some(n) => {
+                                    egui::ScrollArea::vertical().id_salt("update_notes").max_height(200.0).auto_shrink([false, false]).show(ui, |ui| {
+                                        ui.add(egui::Label::new(egui::RichText::new(n).font(theme::body(13.0)).color(theme::TEXTO)).wrap());
+                                    });
+                                }
+                                None => {
+                                    ui.add(egui::Label::new(egui::RichText::new("Melhorias e correções internas — os detalhes ficam no CHANGELOG.md do repositório.").font(theme::body(13.0)).color(theme::NEVOA)).wrap());
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(2.0);
+                    // The deadline hint, quiet, above the footer.
                     if let Some(h) = hours_left.filter(|_| !mandatory) {
                         ui.label(
-                            egui::RichText::new(format!("Você pode adiar por mais {h}h; depois a atualização se torna obrigatória."))
-                                .font(theme::body(11.5))
+                            egui::RichText::new(format!("Você pode adiar por mais {h}h; depois ela se torna obrigatória."))
+                                .font(theme::body(11.0))
                                 .color(theme::NEVOA),
                         );
                     }
-                    ui.add_space(2.0);
+                    // Footer: a hairline, then the buttons on the right (Discord's row).
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+                    ui.painter().hline(r.x_range(), r.center().y, egui::Stroke::new(1.0, theme::RISCO));
+                    ui.add_space(8.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if gold_button(ui, &format!("{}  Atualizar para v{}", ph::DOWNLOAD_SIMPLE, manifest.version)).clicked() {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        if gold_button(ui, &format!("Atualizar para v{}", manifest.version)).clicked() {
                             self.update_install_start();
                         }
-                        if !mandatory && ui_kit::button_sized(ui, Kind::Secondary, ui_kit::Size::Large, None, "Agora não").clicked() {
+                        if !mandatory && ui_kit::button_sized(ui, Kind::Ghost, ui_kit::Size::Large, None, "Agora não").clicked() {
                             self.update.window_open = false;
                         }
                         if mandatory && ui_kit::button_sized(ui, Kind::Secondary, ui_kit::Size::Large, None, "Sair do app").clicked() {
@@ -488,7 +503,6 @@ impl App {
                     ui.label(egui::RichText::new("Reiniciando para atualizar…").font(theme::semibold(13.0)).color(theme::GIZ));
                     self.update_restarting_note(ui);
                 }
-                ui.add_space(10.0);
             });
         // Só fecha de verdade quando não está ocupada (e nunca quando é obrigatória).
         if !open && !busy && !mandatory {

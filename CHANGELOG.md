@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.9] — 2026-10-27
+
+### Mudado
+
+- **A tela de atualização virou o modal "What's New" do Discord**: 480 px com margens
+  internas de verdade (24 px), sem faixa de marca nem sombra colorida, título de 20 px
+  com a versão em pílula ao lado, as notas num cartão escuro interno com scroll, e o
+  rodapé com hairline + botões alinhados à direita (o CTA blurple e um fantasma
+  discreto). O aviso-banner também trocou: cartão escuro `#111214`, seta de versão e
+  sombra preta quieta — nada de brilho.
+
 ## [1.0.8] — 2026-10-27
 
 ### Mudado
