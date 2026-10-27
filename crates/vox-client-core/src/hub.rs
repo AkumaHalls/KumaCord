@@ -15,7 +15,7 @@ use url::Url;
 use vox_proto::{
     ApiError, AuditEntry, AvatarResponse, Channel, ChannelAccessRequest, ChannelCreateRequest, ChannelId, ChannelKind, ChannelRenameRequest, ChannelReorderRequest, ClaimOwnerRequest,
     ClaimOwnerResponse, ClientEvent, HealthResponse, LinkPreview, LoginRequest, LoginResponse, MemberInfo, Message as ChatMessage, MessageId, ModMoveRequest, ModMuteRequest,
-    OkResponse, PrivateAccess, ResetPasswordResponse, Role, ServerEvent, SetBadgesRequest, SetPasswordRequest, SetPasswordResponse, SetRoleRequest, TransferOwnerRequest, UserId,
+    OkResponse, PrivateAccess, BanInfo, BanRequest, ResetPasswordResponse, Role, ServerEvent, SetBadgesRequest, SetPasswordRequest, SetPasswordResponse, SetRoleRequest, TransferOwnerRequest, UserId,
     VoiceJoinResponse, PROTOCOL_VERSION,
 };
 
@@ -209,6 +209,16 @@ impl HubClient {
     /// hub drops bits it does not know and keeps the automatic rules on top.
     pub async fn set_badges(&self, user: UserId, flags: u64) -> Result<()> {
         self.put::<_, OkResponse>("set badges", &format!("api/admin/users/{user}/badges"), &SetBadgesRequest { flags }).await.map(|_| ())
+    }
+
+    /// `POST /api/admin/users/{id}/ban` (v1.1): out until an unban.
+    pub async fn ban_user(&self, user: UserId, reason: &str) -> Result<()> {
+        self.post::<_, OkResponse>("ban", &format!("api/admin/users/{user}/ban"), &BanRequest { reason: reason.to_owned() }).await.map(|_| ())
+    }
+
+    /// `POST /api/admin/users/{id}/unban` (v1.1).
+    pub async fn unban_user(&self, user: UserId) -> Result<()> {
+        self.post::<_, OkResponse>("unban", &format!("api/admin/users/{user}/unban"), &serde_json::json!({})).await.map(|_| ())
     }
 
     /// `POST /api/admin/users/{id}/reset-password` (owner only)

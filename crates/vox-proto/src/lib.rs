@@ -503,6 +503,25 @@ pub struct SetBadgesRequest {
     pub flags: u64,
 }
 
+/// `POST /api/admin/users/{id}/ban` (v1.1): the reason shows on the ban list and to the
+/// person when they try to come back. Empty is allowed (no reason given).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BanRequest {
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// One ban as the admin list tells it (part of [`MemberInfo`], v1.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BanInfo {
+    pub at_ms: i64,
+    #[serde(default)]
+    pub reason: String,
+    /// Who banned (`None`: the host console).
+    #[serde(default)]
+    pub by: Option<UserId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResetPasswordResponse {
     /// One-time code the person types as their personal password; then they choose a new one.
@@ -566,6 +585,10 @@ pub struct MemberInfo {
     /// Older hubs do not send it: everyone reads as having no grants.
     #[serde(default)]
     pub granted: u64,
+    /// v1.1: the member's ban, if any. A banned member cannot log in; the row stays so
+    /// the owner can undo it ("Remover banimento").
+    #[serde(default)]
+    pub banned: Option<BanInfo>,
 }
 
 /// One row of the moderation log (`GET /api/admin/audit`).
@@ -593,6 +616,8 @@ pub const AUDIT_STOP_STREAM: &str = "stop_stream";
 pub const AUDIT_DELETE_MESSAGE: &str = "delete_message";
 pub const AUDIT_SET_ROLE: &str = "set_role";
 pub const AUDIT_SET_BADGES: &str = "set_badges";
+pub const AUDIT_BAN: &str = "ban";
+pub const AUDIT_UNBAN: &str = "unban";
 pub const AUDIT_RESET_PASSWORD: &str = "reset_password";
 pub const AUDIT_CHANNEL_CREATE: &str = "channel_create";
 pub const AUDIT_CHANNEL_RENAME: &str = "channel_rename";
@@ -611,7 +636,7 @@ pub const AUDIT_RESET_OWNER: &str = "reset_owner";
 pub const AUDIT_REMOVE_AVATAR: &str = "remove_avatar";
 
 /// What a moderator did to *you* ([`ServerEvent::Moderated`], sent only to the target).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ModAction {
     /// Server-muted: the voice server no longer accepts your microphone.
@@ -623,6 +648,8 @@ pub enum ModAction {
     Move { channel_id: ChannelId },
     /// Your Go Live was ended: stop sharing.
     StopStream,
+    /// v1.1: banned from the server (the connection dies right after this arrives).
+    Banned { reason: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

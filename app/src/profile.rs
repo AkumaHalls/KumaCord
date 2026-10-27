@@ -827,7 +827,7 @@ impl App {
                     // each with its name and story on hover. Empty rows draw nothing.
                     if user.flags != 0 {
                         ui.add_space(4.0);
-                        self.badges.row(ui, user.flags, crate::badges::ROW_SIZE);
+                        self.badges.row(ui, user.flags, crate::badges::ROW_SIZE, crate::badges::ROW_MAX);
                     }
                     // Presence, then the custom status.
                     ui.horizontal(|ui| {

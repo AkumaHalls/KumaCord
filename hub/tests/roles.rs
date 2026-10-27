@@ -754,7 +754,12 @@ async fn v041_clients_keep_working() {
     let r = env.login_json(json!({"username": "velho", "server_password": PASSWORD, "protocol_version": 1})).await;
     assert_eq!(r.status(), StatusCode::OK);
     let raw: Value = r.json().await.unwrap();
-    assert_eq!(raw["user"].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "username"], "a member's JSON is exactly as before");
+    // v1.1: `flags` is the one additive field (badges); it shows up for a badged member
+    // and a v0.4.1 client simply ignores it (serde skips unknown fields). Nothing else
+    // may ever appear uninvited: role/avatar/display_name stay absent when unset, and a
+    // member with no badges serialises byte-identical to before (vox-proto tests that).
+    let keys = raw["user"].as_object().unwrap().keys().collect::<Vec<_>>();
+    assert!(keys.iter().all(|k| ["id", "username", "flags"].contains(&k.as_str())), "a member's JSON is the old one, plus at most the additive badges field");
     assert!(raw.get("device_token").is_none());
     let old = Who { token: raw["token"].as_str().unwrap().into(), user: serde_json::from_value(raw["user"].clone()).unwrap() };
     // A protected name refuses it (the old app shows "Sessão recusada").

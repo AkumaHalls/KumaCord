@@ -160,6 +160,10 @@ pub enum AdminCmd {
     SetRole { user: UserId, role: Role },
     /// v1.1: replace the member's manual badge grants (the whole mask at once).
     SetBadges { user: UserId, flags: u64 },
+    /// v1.1: ban with a reason (what the login refusal and the audit row tell).
+    Ban { user: User, reason: String },
+    /// v1.1: remove the ban.
+    Unban { user: UserId },
     ResetPassword { user: User },
     Audit { before: Option<i64> },
     /// v0.9: `private` makes it private from the start.
@@ -197,6 +201,8 @@ pub async fn run_admin(hub: &HubClient, cmd: &AdminCmd) -> Result<AdminReply, St
         C::ListUsers => hub.admin_users().await.map(AdminReply::Users),
         C::SetRole { user, role } => hub.set_role(user, role).await.map(|_| AdminReply::Done),
         C::SetBadges { user, flags } => hub.set_badges(user, flags).await.map(|_| AdminReply::Done),
+        C::Ban { user, reason } => hub.ban_user(user.id, &reason).await.map(|_| AdminReply::Done),
+        C::Unban { user } => hub.unban_user(user).await.map(|_| AdminReply::Done),
         C::ResetPassword { user } => hub.reset_password(user.id).await.map(AdminReply::ResetCode),
         C::Audit { before } => hub.audit_log(before, AUDIT_PAGE).await.map(AdminReply::Audit),
         C::CreateChannel { name, kind, private } => hub.create_channel(&name, kind, private).await.map(|_| AdminReply::Done),
@@ -317,6 +323,8 @@ pub struct RolesUi {
     pub badge_draft: Option<(UserId, u64)>,
     pub confirm_delete: Option<ChannelId>,
     pub confirm_reset: Option<User>,
+    /// v1.1: "Banir..." of this person, open as a dialog (the reason is typed inside).
+    pub confirm_ban: Option<User>,
     /// "Transferir posse do servidor": waiting for the owner's confirmation for this person.
     pub confirm_transfer: Option<User>,
     // "Reivindicar servidor" (a server with no owner).
@@ -599,7 +607,7 @@ impl App {
 
     fn on_moderated(&mut self, action: ModAction, by: &User) {
         tracing::info!(?action, by = %by.username, "moderated");
-        self.roles.moderated.push(action);
+        self.roles.moderated.push(action.clone());
         let who = by.shown_name();
         match action {
             ModAction::ServerMute => {
@@ -630,6 +638,15 @@ impl App {
                     self.stop_share();
                 }
                 self.notice = Some(format!("{who} encerrou sua transmissão."));
+            }
+            ModAction::Banned { ref reason } => {
+                // The hub cuts the socket right after this. Drop the voice at once and
+                // say why — the login screen tells the rest when they try to return.
+                if self.voice.channel.is_some() || self.voice.joining.is_some() {
+                    self.leave_voice();
+                }
+                let why = if reason.trim().is_empty() { String::new() } else { format!(" Motivo: {}.", reason.trim()) };
+                self.notice = Some(format!("{who} baniu você deste servidor.{why}"));
             }
         }
     }
@@ -1120,6 +1137,30 @@ impl App {
                 Some(false) => self.roles.confirm_transfer = None,
                 None => {}
             }
+        } else if let Some(u) = self.roles.confirm_ban.clone() {
+            // v1.1: the ban dialog — with the reason, kept in egui's memory so the
+            // confirm closure borrows nothing from the app.
+            let reason_id = egui::Id::new("ban_reason_field");
+            match ui_kit::confirm(ctx, "server_ban", "Banir", "Banir", Kind::Danger, true, |ui| {
+                ui_kit::body_text(ui, format!("Banir {} deste servidor?", u.shown_name()));
+                ui_kit::hint(ui, "A pessoa sai na hora e não consegue mais entrar — nem com senha, nem com convite. Dá para desfazer com \"Remover banimento\".");
+                ui.add_space(space::S);
+                let mut reason = ui.ctx().data_mut(|d| d.get_persisted::<String>(reason_id).unwrap_or_default());
+                ui.add(ui_kit::field(&mut reason).hint_text("Motivo (opcional: aparece pra pessoa e no registro)"));
+                ui.ctx().data_mut(move |d| d.insert_persisted(reason_id, reason));
+            }) {
+                Some(true) => {
+                    let reason = ctx.data_mut(|d| d.get_persisted::<String>(reason_id).unwrap_or_default());
+                    ctx.data_mut(|d| d.remove::<String>(reason_id));
+                    self.admin(AdminCmd::Ban { user: u, reason: reason.trim().to_owned() });
+                    self.roles.confirm_ban = None;
+                }
+                Some(false) => {
+                    let _ = ctx.data_mut(|d| d.remove::<String>(reason_id));
+                    self.roles.confirm_ban = None;
+                }
+                None => {}
+            }
         }
     }
 
@@ -1187,7 +1228,7 @@ impl App {
                         if auto != 0 {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("Automáticas:").font(theme::body(11.5)).color(theme::NEVOA));
-                                self.badges.row(ui, auto, 16.0);
+                                self.badges.row(ui, auto, 16.0, 8);
                             });
                             ui.add_space(space::S);
                         }
@@ -1254,8 +1295,9 @@ impl App {
                 ui.label(role_name(user.shown_name(), theirs, Some(theme::GIZ)).font(theme::semibold(13.5)));
                 role_badge(ui, theirs);
                 if user.flags != 0 {
-                    // v1.1: their badges, tiny, next to the name (the card tells the stories).
-                    self.badges.row(ui, user.flags, 14.0);
+                    // v1.1: their badges, tiny, next to the name — at most three, so the
+                    // row never gets wide enough to wrap (the card tells the stories).
+                    self.badges.row(ui, user.flags, 14.0, 3);
                 }
                 if m.has_password {
                     ui.label(RichText::new(ph::LOCK_SIMPLE).font(theme::body(13.0)).color(theme::NEVOA)).on_hover_text("Nome protegido por senha pessoal");
@@ -1277,6 +1319,23 @@ impl App {
                     any = true;
                     if ui_kit::menu_item(ui, ph::LOCK_SIMPLE, "Redefinir senha pessoal...", false, None) {
                         self.roles.confirm_reset = Some(m.user.clone());
+                        ui.close();
+                    }
+                }
+                // v1.1: the badge editor, in the menu (an inline button used to wrap below
+                // the row and vanish under the next one's hover).
+                if mine.can_admin() {
+                    any = true;
+                    if ui_kit::menu_item(ui, ph::MEDAL, "Badges...", false, None) {
+                        self.roles.badge_draft = Some((m.user.id, m.granted));
+                        ui.close();
+                    }
+                }
+                // v1.1: the ban (Discord keeps it in the member's menu too).
+                if mine.can_admin() && !me && theirs != Role::Owner && mine.outranks(theirs) && m.banned.is_none() {
+                    any = true;
+                    if ui_kit::menu_item(ui, ph::PROHIBIT, "Banir...", true, None) {
+                        self.roles.confirm_ban = Some(m.user.clone());
                         ui.close();
                     }
                 }
@@ -1308,17 +1367,15 @@ impl App {
             } else if m.server_muted {
                 ui_kit::pill(ui, &format!("{} silenciada", crate::app::ICON_MUTED), theme::PERIGO_FUNDO, theme::AO_VIVO);
             }
-            // v1.1: the badge editor — admins open it right under the row.
-            if mine.can_admin() {
-                let editing = self.roles.badge_draft.as_ref().is_some_and(|(id, _)| *id == m.user.id);
-                let b = ui_kit::icon_button(ui, ph::MEDAL, "Badges", if editing { IconState::On } else { IconState::Normal });
-                if b.clicked() {
-                    self.roles.badge_draft = if editing { None } else { Some((m.user.id, m.granted)) };
-                }
-                b.on_hover_text("Editar badges desta pessoa");
-            }
             let editable = !me && theirs != Role::Owner && (mine == Role::Owner || theirs < mine) && mine.can_admin();
-            if editable {
+            if let Some(b) = &m.banned {
+                // v1.1: banned — the pill with the reason on hover, and the way back in.
+                let why = if b.reason.trim().is_empty() { "Banido".to_string() } else { format!("Banido: {}", b.reason.trim()) };
+                ui_kit::pill(ui, &why, theme::PERIGO_FUNDO, theme::AO_VIVO);
+                if mine.can_admin() && ui_kit::button_sized(ui, Kind::Secondary, Size::Small, None, "Remover banimento").clicked() {
+                    self.admin(AdminCmd::Unban { user: m.user.id });
+                }
+            } else if editable {
                 let mut pick = theirs;
                 egui::ComboBox::from_id_salt(("role", m.user.id)).width(120.0).selected_text(role_label(theirs)).show_ui(ui, |ui| {
                     for r in mine.assignable() {
@@ -1715,7 +1772,7 @@ mod tests {
 
     #[test]
     fn the_people_picker_offers_members_and_moderators_only() {
-        let info = |id, name: &str, role| MemberInfo { user: User { id, username: name.into(), role, flags: 0, avatar: None, display_name: None }, has_password: false, server_muted: false, created_at_ms: 0, granted: 0 };
+        let info = |id, name: &str, role| MemberInfo { user: User { id, username: name.into(), role, flags: 0, avatar: None, display_name: None }, has_password: false, server_muted: false, created_at_ms: 0, granted: 0, banned: None };
         let ms = vec![info(1, "dono", Role::Owner), info(2, "adm", Role::Admin), info(3, "ana", Role::Member), info(4, "anabela", Role::Moderator), info(5, "bia", Role::Member)];
         let names = |v: Vec<&MemberInfo>| v.iter().map(|m| m.user.username.clone()).collect::<Vec<_>>();
         assert_eq!(names(pick_candidates(&ms, &[], "an")), ["ana", "anabela"]);

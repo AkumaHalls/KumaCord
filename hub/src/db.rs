@@ -199,6 +199,12 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS badge_grants (
             user_id INTEGER PRIMARY KEY REFERENCES users(id),
             flags INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS banned (
+            user_id INTEGER PRIMARY KEY REFERENCES users(id),
+            banned_by INTEGER,
+            at_ms INTEGER NOT NULL,
+            reason TEXT NOT NULL DEFAULT ''
         );",
     )?;
     crate::avatar::init(&tx)?;
@@ -713,6 +719,50 @@ pub fn recompute_badges(conn: &Connection, owner: &str) -> rusqlite::Result<usiz
     Ok(changed)
 }
 
+// ---------------------------------------------------------------- bans (v1.1)
+
+/// One ban as the wire tells it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BanRow {
+    pub user_id: UserId,
+    pub banned_by: Option<UserId>,
+    pub at_ms: i64,
+    pub reason: String,
+}
+
+/// Whether the account is banned (with the ban itself, for the refusal message).
+pub fn ban_of(conn: &Connection, id: UserId) -> rusqlite::Result<Option<BanRow>> {
+    conn.query_row("SELECT user_id, banned_by, at_ms, reason FROM banned WHERE user_id = ?1", [id], |r| {
+        Ok(BanRow {
+            user_id: r.get(0)?,
+            banned_by: r.get(1)?,
+            at_ms: r.get(2)?,
+            reason: r.get(3)?,
+        })
+    })
+    .optional()
+}
+
+/// Bans the account: their sessions and remembered devices die with the ban, so no token
+/// brings them back; the account row stays (badges, name, history) for an eventual unban.
+pub fn ban(conn: &Connection, id: UserId, by: Option<UserId>, reason: &str) -> rusqlite::Result<()> {
+    let now = now_ms();
+    conn.execute(
+        "INSERT INTO banned (user_id, banned_by, at_ms, reason) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(user_id) DO UPDATE SET banned_by = ?2, at_ms = ?3, reason = ?4",
+        params![id, by, now, reason],
+    )?;
+    conn.execute("DELETE FROM sessions WHERE user_id = ?1", [id])?;
+    conn.execute("DELETE FROM device_tokens WHERE user_id = ?1", [id])?;
+    Ok(())
+}
+
+/// Removes the ban: the person can log in again (their old password still works, and
+/// they still have to type the server password like anybody else).
+pub fn unban(conn: &Connection, id: UserId) -> rusqlite::Result<bool> {
+    Ok(conn.execute("DELETE FROM banned WHERE user_id = ?1", [id])? > 0)
+}
+
 /// (channel, author id, content) of a message.
 pub fn get_message(conn: &Connection, id: i64) -> rusqlite::Result<Option<(i64, UserId, String)>> {
     conn.query_row("SELECT channel_id, user_id, content FROM messages WHERE id = ?", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -932,6 +982,36 @@ mod tests {
             // And it is idempotent: nothing changes the second time.
             assert_eq!(recompute_badges(c, "Akuma")?, 0);
             let _ = owner_id;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    // ------------------------------------------------------------ bans (v1.1)
+
+    #[test]
+    fn a_ban_closes_the_door_and_an_unban_opens_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("voxhub.db");
+        let db = Db::open(&path).unwrap();
+        db.call_now(|c| {
+            let id = badge_user(c, "Rebelde", 0)?;
+            assert!(ban_of(c, id)?.is_none(), "nobody starts banned");
+            ban(c, id, Some(42), " desrespeito ")?;
+            let b = ban_of(c, id)?.unwrap();
+            assert_eq!(b.banned_by, Some(42));
+            assert_eq!(b.reason, " desrespeito ", "the reason is stored as given");
+            // Their sessions and remembered devices die with the ban: no old token
+            // brings them back.
+            assert_eq!(c.query_row("SELECT COUNT(*) FROM sessions WHERE user_id = ?1", [id], |r| r.get::<_, i64>(0))?, 0);
+            assert_eq!(c.query_row("SELECT COUNT(*) FROM device_tokens WHERE user_id = ?1", [id], |r| r.get::<_, i64>(0))?, 0);
+            // Ban again (an unban followed by a new ban): the row is replaced, not doubled.
+            ban(c, id, None, "de novo")?;
+            assert_eq!(c.query_row("SELECT COUNT(*) FROM banned", [], |r| r.get::<_, i64>(0))?, 1);
+            // And the unban opens the door — once.
+            assert!(unban(c, id)?);
+            assert!(ban_of(c, id)?.is_none());
+            assert!(!unban(c, id)?, "unbanning twice is a no-op, not an error");
             Ok(())
         })
         .unwrap();

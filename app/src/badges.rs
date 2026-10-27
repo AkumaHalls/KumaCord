@@ -115,11 +115,11 @@ impl Textures {
         self.map.get(&bit).map(|t| t.id())
     }
 
-    /// The row of badges of one user: up to [`ROW_MAX`] images, then a "+N" count. Each
+    /// The row of badges of one user: up to `max` images, then a "+N" count. Each
     /// one carries the badge's name and story on hover.
-    pub fn row(&mut self, ui: &mut egui::Ui, flags: u64, size: f32) {
+    pub fn row(&mut self, ui: &mut egui::Ui, flags: u64, size: f32, max: usize) {
         let badges = of(flags);
-        let show = badges.len().min(ROW_MAX);
+        let show = badges.len().min(max);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for b in &badges[..show] {

@@ -371,9 +371,15 @@ pub async fn users(State(s): State<AppState>, me: Authed) -> ApiResult<Vec<Membe
             let mut out = Vec::new();
             for r in db::list_users(c)? {
                 let granted = db::badge_grant(c, r.id)?;
+                let banned = db::ban_of(c, r.id)?.map(|b| BanInfo {
+                    at_ms: b.at_ms,
+                    reason: b.reason,
+                    by: b.banned_by,
+                });
                 out.push(MemberInfo {
                     user: r.user(&owner),
                     granted,
+                    banned,
                     has_password: r.has_password(),
                     server_muted: r.server_muted,
                     created_at_ms: r.created_at_ms,
@@ -429,6 +435,52 @@ pub async fn set_badges(State(s): State<AppState>, me: Authed, Path(id): Path<Us
     s.update_user(&user);
     let detail = format!("0x{before:x} -> 0x{granted:x}");
     audit(&s, Some(me.user.id), AUDIT_SET_BADGES, Some(id), detail).await;
+    Ok(ok())
+}
+
+/// How much of a ban reason is kept (Discord keeps little more).
+const BAN_REASON_MAX: usize = 512;
+
+/// `POST /api/admin/users/{id}/ban` (v1.1): the person is out — their sessions and
+/// remembered devices die with the ban, so no old token brings them back — until an
+/// unban. The reason travels to the refusal they see on trying to log in again.
+pub async fn ban_user(State(s): State<AppState>, me: Authed, Path(id): Path<UserId>, body: Result<Json<BanRequest>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    if !me.role.can_admin() {
+        return Err(forbidden());
+    }
+    if id == me.user.id {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "not on yourself"));
+    }
+    let t = target_row(&s, id).await?;
+    let theirs = t.role(&s.owner());
+    if theirs == Role::Owner || !me.role.outranks(theirs) {
+        return Err(forbidden());
+    }
+    let reason: String = req.reason.trim().chars().take(BAN_REASON_MAX).collect();
+    // Tell them first, while their socket can still hear it; then cut everything.
+    s.send_to(id, &ServerEvent::Moderated { action: ModAction::Banned { reason: reason.clone() }, by: me.user.clone() });
+    let reason_for_db = reason.clone();
+    let by = Some(me.user.id);
+    s.db.call(move |c| db::ban(c, id, by, &reason_for_db)).await?;
+    s.kick(id, None);
+    voice_guard::revoke(&s, id);
+    s.force_leave(id);
+    audit(&s, Some(me.user.id), AUDIT_BAN, Some(id), reason).await;
+    Ok(ok())
+}
+
+/// `POST /api/admin/users/{id}/unban` (v1.1): they can log in again, with their old
+/// password, after typing the server password like anybody else.
+pub async fn unban_user(State(s): State<AppState>, me: Authed, Path(id): Path<UserId>) -> ApiResult<OkResponse> {
+    if !me.role.can_admin() {
+        return Err(forbidden());
+    }
+    let removed = s.db.call(move |c| db::unban(c, id)).await?;
+    if !removed {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "no ban to remove"));
+    }
+    audit(&s, Some(me.user.id), AUDIT_UNBAN, Some(id), String::new()).await;
     Ok(ok())
 }
 

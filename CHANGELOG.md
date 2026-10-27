@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.5] — 2026-10-27
+
+### Adicionado
+
+- **Sistema de banimento, estilo Discord**:
+  - "Banir..." no menu ⋯ de cada membro (Dono/Admin, respeitando a hierarquia: ninguém
+    se bane, ninguém bane o Dono, Admin só quem está abaixo). Um diálogo pede o motivo.
+  - A pessoa banida **não entra mais**: o login recusa com o motivo ("Você foi banido
+    deste servidor..."), e senha, convite ou dispositivo lembrado não contornam — a
+    banimento apaga sessões e tokens na hora.
+  - Se estiver online, recebe o aviso ao vivo e sai (da voz também) no mesmo instante.
+  - "Remover banimento" na linha da pessoa (pill vermelha "Banido" com o motivo), e
+    tudo que acontece fica no registro de moderação.
+
+### Corrigido
+
+- **O botão de badges que sumia** no painel de membros: o editor de badges mudou para o
+  menu ⋯ ("Badges..."), onde nenhum layout consegue escondê-lo, e a fileira de badges da
+  linha agora mostra no máximo três (o card de perfil mostra todas).
+- Compatibilidade: o campo `flags` do protocolo é aditivo — um membro sem badges
+  serializa exatamente como antes, e um cliente antigo ignora o campo novo.
+
 ## [1.0.4] — 2026-10-27
 
 ### Adicionado

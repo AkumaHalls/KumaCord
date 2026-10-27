@@ -43,6 +43,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/users", get(admin::users))
         .route("/api/admin/users/{id}/role", post(admin::set_role))
 .route("/api/admin/users/{id}/badges", put(admin::set_badges))
+.route("/api/admin/users/{id}/ban", post(admin::ban_user))
+.route("/api/admin/users/{id}/unban", post(admin::unban_user))
         .route("/api/admin/users/{id}/reset-password", post(admin::reset_password))
         .route("/api/admin/audit", get(admin::audit_log))
         // "quem hospeda vira dono"
@@ -331,6 +333,14 @@ async fn login(
     } else {
         s.db.call(move |c| db::login(c, &name, &hash)).await?
     };
+    // v1.1: a banned account never comes in — not with a password, not with an invite,
+    // not with a remembered device (the ban deleted them all). The reason, if any,
+    // travels with the refusal so the login screen can tell why.
+    if let Some(b) = s.db.call(move |c| db::ban_of(c, row.id)).await? {
+        tracing::warn!(user = %row.username, by = ?b.banned_by, "login refused: banned");
+        let why = if b.reason.trim().is_empty() { String::new() } else { format!(" Motivo: {}.", b.reason.trim()) };
+        return Err(ApiErr::new(StatusCode::FORBIDDEN, format!("Você foi banido deste servidor.{why}")));
+    }
     crate::invites::finish_login(&s, admission, row.id).await?;
     // Private channels (v0.9): a new account, or one whose password state changed outside this hub
     // (`--reset-password`), counts with its role as it is now.
