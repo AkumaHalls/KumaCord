@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.7] — 2026-10-27
+
+### Mudado
+
+- **A cara do Discord**: a paleta inteira do app agora é a do client oficial — o chat
+  `#313338`, a lateral `#2B2D31`, o rail `#1E1F22`, os textos `#DBDEE1`/`#949BA4`, os
+  botões `#4E5058` e o **blurple `#5865F2`** de marca nos lugares de ação (falar,
+  botão primário, menções), com os passos oficiais de hover `#4752C4` e pressed
+  `#3C45A5`. O navy/dourado antigo fica no histórico do git.
+
+### Corrigido
+
+- **O editor de permissões**: cada permissão é uma linha inteira (nome e explicação à
+  esquerda, caixa de marcar à direita, como no Discord), com widgets nativos — nada de
+  desenho manual que quebrava o visual.
+- **O editor de "Cargos..." da pessoa** ganhou o mesmo tratamento: ponto da cor, nome e
+  a caixa de marcar, nativos e legíveis.
+- **A tela de atualização** está mais larga (560 px) e arejada, e o botão de atualizar
+  agora é o botão primário blurple com texto branco, como o resto do tema.
+
 ## [1.0.6] — 2026-10-27
 
 ### Adicionado

@@ -40,11 +40,11 @@ const MAX_DOWNLOAD: usize = 200 * 1024 * 1024;
 /// a atualização vira obrigatória.
 const DEFAULT_GRACE_HOURS: u64 = 72;
 
-/// O brilho da notificação: o dourado do logo AkumaLabs (o centro da marca é
-/// #FFF399) sobre o navy escuro - contraste alto, sem inventar cor solta pelo app.
-const GOLD: Color32 = Color32::from_rgb(0xF5, 0xC4, 0x4C);
-/// O mesmo dourado, para preenchimentos com texto escuro por cima.
-const GOLD_DIM: Color32 = Color32::from_rgb(0x33, 0x27, 0x0A);
+/// O brilho da notificação: o dourado virou o blurple do Discord (a marca do espelho
+/// v1.1.1) sobre o dark novo — contraste alto, sem inventar cor solta pelo app.
+const GOLD: Color32 = theme::ABAJUR;
+/// O mesmo, para preenchimentos com texto claro por cima.
+const GOLD_DIM: Color32 = theme::ABAJUR_TINTA;
 /// O aviso de "o prazo acabou": vermelho claro legível sobre o tema noturno.
 const WARN: Color32 = Color32::from_rgb(0xFF, 0x7A, 0x7A);
 
@@ -415,8 +415,8 @@ impl App {
             )
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.set_width(500.0);
-                ui.spacing_mut().item_spacing.y = 6.0;
+                ui.set_width(560.0);
+                ui.spacing_mut().item_spacing.y = 10.0;
                 // A faixa de marca no topo (como o aviso do KumaDrive, na cor da AkumaLabs).
                 {
                     let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), egui::Sense::hover());
@@ -505,8 +505,8 @@ impl App {
                 } else {
                     (theme::NOITE.gamma_multiply(0.6), egui::Stroke::new(1.0, theme::RISCO), theme::NEVOA)
                 };
-                egui::Frame::new().fill(fill).stroke(stroke).corner_radius(theme::radius::BUTTON).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
-                    ui.set_min_width(158.0);
+                egui::Frame::new().fill(fill).stroke(stroke).corner_radius(theme::radius::BUTTON).inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
+                    ui.set_min_width(170.0);
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new(tag).font(theme::semibold(10.0)).color(tag_color));
                         ui.label(egui::RichText::new(format!("v{version}")).font(theme::semibold(14.0)).color(theme::GIZ));
@@ -603,17 +603,19 @@ impl App {
 
 // ---------------------------------------------------------------- ui helpers
 
-/// O botão dourado da atualização: preenchido com a cor da marca e texto escuro
-/// por cima (o `Kind::Primary` do kit segue o azul-acinzentado do tema; o ouro
-/// precisa do próprio, pra ter o contraste que a notificação pede).
+/// O botão primário da atualização — o mesmo papel do gold_button antigo, agora no
+/// blurple do Discord (`theme::ABAJUR`) com texto branco: o `Kind::Primary` do kit
+/// segue o mesmo tom desde a troca da paleta, mas aqui o botão é desenhado na mão
+/// pra carregar o tamanho maior que a tela pede.
 fn gold_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), theme::semibold(13.5), GOLD_DIM);
+    let ink = theme::ABAJUR_TINTA;
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), theme::semibold(13.5), ink);
     let size = egui::vec2(galley.size().x + 34.0, 36.0);
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let hovered = resp.hovered() && ui.is_enabled();
-    let fill = if hovered { GOLD.gamma_multiply(1.08) } else { GOLD };
+    let fill = if resp.has_focus() || ui.is_enabled() && hovered { theme::ABAJUR_HOVER } else { theme::ABAJUR };
     ui.painter().rect_filled(rect, theme::radius::BUTTON, fill);
-    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, GOLD_DIM);
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, ink);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
     resp
 }

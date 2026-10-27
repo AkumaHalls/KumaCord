@@ -1318,25 +1318,28 @@ impl App {
                             ui_kit::hint(ui, "Marque os cargos dela; o mais alto pinta o nome.");
                         }
                         for r in &customs {
-                            let on = draft.contains(&r.id);
-                            let (rr, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), egui::Sense::click());
-                            if resp.clicked() {
-                                if on {
-                                    draft.retain(|x| *x != r.id);
-                                } else {
-                                    draft.push(r.id);
-                                }
-                            }
-                            if resp.hovered() {
-                                ui.painter().rect_filled(rr, radius::BUTTON, theme::ROW_HOVER);
-                            }
-                            let color = Color32::from_hex(r.color.get(1..).unwrap_or("99A7B5")).unwrap_or(theme::NEVOA);
-                            ui.painter().circle_filled(egui::pos2(rr.left() + 18.0, rr.center().y), 6.0, color);
-                            ui.painter().text(egui::pos2(rr.left() + 32.0, rr.center().y), egui::Align2::LEFT_CENTER, &r.name, theme::body(12.5), if on { theme::GIZ } else { theme::NEVOA });
-                            let mark = if on { ph::CHECK } else { " " };
-                            ui.painter().text(egui::pos2(rr.right() - 14.0, rr.center().y), egui::Align2::RIGHT_CENTER, mark, theme::body(12.5), if on { theme::ABAJUR } else { theme::NEVOA });
-                            let n = Self::PERMS.iter().filter(|(b, _, _)| r.allow & b != 0).count();
-                            resp.on_hover_text(format!("{} permissões", n));
+                            let mut on = draft.contains(&r.id);
+                            ui.horizontal(|ui| {
+                                let color = Color32::from_hex(r.color.get(1..).unwrap_or("99A7B5")).unwrap_or(theme::NEVOA);
+                                let (dot, dresp) = ui.allocate_exact_size(Vec2::splat(14.0), egui::Sense::hover());
+                                ui.painter().circle_filled(dot.center(), 6.0, color);
+                                dresp.on_hover_text(r.color.clone());
+                                ui.label(RichText::new(&r.name).font(theme::semibold(12.5)).color(if on { theme::GIZ } else { theme::NEVOA }));
+                                let n = Self::PERMS.iter().filter(|(b, _, _)| r.allow & b != 0).count();
+                                ui.label(RichText::new(format!("· {n} permissões")).font(theme::body(10.5)).color(theme::NEVOA));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.checkbox(&mut on, "").clicked() {
+                                        if on {
+                                            if !draft.contains(&r.id) {
+                                                draft.push(r.id);
+                                            }
+                                        } else {
+                                            draft.retain(|x| *x != r.id);
+                                        }
+                                    }
+                                });
+                            });
+                            ui.add_space(2.0);
                         }
                         ui.add_space(space::S);
                         ui.horizontal(|ui| {
@@ -1565,21 +1568,26 @@ impl App {
                 });
                 ui.add_space(space::S);
                 ui.label(RichText::new("Permissões").font(theme::semibold(12.5)).color(theme::NEVOA));
-                egui::Grid::new("perm_matrix").spacing(egui::vec2(10.0, 2.0)).show(ui, |ui| {
-                    for (i, (bit, title, desc)) in Self::PERMS.iter().enumerate() {
-                        let on = role.allow & bit != 0;
-                        let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), egui::Sense::click());
-                        if resp.clicked() {
-                            role.allow ^= bit;
-                        }
-                        ui.painter().rect_filled(r, radius::BUTTON, if on { theme::ABAJUR.gamma_multiply(0.22) } else { theme::MOVEL.gamma_multiply(0.5) });
-                        let mark = if on { ph::CHECK } else { " " };
-                        ui.painter().text(egui::pos2(r.left() + 12.0, r.center().y), egui::Align2::LEFT_CENTER, mark, theme::body(12.0), if on { theme::ABAJUR } else { theme::NEVOA });
-                        ui.painter().text(egui::pos2(r.left() + 30.0, r.center().y), egui::Align2::LEFT_CENTER, *title, theme::body(12.0), if on { theme::GIZ } else { theme::NEVOA });
-                        resp.on_hover_text(*desc);
-                        if i % 2 == 1 {
-                            ui.end_row();
-                        }
+                ui.add_space(space::XS);
+                // Discord's roles editor layout: one full-width row per permission — the
+                // name and the story on the left, a native checkbox on the right. Native
+                // widgets only: the theme paints them, hover and keyboard just work.
+                egui::ScrollArea::vertical().id_salt("perm_matrix").max_height(320.0).auto_shrink([false, false]).show(ui, |ui| {
+                    for (bit, title, desc) in Self::PERMS {
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.set_min_width(ui.available_width() - 34.0);
+                                ui.label(RichText::new(*title).font(theme::body(13.0)).color(theme::GIZ));
+                                ui.label(RichText::new(*desc).font(theme::body(11.0)).color(theme::NEVOA));
+                            });
+                            let mut on = role.allow & bit != 0;
+                            let resp = ui.checkbox(&mut on, "");
+                            if resp.clicked() {
+                                role.allow = if on { role.allow | bit } else { role.allow & !bit };
+                            }
+                            resp.on_hover_text(if on { format!("{title}: concedida") } else { format!("{title}: não concedida") });
+                        });
+                        ui.add_space(2.0);
                     }
                 });
                 ui.add_space(space::S);

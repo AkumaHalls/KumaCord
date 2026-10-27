@@ -30,49 +30,56 @@ use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontF
 
 // ---------------------------------------------------------------- colours
 
-/// Background of the window (the room at night).
-pub const NOITE: Color32 = Color32::from_rgb(0x13, 0x1C, 0x26);
-/// Panels (the sidebar) and dialog windows.
-pub const PAREDE: Color32 = Color32::from_rgb(0x1B, 0x27, 0x33);
-/// Raised things: buttons, fields, the selected row, video cards, menus.
-pub const MOVEL: Color32 = Color32::from_rgb(0x25, 0x34, 0x44);
+// The Discord dark palette (v1.1.1, "the mirror"): every value below is the official
+// client's. Chat #313338, sidebar #2B2D31, rail #1E1F22, text #DBDEE1/#949BA4,
+// interactive #4E5058, and the brand blurple #5865F2 (hover #4752C4, pressed
+// #3C45A5) extracted from the client bundle, next to the green #23A559 and the
+// red #F23F43. The old night-lamp navy/gold lives in git history.
+
+/// Background of the window (Discord's rail: the darkest surface).
+pub const NOITE: Color32 = Color32::from_rgb(0x1E, 0x1F, 0x22);
+/// Panels (the sidebar, the chat) and dialog windows (Discord's "chat" and "sidebar" grays).
+pub const PAREDE: Color32 = Color32::from_rgb(0x31, 0x33, 0x38);
+/// Raised things: buttons, fields, the selected row, video cards, menus (Discord's
+/// interactive normal).
+pub const MOVEL: Color32 = Color32::from_rgb(0x4E, 0x50, 0x58);
 /// Dividers and outlines.
-pub const RISCO: Color32 = Color32::from_rgb(0x2E, 0x3F, 0x51);
-/// Strong text.
-pub const GIZ: Color32 = Color32::from_rgb(0xE6, 0xEC, 0xF1);
-/// Secondary text, idle icons, section headers.
-pub const NEVOA: Color32 = Color32::from_rgb(0x8A, 0x9D, 0xAE);
-/// The lamp: whoever is speaking, the main action and mentions. Nothing else.
-pub const ABAJUR: Color32 = Color32::from_rgb(0xF0, 0xB4, 0x4C);
-/// The lamp's light on a surface (a mention's background).
-pub const ABAJUR_FUNDO: Color32 = Color32::from_rgb(0x3A, 0x32, 0x22);
-/// Live, and destructive actions.
-pub const AO_VIVO: Color32 = Color32::from_rgb(0xE5, 0x53, 0x4B);
-/// Online / connected.
-pub const ONLINE: Color32 = Color32::from_rgb(0x57, 0xC2, 0x8A);
+pub const RISCO: Color32 = Color32::from_rgb(0x3F, 0x41, 0x47);
+/// Strong text (Discord's header-primary).
+pub const GIZ: Color32 = Color32::from_rgb(0xF2, 0xF3, 0xF5);
+/// Secondary text, idle icons, section headers (Discord's text-muted).
+pub const NEVOA: Color32 = Color32::from_rgb(0x94, 0x9B, 0xA4);
+/// The blurple: whoever is speaking, the main action and mentions. Nothing else.
+pub const ABAJUR: Color32 = Color32::from_rgb(0x58, 0x65, 0xF2);
+/// The blurple's light on a surface (a mention's background).
+pub const ABAJUR_FUNDO: Color32 = Color32::from_rgb(0x3A, 0x42, 0x76);
+/// Live, and destructive actions (Discord's red).
+pub const AO_VIVO: Color32 = Color32::from_rgb(0xF2, 0x3F, 0x43);
+/// Online / connected (Discord's green).
+pub const ONLINE: Color32 = Color32::from_rgb(0x23, 0xA5, 0x59);
 
 // Derived states, chosen to sit between the tokens above.
 
-/// Body text: a little softer than [`GIZ`] for long reading (the mockup's message text).
-pub const TEXTO: Color32 = Color32::from_rgb(0xD3, 0xDC, 0xE4);
-/// [`MOVEL`] under the pointer.
-pub const MOVEL_HOVER: Color32 = Color32::from_rgb(0x2D, 0x3F, 0x52);
+/// Body text: Discord's text-normal, a little softer than [`GIZ`] for long reading.
+pub const TEXTO: Color32 = Color32::from_rgb(0xDB, 0xDE, 0xE1);
+/// [`MOVEL`] under the pointer (Discord's interactive hover).
+pub const MOVEL_HOVER: Color32 = Color32::from_rgb(0x6D, 0x6F, 0x78);
 /// [`MOVEL`] while pressed.
-pub const MOVEL_PRESSED: Color32 = Color32::from_rgb(0x1F, 0x2C, 0x3A);
+pub const MOVEL_PRESSED: Color32 = Color32::from_rgb(0x3F, 0x41, 0x47);
 /// A list row under the pointer (quieter than the selected one).
-pub const ROW_HOVER: Color32 = Color32::from_rgb(0x21, 0x2E, 0x3C);
+pub const ROW_HOVER: Color32 = Color32::from_rgb(0x35, 0x37, 0x3C);
 /// The selected / open row.
 pub const ROW_SELECTED: Color32 = MOVEL;
-/// [`ABAJUR`] under the pointer / pressed.
-pub const ABAJUR_HOVER: Color32 = Color32::from_rgb(0xF4, 0xC2, 0x68);
-pub const ABAJUR_PRESSED: Color32 = Color32::from_rgb(0xD9, 0x9C, 0x38);
-/// Text on an [`ABAJUR`] fill.
-pub const ABAJUR_TINTA: Color32 = Color32::from_rgb(0x2E, 0x22, 0x06);
+/// [`ABAJUR`] under the pointer / pressed (Discord's blurple steps).
+pub const ABAJUR_HOVER: Color32 = Color32::from_rgb(0x47, 0x52, 0xC4);
+pub const ABAJUR_PRESSED: Color32 = Color32::from_rgb(0x3C, 0x45, 0xA5);
+/// Text on an [`ABAJUR`] fill: white on blurple.
+pub const ABAJUR_TINTA: Color32 = Color32::WHITE;
 /// [`AO_VIVO`] under the pointer / pressed.
-pub const AO_VIVO_HOVER: Color32 = Color32::from_rgb(0xEC, 0x6A, 0x62);
-pub const AO_VIVO_PRESSED: Color32 = Color32::from_rgb(0xC8, 0x43, 0x3C);
+pub const AO_VIVO_HOVER: Color32 = Color32::from_rgb(0xE1, 0x3C, 0x40);
+pub const AO_VIVO_PRESSED: Color32 = Color32::from_rgb(0xC1, 0x30, 0x34);
 /// A quiet danger surface (an error notice, a destructive menu row under the pointer).
-pub const PERIGO_FUNDO: Color32 = Color32::from_rgb(0x3D, 0x24, 0x28);
+pub const PERIGO_FUNDO: Color32 = Color32::from_rgb(0x47, 0x2B, 0x2F);
 /// The box of a checkbox or a radio button and a slider's rail (a step above [`MOVEL`]), and
 /// under the pointer.
 pub const CAIXA: Color32 = Color32::from_rgb(0x34, 0x47, 0x5B);
