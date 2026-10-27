@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.0.4] — 2026-10-27
+
+### Adicionado
+
+- **Badges de perfil, estilo Discord**:
+  - O protocolo ganha `flags` por usuário: um bitfield que o servidor preenche com as
+    regras automáticas (badge de **Staff** para o dono, a escada de **tempo de casa** —
+    1, 3, 6, 12, 24, 36, 60 e 72 meses — e **Primeiros Membros** para as 100 primeiras
+    contas) somadas às **badges que o dono concede à mão** para quem ele quiser.
+  - Editor de badges no painel "Membros e cargos": botão de medalha em cada membro,
+    com o catálogo completo (Staff, Parceiro, Moderador, HypeSquad e as três casas,
+    Caça-Bugs, Dev verificado/ativo, Primeiros Membros, Missão e cada nível de tempo
+    de casa). Toda concessão vira uma linha no registro de moderação e aparece para
+    todo mundo na hora.
+  - O cartão de perfil mostra a fileira de badges com nome e história em cada uma
+    (o padrão do Discord: até 6 na fileira e um "+N"), e o "Membro desde" ganha o
+    ícone do tempo de casa — **com brilho dourado quando o nível acabou de subir**.
+  - A arte é o conjunto clássico de badges (veja `THIRD-PARTY-NOTICES.md`).
+
+### Corrigido
+
+- O servidor agora instala o provedor criptográfico do rustls no arranque de verdade:
+  antes, uma requisição de preview de link podia derrubar o processo quando o app
+  (que usa o mesmo `reqwest`) não estava no grafo de compilação.
+
 ## [1.0.3] — 2026-10-26
 
 ### Adicionado

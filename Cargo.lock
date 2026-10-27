@@ -5989,7 +5989,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vox-capture"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
@@ -6014,7 +6014,7 @@ dependencies = [
 
 [[package]]
 name = "vox-client-core"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -6049,7 +6049,7 @@ dependencies = [
 
 [[package]]
 name = "vox-log"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "tracing",
  "tracing-appender",
@@ -6058,7 +6058,7 @@ dependencies = [
 
 [[package]]
 name = "vox-proto"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -6066,7 +6066,7 @@ dependencies = [
 
 [[package]]
 name = "voxhub-app"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "eframe",
@@ -6092,7 +6092,7 @@ dependencies = [
 
 [[package]]
 name = "voxhub-server"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "argon2",

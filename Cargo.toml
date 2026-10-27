@@ -13,7 +13,7 @@ exclude = ["vendor/deep_filter"]
 
 [workspace.package]
 edition = "2021"
-version = "1.0.3"
+version = "1.0.4"
 publish = false
 
 [workspace.dependencies]
