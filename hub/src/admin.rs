@@ -425,7 +425,7 @@ pub async fn set_role(State(s): State<AppState>, me: Authed, Path(id): Path<User
 /// at once through `UserUpdated`.
 pub async fn set_badges(State(s): State<AppState>, me: Authed, Path(id): Path<UserId>, body: Result<Json<SetBadgesRequest>, JsonRejection>) -> ApiResult<OkResponse> {
     let Json(req) = body?;
-    if !me.role.can_admin() {
+    if !may(&s, &me, perm::MANAGE_BADGES).await {
         return Err(forbidden());
     }
     let _ = target_row(&s, id).await?;
@@ -449,7 +449,7 @@ const BAN_REASON_MAX: usize = 512;
 /// unban. The reason travels to the refusal they see on trying to log in again.
 pub async fn ban_user(State(s): State<AppState>, me: Authed, Path(id): Path<UserId>, body: Result<Json<BanRequest>, JsonRejection>) -> ApiResult<OkResponse> {
     let Json(req) = body?;
-    if !me.role.can_admin() {
+    if !may(&s, &me, perm::BAN_MEMBERS).await {
         return Err(forbidden());
     }
     if id == me.user.id {
@@ -476,7 +476,7 @@ pub async fn ban_user(State(s): State<AppState>, me: Authed, Path(id): Path<User
 /// `POST /api/admin/users/{id}/unban` (v1.1): they can log in again, with their old
 /// password, after typing the server password like anybody else.
 pub async fn unban_user(State(s): State<AppState>, me: Authed, Path(id): Path<UserId>) -> ApiResult<OkResponse> {
-    if !me.role.can_admin() {
+    if !may(&s, &me, perm::BAN_MEMBERS).await {
         return Err(forbidden());
     }
     let removed = s.db.call(move |c| db::unban(c, id)).await?;
@@ -489,7 +489,7 @@ pub async fn unban_user(State(s): State<AppState>, me: Authed, Path(id): Path<Us
 
 // ---------------------------------------------------------------- custom roles (v1.1)
 
-/// The gate of the custom-role world: the fixed matrix first (Admin and above always
+/// The permission gate of the custom-role world: the fixed matrix first (Admin and above always
 /// pass), then whatever a custom role granted. This is the ONLY way a plain member ever
 /// gets a power, and it only ever adds.
 async fn may(s: &AppState, me: &Authed, bit: u64) -> bool {
@@ -498,6 +498,16 @@ async fn may(s: &AppState, me: &Authed, bit: u64) -> bool {
     }
     let id = me.user.id;
     s.db.call(move |c| db::custom_allow(c, id)).await.map(|a| a & bit != 0).unwrap_or(false)
+}
+
+/// Everything the caller may grant in a role (Discord's rule: nobody gives what they do
+/// not have). Admins pass everything; a member passes only what their own roles gave them.
+async fn grantable_by(s: &AppState, me: &Authed) -> u64 {
+    if me.role.can_admin() {
+        return perm::GRANTABLE;
+    }
+    let id = me.user.id;
+    s.db.call(move |c| db::custom_allow(c, id)).await.unwrap_or(0) & perm::GRANTABLE
 }
 
 /// One member's `User` with their custom roles filled in (what `UserUpdated` broadcasts).
@@ -543,6 +553,12 @@ pub async fn create_custom_role(State(s): State<AppState>, me: Authed, body: Res
     if let Err(why) = role_request_check(&req) {
         return Err(ApiErr::new(StatusCode::BAD_REQUEST, why));
     }
+    // Nobody grants what they do not have (an Admin passes everything; a member only
+    // the bits their own roles gave them).
+    let cap = grantable_by(&s, &me).await;
+    if req.allow & !cap != 0 {
+        return Err(ApiErr::new(StatusCode::FORBIDDEN, "você não pode conceder uma permissão que você não tem"));
+    }
     let name: String = req.name.trim().chars().collect();
     let color = req.color.trim().to_ascii_lowercase();
     let role = s.db.call(move |c| db::create_custom_role(c, &name, &color, req.position, req.allow & perm::GRANTABLE)).await?;
@@ -563,6 +579,11 @@ pub async fn update_custom_role(State(s): State<AppState>, me: Authed, Path(id):
     }
     let name: String = req.name.trim().chars().collect();
     let color = req.color.trim().to_ascii_lowercase();
+    // Nobody grants what they do not have, including when editing a role they created.
+    let cap = grantable_by(&s, &me).await;
+    if req.allow & !cap != 0 {
+        return Err(ApiErr::new(StatusCode::FORBIDDEN, "você não pode conceder uma permissão que você não tem"));
+    }
     let role = CustomRole { id, name: name.clone(), color, position: req.position, allow: req.allow & perm::GRANTABLE };
     let changed = s.db.call(move |c| db::update_custom_role(c, &role)).await?;
     if !changed {

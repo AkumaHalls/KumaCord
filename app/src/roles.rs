@@ -1416,7 +1416,7 @@ impl App {
                 }
                 // v1.1: the badge editor, in the menu (an inline button used to wrap below
                 // the row and vanish under the next one's hover).
-                if mine.can_admin() {
+                if self.i_allow(perm::MANAGE_BADGES) {
                     any = true;
                     if ui_kit::menu_item(ui, ph::MEDAL, "Badges...", false, None) {
                         self.roles.badge_draft = Some((m.user.id, m.granted));
@@ -1432,7 +1432,7 @@ impl App {
                     }
                 }
                 // v1.1: the ban (Discord keeps it in the member's menu too).
-                if mine.can_admin() && !me && theirs != Role::Owner && mine.outranks(theirs) && m.banned.is_none() {
+                if self.i_allow(perm::BAN_MEMBERS) && !me && theirs != Role::Owner && mine.outranks(theirs) && m.banned.is_none() {
                     any = true;
                     if ui_kit::menu_item(ui, ph::PROHIBIT, "Banir...", true, None) {
                         self.roles.confirm_ban = Some(m.user.clone());
@@ -1472,7 +1472,7 @@ impl App {
                 // v1.1: banned — the pill with the reason on hover, and the way back in.
                 let why = if b.reason.trim().is_empty() { "Banido".to_string() } else { format!("Banido: {}", b.reason.trim()) };
                 ui_kit::pill(ui, &why, theme::PERIGO_FUNDO, theme::AO_VIVO);
-                if mine.can_admin() && ui_kit::button_sized(ui, Kind::Secondary, Size::Small, None, "Remover banimento").clicked() {
+                if self.i_allow(perm::BAN_MEMBERS) && ui_kit::button_sized(ui, Kind::Secondary, Size::Small, None, "Remover banimento").clicked() {
                     self.admin(AdminCmd::Unban { user: m.user.id });
                 }
             } else if editable {
