@@ -204,6 +204,9 @@ pub struct Settings {
     pub notify: crate::app::notify::NotifySettings,
     /// Reactions I used last, newest first (the picker's "Recentes"; v0.8).
     pub recent_reactions: Vec<String>,
+    /// v1.1: my emoji use history for the picker's "Recentes" — frecency (count + last
+    /// use), ranked by `emoji::frecency`. Older files read empty and start fresh.
+    pub recent_emoji: Vec<crate::emoji::Use>,
     /// The v1.0 shell's remembered choices (center mode, docked chat width, member list).
     pub layout: crate::layout::LayoutSettings,
     /// v1.0.3: quando esta versao de atualizacao foi oferecida pela primeira vez
@@ -256,6 +259,7 @@ impl Default for Settings {
             profile: Default::default(),
             notify: Default::default(),
             recent_reactions: Vec::new(),
+            recent_emoji: Vec::new(),
             layout: Default::default(),
             update_first_seen: None,
             servers: Default::default(),

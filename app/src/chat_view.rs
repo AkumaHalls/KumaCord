@@ -451,7 +451,7 @@ impl App {
                 let width = (ui.available_width() - right).max(40.0);
                 let resp = self.mention_input(ui, target, hint, width);
                 send |= resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if emoji_button(ui, &mut self.input) {
+                if emoji_button(ui, &mut self.input, &mut self.emoji, &mut self.emoji_textures, &mut self.settings.recent_emoji, crate::app::now_ms() as u64) {
                     resp.request_focus();
                 }
                 if !self.input.trim().is_empty() && ui_kit::icon_button(ui, ph::PAPER_PLANE_RIGHT, "Enviar (Enter)", ui_kit::IconState::Normal).clicked() {
@@ -498,7 +498,7 @@ impl App {
                     if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         self.cancel_reply(target);
                     }
-                    if emoji_button(ui, &mut self.dms.input) {
+                    if emoji_button(ui, &mut self.dms.input, &mut self.emoji, &mut self.emoji_textures, &mut self.settings.recent_emoji, crate::app::now_ms() as u64) {
                         resp.request_focus();
                     }
                     if !self.dms.input.trim().is_empty() && ui_kit::icon_button(ui, ph::PAPER_PLANE_RIGHT, "Enviar (Enter)", ui_kit::IconState::Normal).clicked() {
@@ -532,23 +532,12 @@ pub(super) fn field_edit<'t>(text: &'t mut String, hint: String) -> egui::TextEd
 
 /// The smiley button: a small grid of emoji that go into the text. Returns true when one was
 /// picked (the caller gives the focus back to the field).
-fn emoji_button(ui: &mut egui::Ui, text: &mut String) -> bool {
+fn emoji_button(ui: &mut egui::Ui, text: &mut String, picker: &mut crate::emoji::Picker, textures: &mut crate::emoji::Textures, uses: &mut Vec<crate::emoji::Use>, now_ms: u64) -> bool {
     let b = ui_kit::icon_button(ui, ph::SMILEY, "Emoji", ui_kit::IconState::Normal);
     let mut picked = false;
-    egui::Popup::menu(&b).frame(ui_kit::popup_frame(ui.style())).show(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
-        egui::Grid::new("emoji_grid").spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
-            for (i, e) in chat_extras::REACTION_GRID.iter().enumerate() {
-                if ui.add(egui::Button::new(RichText::new(*e).size(18.0)).frame(false).min_size(egui::vec2(28.0, 28.0))).clicked() {
-                    text.push_str(e);
-                    picked = true;
-                    ui.close();
-                }
-                if i % 8 == 7 {
-                    ui.end_row();
-                }
-            }
-        });
-    });
+    if let Some(e) = crate::emoji::Picker::menu(ui, &b, picker, textures, uses, now_ms) {
+        text.push_str(e);
+        picked = true;
+    }
     picked
 }

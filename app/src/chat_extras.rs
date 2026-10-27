@@ -1111,32 +1111,15 @@ impl App {
         let Some(p) = self.chatx.picker.as_ref() else { return };
         let (target, id, pos, opened) = (p.target, p.id, p.pos, p.opened);
         let mut chosen: Option<String> = None;
-        let recent = self.settings.recent_reactions.clone();
+        // (o picker novo ranqueia os "Recentes" pelo histórico de uso em `recent_emoji`)
         let area = egui::Area::new(egui::Id::new("reaction_picker")).order(egui::Order::Foreground).fixed_pos(pos).constrain(true).show(ctx, |ui| {
             crate::ui_kit::popup_frame(ui.style()).show(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
-                let mut cell = |ui: &mut egui::Ui, e: &str| {
-                    if ui.add(egui::Button::new(RichText::new(e).size(18.0)).frame(false).min_size(egui::vec2(28.0, 28.0))).clicked() {
-                        chosen = Some(e.to_string());
-                    }
-                };
-                if !recent.is_empty() {
-                    crate::ui_kit::section(ui, "Recentes");
-                    ui.horizontal(|ui| {
-                        for e in &recent {
-                            cell(ui, e);
-                        }
-                    });
-                    ui.separator();
+                ui.set_min_width(320.0);
+                // v1.1: the full colorful picker — search, categories and the frecency
+                // "Recentes" — the same one the chat's 🙂 opens.
+                if let Some(e) = self.emoji.content(ui, &mut self.emoji_textures, &mut self.settings.recent_emoji, crate::app::now_ms() as u64) {
+                    chosen = Some(e.to_string());
                 }
-                egui::Grid::new("reaction_grid").spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
-                    for (i, e) in REACTION_GRID.iter().enumerate() {
-                        cell(ui, e);
-                        if i % 10 == 9 {
-                            ui.end_row();
-                        }
-                    }
-                });
             });
         });
         if let Some(e) = chosen {

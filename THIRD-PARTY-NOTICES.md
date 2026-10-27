@@ -127,3 +127,11 @@ Host mode also brings in `igd-next` and `xmltree` (both MIT), for the router's U
   reads them as a shared visual language. Discord and the badge artwork are property of
   Discord Inc.; these files are NOT covered by the project's MIT license. Replace them
   before reusing this code in another product.
+
+## Twemoji - emoji art of the picker (v1.1)
+
+- Files: `app/assets/emoji/*.png` (271 images, 72x72).
+- Source: [Twemoji](https://github.com/jdecked/twemoji) (the jdecked maintained release),
+  licensed **CC-BY 4.0** - graphics by the Twemoji authors (Twitter/jdecked contributors).
+  This attribution satisfies the license; the graphics are not covered by the project's
+  MIT license.
