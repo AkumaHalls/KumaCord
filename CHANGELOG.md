@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.6] — 2026-10-27
+
+### Adicionado
+
+- **Cargos custom, estilo Discord**: a aba **"Cargos"** das Configurações do servidor cria,
+  edita e apaga cargos com **cor, ordem e 21 permissões** (ver canais, enviar, anexos,
+  reações, voz completa, apagar mensagens, moderar a voz, banir, gerenciar canais/convites/
+  cargos/badges, registro, senhas e Administrador). Eles **somam** poder em cima dos cargos
+  fixos (Membro/Moderador/Admin/Dono).
+- **Dar cargos a alguém**: no menu "⋯" da pessoa, em "Membros e cargos" → "Cargos..." —
+  o cargo mais alto pinta o nome dela na lista (e um pontinho da cor aparece na linha).
+- Tudo sincronizado ao vivo (`CustomRolesChanged` + `UserUpdated`), e cada criação, edição,
+  exclusão e atribuição entra no **registro de moderação**.
+- **Ninguém concede o que não tem**: um cargo só carrega as permissões que quem o criou
+  já tinha (a regra do Discord), e as permissões declaradas de badges e ban agora são
+  honradas de verdade na porta do servidor — não só na interface.
+
+### Corrigido
+
+- Segurança (auditoria da superfície nova): os endpoints admin de badges e ban validam a
+  permissão específica, e a criação/edição de cargos é limitada aos bits do criador.
+
 ## [1.0.5] — 2026-10-27
 
 ### Adicionado
