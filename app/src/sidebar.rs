@@ -14,8 +14,10 @@
 //! (no nested layouts per row); the member list on the right of the chat is here too.
 //! A child module of `app`.
 
+use std::collections::HashMap;
+
 use eframe::egui::{self, Align2, Color32, Margin, Pos2, Rect, RichText, Sense, Vec2};
-use vox_proto::{ChannelKind, User, VoiceMember};
+use vox_proto::{ChannelCategory, ChannelKind, User, VoiceMember};
 
 use super::{channel_label, App, CameraUi, Share, ICON_PRIVATE};
 use crate::context_menu::{Lead, Origin};
@@ -78,49 +80,199 @@ impl App {
         self.sidebar_rows.clear();
         let open = self.open_in_center();
         self.dm_sidebar(ui);
-        Self::list_section(ui, "Canais de texto");
-        let texts: Vec<vox_proto::Channel> = self.channels.iter().filter(|c| c.kind == ChannelKind::Text).cloned().collect();
-        for c in texts {
-            let unread = self.unread.get(&c.id).copied().unwrap_or(0);
-            let mentions = self.chatx.mention_unread.get(&c.id).copied().unwrap_or(0);
-            let hover = c.private.is_some().then_some(super::PRIVATE_HOVER);
-            let label = channel_label(&c, "");
-            let icon = if c.private.is_some() { ICON_PRIVATE } else { ph::HASH };
-            // The name on the left (cut with "…"), the counter and the "@" in their own space.
-            let row = ui_kit::Row { icon, name: &c.name, label: &label, selected: open == Open::Text(c.id), unread: unread > 0, count: unread, mentions, hover };
-            let (resp, drawn) = ui_kit::sidebar_row(ui, row);
-            self.sidebar_rows.push(drawn);
-            if resp.clicked() {
-                self.select_text(c.id);
+
+        // v1.1: group channels into categories (Discord-style). Standalone channels (no
+        // category) go under "Sem categoria" so nothing disappears.
+        let mut by_category: std::collections::HashMap<Option<ChannelId>, Vec<&vox_proto::Channel>> =
+            std::collections::HashMap::new();
+        for c in &self.channels {
+            by_category.entry(c.category_id).or_default().push(c);
+        }
+
+        // Sort categories by position, standalone last.
+        let mut cat_ids: Vec<ChannelId> = self
+            .categories
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        cat_ids.sort_by_key(|id| {
+            self.categories
+                .iter()
+                .find(|c| c.id == *id)
+                .map(|c| c.position)
+                .unwrap_or(i32::MAX)
+        });
+
+        // Text channels first (top section), then voice channels, per category.
+        for cat_id in &cat_ids {
+            let cat = self.categories.iter().find(|c| c.id == *cat_id).unwrap();
+            let mut text_channels: Vec<&vox_proto::Channel> = by_category
+                .remove(cat_id)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|c| c.kind == ChannelKind::Text)
+                .collect();
+            text_channels.sort_by_key(|c| c.position);
+            let mut voice_channels: Vec<&vox_proto::Channel> = by_category
+                .remove(cat_id)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|c| c.kind == ChannelKind::Voice)
+                .collect();
+            voice_channels.sort_by_key(|c| c.position);
+
+            self.category_section(ui, cat, &text_channels, &voice_channels, open);
+        }
+
+        // Standalone channels (no category) at the bottom.
+        let standalone_text: Vec<&vox_proto::Channel> = by_category
+            .remove(&None)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| c.kind == ChannelKind::Text)
+            .collect();
+        let standalone_voice: Vec<&vox_proto::Channel> = by_category
+            .remove(&None)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| c.kind == ChannelKind::Voice)
+            .collect();
+        if !standalone_text.is_empty() || !standalone_voice.is_empty() {
+            self.category_section(
+                ui,
+                &vox_proto::ChannelCategory {
+                    id: 0,
+                    name: "Sem categoria".to_owned(),
+                    color: "#949BA4".to_owned(),
+                    position: i32::MAX,
+                },
+                &standalone_text,
+                &standalone_voice,
+                open,
+            );
+        }
+    }
+
+    /// v1.1: one collapsible category section in the sidebar. Draws the category header (name +
+    /// colour chip + expand/caret), then its text and voice channels when open.
+    fn category_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        cat: &vox_proto::ChannelCategory,
+        text_channels: &[&vox_proto::Channel],
+        voice_channels: &[&vox_proto::Channel],
+        open: crate::app::Screen,
+    ) {
+        let is_open = self.category_open.get(&cat.id).copied().unwrap_or(true);
+        let caret = if is_open { ph::CARET_DOWN } else { ph::CARET_RIGHT };
+
+        // Category header: colour dot + name + caret. Clicking toggles open/closed.
+        let header_rect = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+        if header_rect.hovered() {
+            ui.painter().rect_filled(header_rect, radius::ROW, theme::ROW_HOVER);
+        }
+        if header_rect.clicked() {
+            self.category_open
+                .entry(cat.id)
+                .and_modify(|e| *e = !*e)
+                .or_insert(false);
+        }
+
+        let color = Color32::from_hex(cat.color.get(1..).unwrap_or("5865F2")).unwrap_or(theme::GIZ);
+        let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+        ui.painter().circle_filled(r.center(), 5.0, color);
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.painter().circle_filled(Pos2::new(ui.cursor().x + 7.0, ui.cursor().y + 7.0), 5.0, color);
+            ui.label(
+                egui::RichText::new(&cat.name).font(theme::semibold(13.0)).color(theme::GIZ),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(caret).font(theme::body(14.0)).color(theme::NEVOA));
+            });
+        });
+
+        if is_open {
+            ui.add_space(4.0);
+            // Text channels inside the category.
+            if !text_channels.is_empty() {
+                ui.add_space(2.0);
+                for c in text_channels {
+                    self.channel_row(ui, c, open);
+                }
+                ui.add_space(4.0);
+            }
+            // Voice channels inside the category.
+            if !voice_channels.is_empty() {
+                ui.add_space(2.0);
+                for c in voice_channels {
+                    self.voice_channel_row(ui, c, open);
+                }
+                ui.add_space(4.0);
             }
         }
-        Self::list_section(ui, "Canais de voz");
-        let voices: Vec<vox_proto::Channel> = self.channels.iter().filter(|c| c.kind == ChannelKind::Voice).cloned().collect();
-        for c in voices {
-            let here = self.voice.channel == Some(c.id);
-            let joining = self.voice.joining == Some(c.id);
-            let suffix = if joining { "  (entrando...)" } else { "" };
-            let hover = match (here, c.private.is_some()) {
-                (true, _) => "Clique para abrir a sala",
-                (false, true) => "Canal privado: só quem tem acesso vê e entra. Clique para entrar",
-                (false, false) => "Clique para entrar",
-            };
-            let label = channel_label(&c, suffix);
-            // (A private room: the lock before its name, as in `channel_label`.)
-            let name = if c.private.is_some() || !suffix.is_empty() { label.split_once(' ').map_or(label.as_str(), |(_, n)| n) } else { c.name.as_str() };
-            let row = ui_kit::Row { icon: ph::SPEAKER_HIGH, name, label: &label, selected: open == Open::Stage(c.id), unread: false, count: 0, mentions: 0, hover: Some(hover) };
-            let (resp, drawn) = ui_kit::sidebar_row(ui, row);
-            self.sidebar_rows.push(drawn);
-            if resp.clicked() {
-                self.join_voice(c.id);
-            }
-            let members: Vec<VoiceMember> = self.voice_members.values().filter(|m| m.channel_id == Some(c.id)).cloned().collect();
-            for m in members {
-                self.member_row(ui, &m, here);
-            }
-            if !self.voice_members.values().any(|m| m.channel_id == Some(c.id)) {
-                ui.add_space(2.0);
-            }
+    }
+
+    /// v1.1: render a single text channel row inside a category (reuses the row logic).
+    fn channel_row(&mut self, ui: &mut egui::Ui, c: &vox_proto::Channel, open: crate::app::Screen) {
+        let unread = self.unread.get(&c.id).copied().unwrap_or(0);
+        let mentions = self.chatx.mention_unread.get(&c.id).copied().unwrap_or(0);
+        let hover = c.private.is_some().then_some(super::PRIVATE_HOVER);
+        let label = channel_label(&c, "");
+        let icon = if c.private.is_some() { ICON_PRIVATE } else { ph::HASH };
+        let row = ui_kit::Row {
+            icon,
+            name: &c.name,
+            label: &label,
+            selected: open == crate::app::Open::Text(c.id),
+            unread: unread > 0,
+            count: unread,
+            mentions,
+            hover,
+        };
+        let (resp, _drawn) = ui_kit::sidebar_row(ui, row);
+        if resp.clicked() {
+            self.select_text(c.id);
+        }
+    }
+
+    /// v1.1: render a single voice channel row inside a category.
+    fn voice_channel_row(&mut self, ui: &mut egui::Ui, c: &vox_proto::Channel, open: crate::app::Screen) {
+        let here = self.voice.channel == Some(c.id);
+        let joining = self.voice.joining == Some(c.id);
+        let suffix = if joining { "  (entrando...)" } else { "" };
+        let hover = match (here, c.private.is_some()) {
+            (true, _) => "Clique para abrir a sala",
+            (false, true) => "Canal privado: só quem tem acesso vê e entra. Clique para entrar",
+            (false, false) => "Clique para entrar",
+        };
+        let label = channel_label(&c, suffix);
+        let name = if c.private.is_some() || !suffix.is_empty() {
+            label.split_once(' ').map_or(label.as_str(), |(_, n)| n)
+        } else {
+            c.name.as_str()
+        };
+        let row = ui_kit::Row {
+            icon: ph::SPEAKER_HIGH,
+            name,
+            label: &label,
+            selected: open == crate::app::Open::Stage(c.id),
+            unread: false,
+            count: 0,
+            mentions: 0,
+            hover: Some(hover),
+        };
+        let (resp, _drawn) = ui_kit::sidebar_row(ui, row);
+        if resp.clicked() {
+            self.join_voice(c.id);
+        }
+        let members: Vec<VoiceMember> = self.voice_members.values().filter(|m| m.channel_id == Some(c.id)).cloned().collect();
+        for m in members {
+            self.member_row(ui, &m, here);
+        }
+        if !self.voice_members.values().any(|m| m.channel_id == Some(c.id)) {
+            ui.add_space(2.0);
         }
     }
 

@@ -168,24 +168,24 @@ fn reply_refs(conn: &Connection, ids: &[i64], dm: bool, owner: &str) -> rusqlite
     let marks = vec!["?"; ids.len()].join(",");
     let sql = if dm {
         format!(
-            "SELECT m.id, m.body, u.id, u.username, u.role, u.avatar_version, u.display_name, u.badges,
+            "SELECT m.id, m.body, u.id, u.username, u.role, u.avatar_version, u.banner_version, u.display_name, u.badges,
                     (SELECT COUNT(*) FROM attachments a WHERE a.dm_message_id = m.id AND a.uploader_id = m.author_id), m.dm_id
              FROM dm_messages m JOIN users u ON u.id = m.author_id WHERE m.id IN ({marks})"
         )
     } else {
         format!(
-            "SELECT m.id, m.content, u.id, u.username, u.role, u.avatar_version, u.display_name, u.badges,
+            "SELECT m.id, m.content, u.id, u.username, u.role, u.avatar_version, u.banner_version, u.display_name, u.badges,
                     (SELECT COUNT(*) FROM attachments a WHERE a.message_id = m.id AND a.uploader_id = m.user_id), m.channel_id
              FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id IN ({marks})"
         )
     };
     let mut st = conn.prepare(&sql)?;
     let rows = st.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
-        let images = r.get::<_, i64>(8)?.clamp(0, u32::MAX as i64) as u32;
+        let images = r.get::<_, i64>(9)?.clamp(0, u32::MAX as i64) as u32;
         let content: String = r.get(1)?;
         let quote = ReplyRef {
             id: r.get(0)?,
-            author: Some(db::display_user(r.get(2)?, r.get(3)?, &r.get::<_, String>(4)?, r.get(5)?, r.get(6)?, r.get::<_, i64>(7)?.max(0) as u64, owner)),
+            author: Some(db::display_user(r.get(2)?, r.get(3)?, &r.get::<_, String>(4)?, r.get(5)?, r.get(6)?, 0, owner)),
             excerpt: reply_excerpt(strip_attachment_marker(&content, images as usize)),
             images,
             deleted: false,

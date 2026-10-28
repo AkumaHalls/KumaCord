@@ -200,8 +200,12 @@ pub async fn mute(State(s): State<AppState>, me: Authed, Path(id): Path<UserId>,
     let Json(req) = body?;
     let t = moderation_target(&s, &me, id).await?;
     let muted = req.muted;
+    let stream_muted = req.stream_muted;
+    // Set server mute (affects microphone in voice channels)
     s.db.call(move |c| db::set_server_muted(c, id, muted)).await?;
     let changed = s.set_server_muted(id, muted);
+    // Set stream mute (affects audio only during screen share)
+    s.set_stream_muted(&id.to_string(), stream_muted).await?;
     // Wherever they really are, listed or not (voice channels and a DM call).
     for r in rooms_of(&s, id).await {
         lk_result("server mute", sync_mic_permission(&s, id, &r).await);
@@ -443,6 +447,10 @@ pub async fn set_badges(State(s): State<AppState>, me: Authed, Path(id): Path<Us
 
 /// How much of a ban reason is kept (Discord keeps little more).
 const BAN_REASON_MAX: usize = 512;
+/// How much of a kick reason is kept.
+const KICK_REASON_MAX: usize = 256;
+/// How much of a timeout reason is kept.
+const TIMEOUT_REASON_MAX: usize = 256;
 
 /// `POST /api/admin/users/{id}/ban` (v1.1): the person is out — their sessions and
 /// remembered devices die with the ban, so no old token brings them back — until an
@@ -646,6 +654,83 @@ pub async fn set_user_custom_roles(State(s): State<AppState>, me: Authed, Path(i
     Ok(ok())
 }
 
+/// `GET /api/admin/categories` (v1.1): the editor's list; everybody gets the same list in
+/// `Ready` for the colors — this endpoint is for who may edit.
+pub async fn list_categories(State(s): State<AppState>, me: Authed) -> ApiResult<Vec<ChannelCategory>> {
+    if !may(&s, &me, perm::MANAGE_CHANNELS).await {
+        return Err(forbidden());
+    }
+    Ok(Json(s.db.call(|c| db::list_categories(c)).await?))
+}
+
+/// `POST /api/admin/categories` (v1.1): create.
+pub async fn create_category(State(s): State<AppState>, me: Authed, body: Result<Json<ChannelCategory>, JsonRejection>) -> ApiResult<ChannelCategory> {
+    let Json(req) = body?;
+    if !may(&s, &me, perm::MANAGE_CHANNELS).await {
+        return Err(forbidden());
+    }
+    if req.name.trim().is_empty() || req.name.len() > 32 {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "o nome da categoria precisa de 1 a 32 caracteres"));
+    }
+    let c = req.color.trim().to_ascii_lowercase();
+    let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+    if !ok {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "a cor precisa ser #rrggbb"));
+    }
+    let name: String = req.name.trim().chars().collect();
+    let color = format!("#{}", c[1..]);
+    let category = s.db.call(move |c| db::create_category(c, &name, &color, req.position)).await?;
+    let list = s.db.call(|c| db::list_categories(c)).await?;
+    s.set_categories(list);
+    audit(&s, Some(me.user.id), AUDIT_CHANNEL_CREATE, None, category.name.clone()).await;
+    Ok(Json(category))
+}
+
+/// `POST /api/admin/categories/{id}` (v1.1): edit everything about one category.
+pub async fn update_category(State(s): State<AppState>, me: Authed, Path(id): Path<i64>, body: Result<Json<ChannelCategory>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    if !may(&s, &me, perm::MANAGE_CHANNELS).await {
+        return Err(forbidden());
+    }
+    if req.name.trim().is_empty() || req.name.len() > 32 {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "o nome da categoria precisa de 1 a 32 caracteres"));
+    }
+    let c = req.color.trim().to_ascii_lowercase();
+    let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+    if !ok {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "a cor precisa ser #rrggbb"));
+    }
+    let name: String = req.name.trim().chars().collect();
+    let color = format!("#{}", c[1..]);
+    let category = ChannelCategory { id, name, color, position: req.position };
+    let changed = s.db.call(move |c| db::update_category(c, &category)).await?;
+    if !changed {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "categoria não encontrada"));
+    }
+    let list = s.db.call(|c| db::list_categories(c)).await?;
+    s.set_categories(list);
+    audit(&s, Some(me.user.id), AUDIT_CHANNEL_UPDATE, None, name).await;
+    Ok(ok())
+}
+
+/// `DELETE /api/admin/categories/{id}` (v1.1): channels in it become standalone.
+pub async fn delete_category(State(s): State<AppState>, me: Authed, Path(id): Path<i64>) -> ApiResult<OkResponse> {
+    if !may(&s, &me, perm::MANAGE_CHANNELS).await {
+        return Err(forbidden());
+    }
+    let (name, gone) = s.db.call(move |c| {
+        let name: String = c.query_row("SELECT name FROM categories WHERE id = ?1", [id], |r| r.get(0)).optional()?.unwrap_or_default();
+        Ok((name, db::delete_category(c, id)?))
+    }).await?;
+    if !gone {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "categoria não encontrada"));
+    }
+    let list = s.db.call(|c| db::list_categories(c)).await?;
+    s.set_categories(list);
+    audit(&s, Some(me.user.id), AUDIT_CHANNEL_DELETE, None, name).await;
+    Ok(ok())
+}
+
 /// `POST /api/admin/users/{id}/reset-password` (owner only)
 pub async fn reset_password(State(s): State<AppState>, me: Authed, Path(id): Path<UserId>) -> ApiResult<ResetPasswordResponse> {
     if !me.role.can_reset_passwords() {
@@ -665,6 +750,53 @@ pub async fn reset_password(State(s): State<AppState>, me: Authed, Path(id): Pat
     crate::access::reload_roles(&s).await;
     audit(&s, Some(me.user.id), AUDIT_RESET_PASSWORD, Some(t.id), String::new()).await;
     Ok(Json(ResetPasswordResponse { code, expires_at_ms }))
+}
+
+/// `POST /api/admin/users/{id}/kick` (v1.1): kick a user from the server. They can
+/// rejoin with an invite, but their session is killed immediately.
+pub async fn kick_user(State(s): State<AppState>, me: Authed, Path(id): Path<UserId>, body: Result<Json<KickRequest>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    if !may(&s, &me, perm::KICK_MEMBERS).await {
+        return Err(forbidden());
+    }
+    if id == me.user.id {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "not on yourself"));
+    }
+    let t = target_row(&s, id).await?;
+    let theirs = t.role(&s.owner());
+    if theirs == Role::Owner || !me.role.outranks(theirs) {
+        return Err(forbidden());
+    }
+    let reason: String = req.reason.trim().chars().take(KICK_REASON_MAX).collect();
+    s.send_to(id, &ServerEvent::Moderated { action: ModAction::Kicked { reason: reason.clone() }, by: me.user.clone() });
+    s.kick(id, None);
+    audit(&s, Some(me.user.id), AUDIT_KICK, Some(id), reason).await;
+    Ok(ok())
+}
+
+/// `POST /api/admin/users/{id}/timeout` (v1.1): timeout a user for a duration.
+/// They can still read but cannot send messages or join voice until the timeout expires.
+pub async fn timeout_user(State(s): State<AppState>, me: Authed, Path(id): Path<UserId>, body: Result<Json<TimeoutRequest>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    if !may(&s, &me, perm::MODERATE_MEMBERS).await {
+        return Err(forbidden());
+    }
+    if id == me.user.id {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "not on yourself"));
+    }
+    let t = target_row(&s, id).await?;
+    let theirs = t.role(&s.owner());
+    if theirs == Role::Owner || !me.role.outranks(theirs) {
+        return Err(forbidden());
+    }
+    let duration_ms = req.duration_ms.clamp(60_000, 28 * 24 * 3600 * 1000); // 1 min to 28 days
+    let reason: String = req.reason.trim().chars().take(TIMEOUT_REASON_MAX).collect();
+    let until_ms = now_ms() + duration_ms;
+    s.db.call(move |c| db::timeout_user(c, id, until_ms, &reason)).await?;
+    s.send_to(id, &ServerEvent::Moderated { action: ModAction::TimedOut { until_ms, reason: reason.clone() }, by: me.user.clone() });
+    s.kick(id, None);
+    audit(&s, Some(me.user.id), AUDIT_TIMEOUT, Some(id), format!("{}ms: {}", duration_ms, reason)).await;
+    Ok(ok())
 }
 
 async fn issue_reset_code_async(s: &AppState, id: UserId) -> Result<(String, i64), ApiErr> {
@@ -881,4 +1013,65 @@ pub fn reset_password_cli(data_dir: &std::path::Path, username: &str) -> anyhow:
         row.username,
         auth::RESET_CODE_TTL_MS / (24 * 3600 * 1000)
     ))
+}
+
+/// `POST /api/messages/{id}/edit` (v1.1): edit own message.
+pub async fn edit_message(State(s): State<AppState>, me: Authed, Path(id): Path<MessageId>, body: Result<Json<EditMessageRequest>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    let msg = s.db.call(move |c| db::get_message(c, id)).await?;
+    let Some((_, author_id, _)) = msg else {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "message not found"));
+    };
+    if author_id != me.user.id && !me.role.can_moderate() {
+        return Err(forbidden());
+    }
+    let new_content = req.content.trim().to_string();
+    if new_content.is_empty() || new_content.len() > crate::ws::MAX_CONTENT_CHARS {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "message must be 1-4000 characters"));
+    }
+    s.db.call(move |c| { c.execute("UPDATE messages SET content = ?1 WHERE id = ?2", params![new_content, id])?; Ok(()) }).await?;
+    audit(&s, Some(me.user.id), AUDIT_EDIT_MESSAGE, Some(id), format!("edited: {}", new_content)).await;
+    Ok(ok())
+}
+
+/// `POST /api/messages/{id}/pin` (v1.1): pin a message (moderator+).
+pub async fn pin_message(State(s): State<AppState>, me: Authed, Path(id): Path<MessageId>) -> ApiResult<OkResponse> {
+    if !may(&s, &me, perm::MODERATE_MEMBERS).await {
+        return Err(forbidden());
+    }
+    let msg = s.db.call(move |c| db::get_message(c, id)).await?;
+    let Some((_, _, _)) = msg else {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "message not found"));
+    };
+    s.db.call(move |c| { c.execute("UPDATE messages SET pinned = 1 WHERE id = ?1", [id])?; Ok(()) }).await?;
+    audit(&s, Some(me.user.id), AUDIT_PIN_MESSAGE, Some(id), "pinned".to_string()).await;
+    Ok(ok())
+}
+
+/// `POST /api/messages/{id}/unpin` (v1.1): unpin a message (moderator+).
+pub async fn unpin_message(State(s): State<AppState>, me: Authed, Path(id): Path<MessageId>) -> ApiResult<OkResponse> {
+    if !may(&s, &me, perm::MODERATE_MEMBERS).await {
+        return Err(forbidden());
+    }
+    let msg = s.db.call(move |c| db::get_message(c, id)).await?;
+    let Some((_, _, _)) = msg else {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "message not found"));
+    };
+    s.db.call(move |c| { c.execute("UPDATE messages SET pinned = 0 WHERE id = ?1", [id])?; Ok(()) }).await?;
+    audit(&s, Some(me.user.id), AUDIT_UNPIN_MESSAGE, Some(id), "unpinned".to_string()).await;
+    Ok(ok())
+}
+
+/// `DELETE /api/dms/{id}/messages/{message_id}` (v1.1): delete own DM message.
+pub async fn delete_dm_message(State(s): State<AppState>, AuthUser(me): AuthUser, Path((dm_id, message_id)): Path<(DmId, MessageId)>) -> ApiResult<OkResponse> {
+    let msg = s.db.call(move |c| db::get_dm_message(c, dm_id, message_id)).await?;
+    let Some((_, author_id, _)) = msg else {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "message not found"));
+    };
+    if author_id != me.user.id && !me.role.can_moderate() {
+        return Err(forbidden());
+    }
+    s.db.call(move |c| { c.execute("DELETE FROM dm_messages WHERE id = ?1", [message_id])?; Ok(()) }).await?;
+    audit(&s, Some(me.user.id), AUDIT_DELETE_MESSAGE, Some(message_id), "deleted DM message".to_string()).await;
+    Ok(ok())
 }

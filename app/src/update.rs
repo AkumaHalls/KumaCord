@@ -338,23 +338,23 @@ impl App {
                     .fill(theme::MENU)
                     .stroke(egui::Stroke::new(1.0, theme::RISCO))
                     .corner_radius(theme::radius::POPUP)
-                    .inner_margin(egui::Margin::symmetric(14, 10))
+                    .inner_margin(egui::Margin::symmetric(18, 14))
                     .shadow(egui::epaint::Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(80) })
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 10.0;
-                            ui.label(egui::RichText::new(ph::SPARKLE).font(theme::body(17.0)).color(accent));
+                            ui.spacing_mut().item_spacing.x = 12.0;
+                            ui.label(egui::RichText::new(ph::SPARKLE).font(theme::body(19.0)).color(accent));
                             ui.vertical(|ui| {
                                 ui.label(
                                     egui::RichText::new(if mandatory { "Atualização obrigatória" } else { "Atualização disponível" })
-                                        .font(theme::semibold(13.0))
+                                        .font(theme::semibold(14.0))
                                         .color(theme::GIZ),
                                 );
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 4.0;
-                                    ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).font(theme::body(11.0)).color(theme::NEVOA));
-                                    ui.label(egui::RichText::new("→").font(theme::body(11.0)).color(theme::NEVOA));
-                                    ui.label(egui::RichText::new(format!("v{version}")).font(theme::semibold(11.0)).color(accent));
+                                    ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).font(theme::body(11.5)).color(theme::NEVOA));
+                                    ui.label(egui::RichText::new("→").font(theme::body(11.5)).color(theme::NEVOA));
+                                    ui.label(egui::RichText::new(format!("v{version}")).font(theme::semibold(11.5)).color(accent));
                                 });
                             });
                             if ui_kit::button(ui, Kind::Secondary, None, if mandatory { "Atualizar agora" } else { "Ver detalhes" }).clicked() {

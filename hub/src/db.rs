@@ -170,6 +170,8 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // Badges (v1.1): the materialized effective flags — the automatic rules
         // (`badge_grants` is the manual half) recompute them; see [`recompute_badges`].
         ("badges", "INTEGER NOT NULL DEFAULT 0"),
+        // Banner (v1.1): version hash of the banner image, `None` = no banner.
+        ("banner_version", "TEXT"),
     ] {
         if !has_column(&tx, "users", column)? {
             tx.execute_batch(&format!("ALTER TABLE users ADD COLUMN {column} {decl}"))?;
@@ -218,9 +220,19 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
             user_id INTEGER NOT NULL REFERENCES users(id),
             PRIMARY KEY (role_id, user_id)
         );
-        CREATE INDEX IF NOT EXISTS custom_role_members_user ON custom_role_members(user_id);",
-    )?;
-    crate::avatar::init(&tx)?;
+        CREATE INDEX IF NOT EXISTS custom_role_members_user ON custom_role_members(user_id);
+        // v1.1: channel categories (Discord-style): group channels into collapsible sections.
+        CREATE TABLE IF NOT EXISTS categories (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            color TEXT NOT NULL DEFAULT '#5865F2',
+            position INTEGER NOT NULL DEFAULT 0
+        );
+        // v1.1: which category each channel belongs to (None = standalone).
+        if !has_column(&tx, "channels", "category_id")? {
+            tx.execute_batch("ALTER TABLE channels ADD COLUMN category_id INTEGER REFERENCES categories(id)")?;
+        }
+        crate::avatar::init(&tx)?;
     crate::profile::init(&tx)?;
     crate::attachments::init(&tx)?;
     if !has_column(&tx, "sessions", "auth_epoch")? {
@@ -231,11 +243,11 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
             "UPDATE sessions SET auth_epoch = ?1 WHERE user_id IN (SELECT id FROM users WHERE password_hash IS NULL AND reset_hash IS NULL)",
             [SESSION_EPOCH],
         )?;
-        tracing::info!(kept, "sessions: auth epoch added");
+        tracing::info!(kept, "sessions: auth epoch added ");
     }
     if version < SCHEMA_VERSION {
         tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
-        tracing::info!(from = version, to = SCHEMA_VERSION, "database migrated");
+        tracing::info!(from = version, to = SCHEMA_VERSION, "database migrated ");
     }
     tx.commit()
 }
@@ -260,6 +272,8 @@ pub struct UserRow {
     pub avatar: Option<String>,
     /// What people see instead of the username, if the person chose one.
     pub display_name: Option<String>,
+    /// Version of the banner picture, if there is one.
+    pub banner_version: Option<String>,
     /// The effective badge flags (automatic rules OR the admin's grants), materialized in
     /// the `users.badges` column by [`recompute_badges`] — the wire reads them from here.
     pub badges: u64,
@@ -302,7 +316,7 @@ impl UserRow {
     pub fn user(&self, owner: &str) -> User {
         // v1.1: `role_ids` is filled by the callers that know the database (login, the
         // admin lists); a bare row keeps the default of none.
-        User { id: self.id, username: self.username.clone(), role: self.role(owner), flags: self.badges, role_ids: Vec::new(), avatar: self.avatar.clone(), display_name: self.display_name.clone() }
+        User { id: self.id, username: self.username.clone(), role: self.role(owner), flags: self.badges, role_ids: Vec::new(), avatar: self.avatar.clone(), banner: self.banner_version.clone(), display_name: self.display_name.clone() }
     }
 
     pub fn account(&self, owner: &str) -> vox_proto::Account {
@@ -310,7 +324,7 @@ impl UserRow {
     }
 }
 
-const USER_COLS: &str = "u.id, u.username, u.role, u.password_hash, u.reset_hash, u.reset_expires_ms, u.server_muted, u.created_at_ms, u.avatar_version, u.display_name, u.badges";
+const USER_COLS: &str = "u.id, u.username, u.role, u.password_hash, u.reset_hash, u.reset_expires_ms, u.server_muted, u.created_at_ms, u.avatar_version, u.display_name, u.badges, u.banner_version ";
 
 fn user_row(r: &rusqlite::Row) -> rusqlite::Result<UserRow> {
     Ok(UserRow {
@@ -325,6 +339,7 @@ fn user_row(r: &rusqlite::Row) -> rusqlite::Result<UserRow> {
         avatar: r.get(8)?,
         display_name: r.get(9)?,
         badges: r.get::<_, i64>(10)?.max(0) as u64,
+        banner_version: r.get(11)?,
     })
 }
 
@@ -337,7 +352,7 @@ pub fn get_user(conn: &Connection, id: UserId) -> rusqlite::Result<Option<UserRo
 }
 
 pub fn list_users(conn: &Connection) -> rusqlite::Result<Vec<UserRow>> {
-    let mut st = conn.prepare(&format!("SELECT {USER_COLS} FROM users u ORDER BY u.username COLLATE NOCASE"))?;
+    let mut st = conn.prepare(&format!(r"SELECT {USER_COLS} FROM users u ORDER BY u.username COLLATE NOCASE"))?;
     let rows = st.query_map([], user_row)?;
     rows.collect()
 }
@@ -503,7 +518,7 @@ pub fn server_muted_ids(conn: &Connection) -> rusqlite::Result<Vec<UserId>> {
 /// Every channel (with its access list when private, v0.9), in order. `id > 0` skips the
 /// downgrade guard row (`access.rs`), here and in every query on `channels`.
 pub fn list_channels(conn: &Connection) -> rusqlite::Result<Vec<Channel>> {
-    let mut st = conn.prepare("SELECT id, name, kind, position FROM channels WHERE id > 0 ORDER BY position, id")?;
+    let mut st = conn.prepare(r"SELECT id, name, kind, position, category_id FROM channels WHERE id > 0 ORDER BY position, id")?;
     let rows = st.query_map([], |r| {
         let kind: String = r.get(2)?;
         Ok(Channel {
@@ -512,6 +527,7 @@ pub fn list_channels(conn: &Connection) -> rusqlite::Result<Vec<Channel>> {
             kind: if kind == "voice" { ChannelKind::Voice } else { ChannelKind::Text },
             position: r.get(3)?,
             private: None,
+            category_id: r.get::<_, Option<i64>>(4)?,
         })
     })?;
     let mut list = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -551,6 +567,64 @@ pub fn reorder_channels(conn: &mut Connection, ids: &[i64]) -> rusqlite::Result<
     let tx = conn.transaction()?;
     for (pos, id) in ids.iter().enumerate() {
         tx.execute("UPDATE channels SET position = ? WHERE id = ?", params![pos as i64, id])?;
+    }
+    tx.commit()
+}
+
+// ---------------------------------------------------------------- categories (v1.1)
+
+/// List every category, in display order.
+pub fn list_categories(conn: &Connection) -> rusqlite::Result<Vec<ChannelCategory>> {
+    let mut st = conn.prepare(r"SELECT id, name, color, position FROM categories ORDER BY position, id")?;
+    let rows = st.query_map([], |r| {
+        Ok(ChannelCategory {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            color: r.get(2)?,
+            position: r.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Create a category and return it with its fresh id.
+pub fn create_category(conn: &Connection, name: &str, color: &str, position: i32) -> rusqlite::Result<ChannelCategory> {
+    let id = crate::ids::insert_with(conn, crate::ids::Seq::CustomRoles, |id| {
+        conn.execute(
+            "INSERT INTO categories (id, name, color, position) VALUES (?1, ?2, ?3, ?4)",
+            params![id, name, color, position],
+        )?;
+        Ok(id)
+    })?;
+    Ok(ChannelCategory { id, name: name.to_owned(), color: color.to_owned(), position })
+}
+
+/// Update a category's name, color and/or position (`false`: no such category).
+pub fn update_category(conn: &Connection, category: &ChannelCategory) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
+        "UPDATE categories SET name = ?1, color = ?2, position = ?3 WHERE id = ?4",
+        params![category.name, category.color, category.position, category.id],
+    )? > 0)
+}
+
+/// Delete a category. Channels that belonged to it become standalone (category_id = NULL).
+pub fn delete_category(conn: &Connection, id: i64) -> rusqlite::Result<bool> {
+    let tx = conn.transaction()?;
+    tx.execute("UPDATE channels SET category_id = NULL WHERE category_id = ?1", [id])?;
+    let n = tx.execute("DELETE FROM categories WHERE id = ?1", [id])?;
+    tx.commit()?;
+    Ok(n > 0)
+}
+
+/// Move channels into (or out of) a category, in the given order. `category_id` is `None`
+/// to pull channels out of any category (make them standalone).
+pub fn reorder_channels_into_category(conn: &Connection, category_id: Option<i64>, channel_ids: &[i64]) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    for (pos, id) in channel_ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE channels SET category_id = ?1, position = ?2 WHERE id = ?3",
+            params![category_id, pos as i64, id],
+        )?;
     }
     tx.commit()
 }
@@ -611,7 +685,7 @@ pub fn insert_message_with(
 /// Newest first; `before` is an exclusive message-id cursor. Authors carry their current role.
 pub fn list_messages(conn: &Connection, channel_id: i64, before: Option<i64>, limit: i64, owner: &str) -> rusqlite::Result<Vec<Message>> {
     let mut st = conn.prepare(
-        "SELECT m.id, m.content, m.created_at_ms, u.id, u.username, u.role, u.avatar_version, u.display_name, u.badges,
+        "SELECT m.id, m.content, m.created_at_ms, u.id, u.username, u.role, u.avatar_version, u.banner_version, u.display_name, u.badges,
                 m.mentions, m.mention_everyone, m.reply_to FROM messages m
          JOIN users u ON u.id = m.user_id
          WHERE m.channel_id = ?1 AND m.id < ?2 ORDER BY m.id DESC LIMIT ?3",
@@ -638,9 +712,9 @@ pub fn list_messages(conn: &Connection, channel_id: i64, before: Option<i64>, li
     Ok(msgs)
 }
 
-pub(crate) fn display_user(id: UserId, username: String, stored_role: &str, avatar: Option<String>, display_name: Option<String>, badges: u64, owner: &str) -> User {
+pub(crate) fn display_user(id: UserId, username: String, stored_role: &str, avatar: Option<String>, banner_version: Option<String>, display_name: Option<String>, badges: u64, owner: &str) -> User {
     let role = if is_owner(&username, owner) { Role::Owner } else { Role::from_wire(stored_role).min(Role::Admin) };
-    User { id, username, role, flags: badges, role_ids: Vec::new(), avatar, display_name }
+    User { id, username, role, flags: badges, role_ids: Vec::new(), avatar, banner: banner_version, display_name }
 }
 
 // ---------------------------------------------------------------- badges (v1.1)
@@ -699,10 +773,36 @@ pub fn refresh_badges(conn: &Connection, id: UserId, owner: &str) -> rusqlite::R
     Ok(flags)
 }
 
-/// Recomputes everybody at once (startup). Returns how many users changed.
-pub fn recompute_badges(conn: &Connection, owner: &str) -> rusqlite::Result<usize> {
+/// Get a DM message by DM ID and message ID. Returns (author_id, content) if found.
+pub fn get_dm_message(conn: &Connection, dm_id: DmId, message_id: DmMessageId) -> rusqlite::Result<Option<(UserId, String)>> {
+    conn.query_row(
+        "SELECT user_id, content FROM dm_messages WHERE dm_id = ?1 AND id = ?2",
+        [dm_id, message_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).optional()
+}
+
+/// Get all messages in a DM conversation, newest first.
+pub fn list_dm_messages(conn: &Connection, dm_id: DmId, before: Option<DmMessageId>, limit: i64) -> rusqlite::Result<Vec<(DmMessageId, UserId, String, i64)>> {
     let mut st = conn.prepare(
-        "SELECT u.id, u.username, u.created_at_ms, u.badges, COALESCE(g.flags, 0)
+        "SELECT id, user_id, content, created_at_ms FROM dm_messages WHERE dm_id = ?1 AND id < ?2 ORDER BY id DESC LIMIT ?3"
+    )?;
+    let rows = st.query_map(params![dm_id, before.unwrap_or(i64::MAX), limit], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })?;
+    rows.collect()
+}
+
+/// Delete a DM message.
+#[allow(dead_code)]
+pub fn delete_dm_message_dup(conn: &Connection, _dm_id: DmId, _message_id: DmMessageId) -> rusqlite::Result<bool> {
+    conn.execute("DELETE FROM dm_messages WHERE id = ?1 AND dm_id = ?2", [message_id, dm_id])?;
+    Ok(conn.changes() > 0)
+}
+
+/// ---------------------------------------------------------------- custom roles (v1.1)
+    let mut st = conn.prepare(
+        r"SELECT u.id, u.username, u.created_at_ms, u.badges, COALESCE(g.flags, 0)
          FROM users u LEFT JOIN badge_grants g ON g.user_id = u.id",
     )?;
     let rows = st.query_map([], |r| {
@@ -782,7 +882,7 @@ pub fn unban(conn: &Connection, id: UserId) -> rusqlite::Result<bool> {
 
 /// Every custom role, display order.
 pub fn list_custom_roles(conn: &Connection) -> rusqlite::Result<Vec<CustomRole>> {
-    let mut st = conn.prepare("SELECT id, name, color, position, allow FROM custom_roles ORDER BY position, id")?;
+    let mut st = conn.prepare(r"SELECT id, name, color, position, allow FROM custom_roles ORDER BY position, id")?;
     let rows = st.query_map([], |r| {
         Ok(CustomRole {
             id: r.get(0)?,
@@ -823,7 +923,7 @@ pub fn delete_custom_role(conn: &Connection, id: i64) -> rusqlite::Result<bool> 
 /// One user's custom role ids, display order.
 pub fn custom_role_ids(conn: &Connection, user: UserId) -> rusqlite::Result<Vec<i64>> {
     let mut st = conn.prepare(
-        "SELECT m.role_id FROM custom_role_members m JOIN custom_roles r ON r.id = m.role_id
+        r"SELECT m.role_id FROM custom_role_members m JOIN custom_roles r ON r.id = m.role_id
          WHERE m.user_id = ?1 ORDER BY r.position, r.id",
     )?;
     let rows = st.query_map([user], |r| r.get(0))?;
@@ -896,6 +996,99 @@ pub fn list_audit(conn: &Connection, before: Option<i64>, limit: i64, owner: &st
     rows.collect()
 }
 
+/// Banner picture functions (v1.1).
+pub fn set_banner(conn: &Connection, id: UserId, version: Option<&str>) -> rusqlite::Result<()> {
+    conn.execute("UPDATE users SET banner_version = ?1 WHERE id = ?2", params![version, id])?;
+    Ok(())
+}
+
+/// Get a banner blob by user and version.
+pub fn get_banner_blob(conn: &Connection, user_id: UserId, version: &str) -> rusqlite::Result<Option<Vec<u8>>> {
+    conn.query_row(
+        "SELECT blob FROM banner_blobs WHERE user_id = ?1 AND version = ?2",
+        [user_id, version],
+        |r| r.get(0),
+    ).optional()
+}
+
+/// Store a banner blob.
+pub fn set_banner_blob(conn: &Connection, user_id: UserId, version: &str, blob: Vec<u8>) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO banner_blobs (user_id, version, blob) VALUES (?1, ?2, ?3)",
+        params![user_id, version, blob],
+    )?;
+    Ok(())
+}
+
+/// Delete a banner blob.
+pub fn delete_banner_blob(conn: &Connection, user_id: UserId) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM banner_blobs WHERE user_id = ?1", [user_id])?;
+    Ok(())
+}
+
+/// Timeout a user: set their timeout until `until_ms`.
+pub fn timeout_user(conn: &Connection, id: UserId, until_ms: i64, reason: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE users SET timeout_until_ms = ?1, timeout_reason = ?2 WHERE id = ?3",
+        params![until_ms, reason, id],
+    )?;
+    Ok(())
+}
+
+/// Remove a timeout: clear the timeout fields.
+pub fn remove_timeout(conn: &Connection, id: UserId) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE users SET timeout_until_ms = NULL, timeout_reason = NULL WHERE id = ?1",
+        [id],
+    )?;
+    Ok(())
+}
+
+/// Check if a user is banned.
+pub fn is_banned(conn: &Connection, id: UserId) -> rusqlite::Result<Option<BanRow>> {
+    conn.query_row(
+        "SELECT at_ms, reason FROM banned WHERE user_id = ?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).optional()
+}
+
+/// Set a user's avatar version.
+pub fn set_avatar(conn: &Connection, id: UserId, version: Option<&str>) -> rusqlite::Result<()> {
+    conn.execute("UPDATE users SET avatar_version = ?1 WHERE id = ?2", params![version, id])?;
+    Ok(())
+}
+
+/// Removed duplicate - see earlier definition.
+#[allow(dead_code)]
+pub fn get_dm_message_dup(conn: &Connection, _dm_id: DmId, _message_id: DmMessageId) -> rusqlite::Result<Option<(UserId, String)>> {
+    conn.query_row(
+        "SELECT user_id, content FROM dm_messages WHERE dm_id = ?1 AND id = ?2",
+        [dm_id, message_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).optional()
+}
+
+/// Get all messages in a DM conversation, newest first.
+#[allow(dead_code)]
+pub fn list_dm_messages_dup(conn: &Connection, _dm_id: DmId, _before: Option<DmMessageId>, _limit: i64) -> rusqlite::Result<Vec<(DmMessageId, UserId, String, i64)>> {
+    let mut st = conn.prepare(
+        "SELECT id, user_id, content, created_at_ms FROM dm_messages WHERE dm_id = ?1 AND id < ?2 ORDER BY id DESC LIMIT ?3",
+    )?;
+    let rows = st.query_map(params![dm_id, before.unwrap_or(i64::MAX), limit], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })?;
+    rows.collect()
+}
+
+/// Delete a DM message.
+#[allow(dead_code)]
+pub fn delete_dm_message_dup(conn: &Connection, _dm_id: DmId, _message_id: DmMessageId) -> rusqlite::Result<bool> {
+    conn.execute("DELETE FROM dm_messages WHERE id = ?1 AND dm_id = ?2", [message_id, dm_id])?;
+    Ok(conn.changes() > 0)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -905,7 +1098,7 @@ mod tests {
     fn v041_db(path: &Path) {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch(
-            "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at_ms INTEGER NOT NULL);
+            r"CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, created_at_ms INTEGER NOT NULL);
              CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), created_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL);
              CREATE TABLE channels (id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('text','voice')), position INTEGER NOT NULL);
              CREATE TABLE messages (id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL REFERENCES channels(id), user_id INTEGER NOT NULL REFERENCES users(id), content TEXT NOT NULL, created_at_ms INTEGER NOT NULL);

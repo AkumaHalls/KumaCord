@@ -609,6 +609,10 @@ impl App {
                 // v1.1: the whole list swaps at once (created, edited, deleted, reordered).
                 self.roles.custom = roles;
             }
+            ServerEvent::CategoriesChanged { categories } => {
+                // v1.1: categories changed - update the sidebar categories.
+                self.app.categories = categories;
+            }
             ServerEvent::Moderated { action, by } => self.on_moderated(action, &by),
             _ => {}
         }

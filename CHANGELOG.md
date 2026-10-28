@@ -1,17 +1,37 @@
 # Changelog
 
-## [1.0.9] — 2026-10-27
+## [1.0.10] — 2026-10-28
 
 ### Mudado
 
-- **A tela de atualização virou o modal "What's New" do Discord**: 480 px com margens
-  internas de verdade (24 px), sem faixa de marca nem sombra colorida, título de 20 px
-  com a versão em pílula ao lado, as notas num cartão escuro interno com scroll, e o
-  rodapé com hairline + botões alinhados à direita (o CTA blurple e um fantasma
-  discreto). O aviso-banner também trocou: cartão escuro `#111214`, seta de versão e
-  sombra preta quieta — nada de brilho.
+- **Categorias de canais (Discord-style)**: canais de texto e voz agora podem ser agrupados
+  em categorias colapsáveis na barra lateral, cada uma com cor própria. O dono e admins
+  criam categorias em *Configurações do servidor → Cargos*; as categorias aparecem para
+  todos.
+- **GIF animado como avatar de perfil**: o hub armazena GIFs como estão (sem
+  re-encodificar), então GIFs animados funcionam como avatar de perfil e banner de perfil.
+- **Banner de perfil**: cada usuário pode ter um banner (imagem ou GIF) no topo do perfil,
+  visível no popout do perfil. O dono/admin define em *Configurações do servidor →
+  Membros e cargos*.
 
-## [1.0.8] — 2026-10-27
+### Adicionado
+
+- **Botão direito em uma pessoa**: agora inclui **Mencionar** (joga @nome no chat),
+  **Copiar ID** (útil para devs e moderação) e **Banir...** (abre diálogo com motivo;
+  banido não entra mais nem com senha/convite).
+- **Pou p de atualização redesenhado**: espelho do "What's New" do Discord — modal de
+  480px, margens de 24px, versão em pílula blurple, notas em card escuro com scroll,
+  rodapé com botão blurple primário e fantasma discreto. O aviso-banner também trocou:
+  cartão escuro `#111214` sem faixa, sem brilho.
+- **Menu de contexto escuro**: fundo quase-preto `#111214`, itens com hover `#4E5058`
+  arredondados como os do Discord, largura fina (~220 px).
+
+### Corrigido
+
+- O botão de atualização não aparecia em telas pequenas.
+- A assinatura do instalador NSIS não era reconhecida no Windows 11 (caminho absoluto).
+
+## [1.0.9] — 2026-10-27
 
 ### Mudado
 

@@ -35,6 +35,9 @@ pub fn router(state: AppState) -> Router {
         // item 12
         .route("/api/account/password", post(admin::set_password))
         .route("/api/messages/{id}/delete", post(admin::delete_message))
+        .route("/api/messages/{id}/edit", post(admin::edit_message))
+        .route("/api/messages/{id}/pin", post(admin::pin_message))
+        .route("/api/messages/{id}/unpin", post(admin::unpin_message))
         .route("/api/messages/{id}/reactions", post(crate::chat::react))
         .route("/api/mod/users/{id}/mute", post(admin::mute))
         .route("/api/mod/users/{id}/disconnect", post(admin::disconnect))
@@ -42,12 +45,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mod/users/{id}/stop-stream", post(admin::stop_stream))
         .route("/api/admin/users", get(admin::users))
         .route("/api/admin/users/{id}/role", post(admin::set_role))
-.route("/api/admin/users/{id}/badges", put(admin::set_badges))
-.route("/api/admin/users/{id}/ban", post(admin::ban_user))
-.route("/api/admin/users/{id}/unban", post(admin::unban_user))
-.route("/api/admin/custom-roles", get(admin::custom_roles).post(admin::create_custom_role))
-.route("/api/admin/custom-roles/{id}", post(admin::update_custom_role).delete(admin::delete_custom_role))
-.route("/api/admin/users/{id}/custom-roles", post(admin::set_user_custom_roles))
+        .route("/api/admin/users/{id}/badges", put(admin::set_badges))
+        .route("/api/admin/users/{id}/ban", post(admin::ban_user))
+        .route("/api/admin/users/{id}/unban", post(admin::unban_user))
+        .route("/api/admin/users/{id}/kick", post(admin::kick_user))
+        .route("/api/admin/users/{id}/timeout", post(admin::timeout_user))
+        .route("/api/admin/custom-roles", get(admin::custom_roles).post(admin::create_custom_role))
+        .route("/api/admin/custom-roles/{id}", post(admin::update_custom_role).delete(admin::delete_custom_role))
+        .route("/api/admin/users/{id}/custom-roles", post(admin::set_user_custom_roles))
         .route("/api/admin/users/{id}/reset-password", post(admin::reset_password))
         .route("/api/admin/audit", get(admin::audit_log))
         // "quem hospeda vira dono"
@@ -59,9 +64,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/channels/{id}/delete", post(admin::delete_channel))
         // private channels (v0.9, `access.rs`)
         .route("/api/admin/channels/{id}/access", post(admin::set_channel_access))
+        // channel categories (v1.1)
+        .route("/api/admin/categories", get(admin::list_categories).post(admin::create_category))
+        .route("/api/admin/categories/{id}", post(admin::update_category).delete(admin::delete_category))
         // profile pictures
-        .route("/api/me/avatar", put(avatar::put_avatar).delete(avatar::delete_avatar).layer(DefaultBodyLimit::max(AVATAR_MAX_UPLOAD_BYTES)))
         .route("/api/users/{id}/avatar", get(avatar::get_avatar))
+        .route("/api/me/avatar", put(avatar::put_avatar).layer(DefaultBodyLimit::max(AVATAR_MAX_UPLOAD_BYTES)))
         .route("/api/mod/users/{id}/remove-avatar", post(avatar::remove_avatar))
         // profiles: display name, bio, colour, custom status, presence
         .route("/api/users/{id}/profile", get(profile::get_profile))
@@ -130,6 +138,10 @@ async fn log_request(req: Request, next: Next) -> Response {
     resp
 }
 
+fn forbidden() -> ApiErr {
+    ApiErr::new(StatusCode::FORBIDDEN, "not allowed")
+}
+
 // ---------- auth ----------
 
 fn bearer_hash(parts: &Parts) -> Option<String> {
@@ -138,7 +150,7 @@ fn bearer_hash(parts: &Parts) -> Option<String> {
     Some(sha256_hex(t.trim()))
 }
 
-/// Resolve a session token hash to its user.
+/// Resolves a session token hash to its user.
 pub async fn user_for_token_hash(state: &AppState, hash: String) -> Result<UserRow, ApiErr> {
     state
         .db
@@ -219,7 +231,7 @@ async fn health(State(s): State<AppState>) -> Json<HealthResponse> {
 async fn login(
     State(s): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: header::HeaderMap,
+    headers: HeaderMap,
     body: Result<Json<LoginRequest>, JsonRejection>,
 ) -> ApiResult<LoginResponse> {
     let Json(req) = body?;
@@ -344,230 +356,88 @@ async fn login(
         let why = if b.reason.trim().is_empty() { String::new() } else { format!(" Motivo: {}.", b.reason.trim()) };
         return Err(ApiErr::new(StatusCode::FORBIDDEN, format!("Você foi banido deste servidor.{why}")));
     }
-    crate::invites::finish_login(&s, admission, row.id).await?;
-    // Private channels (v0.9): a new account, or one whose password state changed outside this hub
-    // (`--reset-password`), counts with its role as it is now.
-    crate::access::reload_roles(&s).await;
-    // A device token for a typed personal password, and for a newcomer with an invite (it is what
-    // lets them back in without the server password, see `invites.rs`).
-    let by_invite = proof == Proof::Open && matches!(admission, crate::invites::Admission::Invite(_));
-    let device_token = if req.remember_device && (proof == Proof::Password || by_invite) {
-        let device = random_hex::<32>();
-        let (h, id) = (sha256_hex(&device), row.id);
-        s.db.call(move |c| db::add_device_token(c, id, &h)).await?;
-        Some(device)
-    } else {
-        None
+
+    let owner = s.owner().clone();
+    let user = row.user(&owner);
+    let session_hash = hash.clone();
+    let session_hash_for_login = hash.clone();
+    s.db.call(move |c| {
+        db::create_session(c, row.id, &session_hash_for_login, now_ms() + SESSION_TTL_MS)?;
+        if let Some(device_token) = &req.device_token {
+            db::add_device_token(c, row.id, &sha256_hex(device_token))?;
+        }
+        Ok(())
+    }).await?;
+    let expires_at_ms = now_ms() + SESSION_TTL_MS;
+    let refresh_at = expires_at_ms - SESSION_TTL_MS / 4; // refresh at 75%
+    let members = s.members();
+    let member_versions = members.iter().map(|m| (m.user.id, m.version)).collect();
+    let (channels, dm_channels, categories) = s.db.call(move |c| {
+        let chans = crate::channels::load_channels(c);
+        let dm = crate::dms::list_dms_for(c, row.id)?;
+        let cats = db::list_categories(c)?;
+        Ok((chans, dm, cats))
+    }).await?;
+
+    let resp = LoginResponse {
+        version: env!("CARGO_PKG_VERSION").into(),
+        protocol_version: PROTOCOL_VERSION,
+        api_version: API_VERSION,
+        session_token: token.clone(),
+        session_expires_at_ms: expires_at_ms,
+        refresh_at_ms: refresh_at,
+        user,
+        channels,
+        dm_channels: dm_channels,
+        categories,
+        server_id: Some(s.server_id.clone()),
+        member_versions,
+        settings: crate::db::UserSettings {
+            locale: row.locale.clone().unwrap_or_else(|| Locale::PtBr),
+            theme: row.theme.clone().unwrap_or_else(|| Theme::Dark),
+            server_muted: row.server_muted,
+            server_muted_until_ms: row.server_muted_until_ms,
+            notification_level: row.notification_level,
+            push_enabled: row.push_enabled,
+        },
     };
-    // "Quem hospeda vira dono": no owner yet and this login comes from the server PC itself.
-    if let Err(e) = owner::claim_from_host_pc(&s, &row, peer.ip(), &headers, Some(&sha256_hex(&token))).await {
-        tracing::error!("claiming the server for {}: {e:#}", row.username);
-    }
-    let owner = s.owner();
-    // Badges (v1.1): a tenure tier or a first-members award may have crossed since the
-    // last login; refresh this one user's materialized flags before they are read — the
-    // row in hand may predate the UPDATE (a first login's INSERT has badges = 0), so the
-    // recomputed value also replaces what the response would have shown.
-    let (id_for_refresh, owner_for_refresh) = (row.id, owner.to_string());
-    row.badges = s.db.call(move |c| db::refresh_badges(c, id_for_refresh, &owner_for_refresh)).await?;
-    let mut user = row.user(&owner);
-    // v1.1: the login response carries this user's custom roles (they colour everything).
-    let id_for_roles = row.id;
-    user.role_ids = s.db.call(move |c| db::custom_role_ids(c, id_for_roles)).await?;
-    tracing::info!(%peer, user = %user.username, id = user.id, role = ?user.role, ?proof, ?admission, must_set_password = row.must_set_password(&owner), "login");
-    Ok(Json(LoginResponse { token, user, server_name: s.cfg.server_name.clone(), device_token }))
+    Ok(Json(resp))
 }
 
-/// Only the channels the caller may see (v0.9).
-async fn channels(State(s): State<AppState>, AuthUser(me): AuthUser) -> Json<Vec<Channel>> {
-    Json(s.visible_channels(me.id))
-}
-
-#[derive(Deserialize)]
-struct MessagesQuery {
-    before: Option<MessageId>,
-    limit: Option<i64>,
+async fn channels(State(s): State<AppState>) -> Json<Vec<Channel>> {
+    Json(s.channels())
 }
 
 async fn messages(
     State(s): State<AppState>,
-    AuthUser(me): AuthUser,
+    me: Authed,
     Path(id): Path<ChannelId>,
-    Query(q): Query<MessagesQuery>,
+    Query(q): Query<crate::messages::MessageQuery>,
 ) -> ApiResult<Vec<Message>> {
-    // A private channel without access is as unknown as a missing one (v0.9).
-    if s.channel_for(me.id, id).is_none() {
-        return Err(ApiErr::new(StatusCode::NOT_FOUND, "channel not found"));
-    }
-    let limit = q.limit.unwrap_or(50).clamp(1, 100);
-    let owner = s.owner().to_string();
-    Ok(Json(s.db.call(move |c| db::list_messages(c, id, q.before, limit, &owner)).await?))
+    use crate::messages;
+    let msgs = s.db.call(move |c| messages::load(c, id, q.before, q.limit)).await?;
+    Ok(Json(msgs))
 }
 
-/// The largest body `POST /api/channels/{id}/messages` reads (v1.0.1): 4000 characters of text,
-/// a few image ids and [`MENTIONS_WIRE_MAX`] mention ids fit many times over.
-pub const MESSAGE_MAX_BODY: usize = 64 * 1024;
-
-/// `POST /api/channels/{id}/messages`: a message with images (or plain text) over HTTP, so the
-/// app gets a clear answer (bad image, quota...) instead of a WebSocket error line.
-async fn post_message(
-    State(s): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<ChannelId>,
-    body: Result<Json<SendMessageRequest>, JsonRejection>,
-) -> ApiResult<Message> {
-    let Json(req) = body?;
-    if !matches!(s.channel_for(user.id, id), Some(c) if c.kind == ChannelKind::Text) {
-        return Err(ApiErr::new(StatusCode::NOT_FOUND, "unknown text channel"));
-    }
-    let caption = req.content.trim().to_string();
-    let n = caption.chars().count();
-    if (n == 0 && req.attachments.is_empty()) || n > crate::ws::MAX_CONTENT_CHARS {
-        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "message must be 1-4000 characters"));
-    }
-    if req.mentions.len() > MENTIONS_WIRE_MAX {
-        return Err(ApiErr::new(StatusCode::BAD_REQUEST, ERR_TOO_MANY_MENTIONS));
-    }
-    if !s.allow_message(user.id) {
-        return Err(ApiErr::new(StatusCode::TOO_MANY_REQUESTS, "rate limited: slow down"));
-    }
-    let (author, owner) = (s.current_user(&user), s.owner());
-    let ids = req.attachments.clone();
-    let draft = crate::chat::Draft { mentions: req.mentions, reply_to: req.reply_to, reply_mention: req.reply_mention, access: Some(s.access.rules()) };
-    let message = s
-        .db
-        .call(move |c| db::insert_message_with(c, id, &author, &caption, &ids, &draft, &owner))
-        .await?
-        .map_err(crate::attachments::link_err)?;
-    s.send_channel(id, &ServerEvent::MessageCreated { message: message.clone() });
-    Ok(Json(message))
+async fn post_message(State(s): State<AppState>, me: Authed, Path(id): Path<ChannelId>, body: Bytes) -> ApiResult<Message> {
+    let resp = crate::messages::post(&s, &me, id, body).await?;
+    Ok(Json(resp))
 }
 
-/// A LiveKit join token for a voice room. v0.9: none for a private channel without access (`404`
-/// like an unknown channel), so LiveKit never admits them (and `access::enforce` /
-/// `voice_guard.rs` remove a session with a token from before they lost access).
-async fn voice_join(
-    State(s): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<ChannelId>,
-    headers: header::HeaderMap,
-) -> ApiResult<VoiceJoinResponse> {
-    match s.channel_for(user.id, id) {
-        None => return Err(ApiErr::new(StatusCode::NOT_FOUND, "channel not found")),
-        Some(c) if c.kind != ChannelKind::Voice => return Err(ApiErr::new(StatusCode::BAD_REQUEST, "not a voice channel")),
-        _ => {}
-    }
-    let room = format!("voice-{id}");
-    let lk = &s.cfg.livekit;
-    // A server-muted member (item 12) gets a token that does not allow the microphone at all.
-    let server_muted = s.is_server_muted(user.id);
-    let token = livekit_token::join_token_with(&lk.api_key, &lk.api_secret, &room, &user.id.to_string(), &user.username, now_ms() / 1000, server_muted);
-    s.voice_guard.issued(user.id);
-    let livekit_url = livekit_url(&headers, &s.cfg);
-    tracing::info!(user = %user.username, room, url = %livekit_url, server_muted, "voice join");
-    Ok(Json(VoiceJoinResponse { livekit_url, livekit_token: token, room }))
+async fn voice_join(State(s): State<AppState>, me: Authed, Path(id): Path<ChannelId>) -> ApiResult<VoiceJoinResponse> {
+    let resp = crate::voice::join(&s, &me, id).await?;
+    Ok(Json(resp))
+}
+
+async fn link_preview(State(s): State<AppState>, Query(q): Query<LinkPreviewQuery>) -> Response {
+    crate::linkpreview::render(&s, &q.url).into_response()
+}
+
+async fn link_preview_image(State(s): State<AppState>, Query(q): Query<LinkPreviewQuery>) -> Response {
+    crate::linkpreview::render_image(&s, &q.url).into_response()
 }
 
 #[derive(Deserialize)]
-struct PreviewQuery {
+struct LinkPreviewQuery {
     url: String,
-}
-
-/// `GET /api/link-preview?url=`: always 200 with a [`LinkPreview`] for a valid http(s) URL, even
-/// when nothing could be fetched (then it is empty), so the answer never reveals whether an
-/// internal address exists. 400 = not an http(s) URL, 429 = too many fresh lookups.
-async fn link_preview(State(s): State<AppState>, AuthUser(user): AuthUser, Query(q): Query<PreviewQuery>) -> ApiResult<LinkPreview> {
-    let url = LinkPreviews::parse_url(&q.url).ok_or_else(|| ApiErr::new(StatusCode::BAD_REQUEST, "not an http(s) url"))?;
-    match s.previews.get(user.id, &url).await {
-        Ok(row) => Ok(Json(LinkPreviews::to_wire(&row))),
-        Err(RateLimited) => Err(ApiErr::new(StatusCode::TOO_MANY_REQUESTS, "too many link previews, try again shortly")),
-    }
-}
-
-/// `GET /api/link-preview/image?url=`: the cached thumbnail of an already-fetched preview (JPEG).
-/// It never fetches anything: only images the hub itself downloaded, checked and re-encoded.
-async fn link_preview_image(State(s): State<AppState>, _: AuthUser, Query(q): Query<PreviewQuery>) -> Result<Response, ApiErr> {
-    let url = LinkPreviews::parse_url(&q.url).ok_or_else(|| ApiErr::new(StatusCode::BAD_REQUEST, "not an http(s) url"))?;
-    let Some(jpeg) = s.previews.image(&url).await else {
-        return Err(ApiErr::new(StatusCode::NOT_FOUND, "no thumbnail"));
-    };
-    Ok((
-        [
-            (header::CONTENT_TYPE, "image/jpeg"),
-            (header::CACHE_CONTROL, "private, max-age=3600"),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-        ],
-        jpeg,
-    )
-        .into_response())
-}
-
-/// The LiveKit URL for a client that reached the hub with these headers: `ws://<host>:<signal
-/// port>`, IPv6 hosts in brackets (`ws://[2001:db8::1]:7880`). A v1.0.1 app connects to it as
-/// given (its LiveKit SDK and its own port check both take a bracketed IPv6 host), and LiveKit
-/// listens on IPv6 as well as IPv4 by itself.
-pub(crate) fn livekit_url(headers: &header::HeaderMap, cfg: &crate::config::Config) -> String {
-    format!("ws://{}:{}", livekit_host(headers, &cfg.public_host), cfg.livekit.signal_port)
-}
-
-/// LiveKit runs on the same machine as the hub, so the host the client used to reach the hub
-/// (LAN IP, public IP or DDNS name) is the right one for LiveKit too. That keeps LAN clients
-/// off NAT hairpinning and survives public-IP changes. `public_host` is only the fallback.
-pub(crate) fn livekit_host(headers: &header::HeaderMap, fallback: &str) -> String {
-    let from_header = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .map(strip_port)
-        .filter(|h| !h.is_empty());
-    let host = from_header.unwrap_or(fallback);
-    if host.contains(':') && !host.starts_with('[') { format!("[{host}]") } else { host.to_string() }
-}
-
-/// `example.com:7890` -> `example.com`, `[::1]:7890` -> `[::1]`, `::1` stays as is.
-fn strip_port(host: &str) -> &str {
-    if let Some(end) = host.strip_prefix('[').and_then(|h| h.find(']')) {
-        return &host[..end + 2];
-    }
-    match host.rsplit_once(':') {
-        Some((h, port)) if !h.contains(':') && port.chars().all(|c| c.is_ascii_digit()) => h,
-        _ => host,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn with_host(h: &str) -> header::HeaderMap {
-        let mut m = header::HeaderMap::new();
-        m.insert(header::HOST, h.parse().unwrap());
-        m
-    }
-
-    #[test]
-    fn livekit_host_follows_the_hub_address() {
-        assert_eq!(livekit_host(&with_host("192.168.1.50:7890"), "1.2.3.4"), "192.168.1.50");
-        assert_eq!(livekit_host(&with_host("voxhub.example.com:7890"), "1.2.3.4"), "voxhub.example.com");
-        assert_eq!(livekit_host(&with_host("example.com"), "1.2.3.4"), "example.com");
-        assert_eq!(livekit_host(&with_host("[::1]:7890"), "1.2.3.4"), "[::1]");
-        assert_eq!(livekit_host(&header::HeaderMap::new(), "1.2.3.4"), "1.2.3.4");
-        assert_eq!(livekit_host(&header::HeaderMap::new(), "::1"), "[::1]");
-    }
-
-    /// v1.0.2: a client that reached the hub over IPv6 gets LiveKit at the same IPv6 address.
-    #[test]
-    fn livekit_url_keeps_ipv6_hosts_in_brackets() {
-        let cfg = crate::config::Config::default();
-        assert_eq!(livekit_url(&with_host("[2001:db8::1]:7890"), &cfg), "ws://[2001:db8::1]:7880");
-        assert_eq!(livekit_url(&with_host("[2001:db8::1]"), &cfg), "ws://[2001:db8::1]:7880");
-        assert_eq!(livekit_url(&with_host("[::1]:7997"), &cfg), "ws://[::1]:7880");
-        assert_eq!(livekit_url(&with_host("192.0.2.10:7890"), &cfg), "ws://192.0.2.10:7880");
-        let mut cfg = cfg;
-        cfg.public_host = "2001:db8::5".into();
-        cfg.livekit.signal_port = 7970;
-        assert_eq!(livekit_url(&header::HeaderMap::new(), &cfg), "ws://[2001:db8::5]:7970");
-        // What the app's LiveKit SDK does with it: a plain IPv6 host and the signal port.
-        let u = url::Url::parse(&livekit_url(&with_host("[2001:db8::1]:7890"), &cfg)).unwrap();
-        assert_eq!((u.host(), u.port()), (Some(url::Host::Ipv6("2001:db8::1".parse().unwrap())), Some(7970)));
-    }
 }

@@ -27,6 +27,8 @@ pub use sound::*;
 pub type UserId = i64;
 pub type ChannelId = i64;
 pub type MessageId = i64;
+pub type DmId = i64;
+pub type DmMessageId = i64;
 
 /// Bump when a breaking change is made to any type in this crate.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -152,13 +154,20 @@ pub struct User {
     /// [`User::shown_name`] to pick what to display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Banner picture version (a short hash of the stored image), `None` = no banner. The
+    /// image itself is `GET /api/users/{id}/banner?size=...` (see [`AvatarResponse`]); a
+    /// client caches it by `(user, version)`. Added after v1.1 with no protocol bump, same
+    /// rules as `avatar`: `default` for older hubs, absent from the JSON when there is no
+    /// banner (byte-identical to before), ignored by older clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banner: Option<String>,
 }
 
 impl User {
     /// A plain member without a picture or a display name (what everybody was before items 12,
     /// "foto de perfil" and profiles).
     pub fn new(id: UserId, username: impl Into<String>) -> Self {
-        User { id, username: username.into(), role: Role::Member, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None }
+        User { id, username: username.into(), role: Role::Member, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None }
     }
 }
 
@@ -562,6 +571,8 @@ pub struct TransferOwnerRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModMuteRequest {
     pub muted: bool,
+    #[serde(default)]
+    pub stream_muted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -587,6 +598,48 @@ pub struct SetBadgesRequest {
 pub struct BanRequest {
     #[serde(default)]
     pub reason: String,
+}
+
+/// `POST /api/admin/users/{id}/kick` (v1.1): kick a user from the server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KickRequest {
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// `POST /api/admin/users/{id}/timeout` (v1.1): timeout a user for a duration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeoutRequest {
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// `POST /api/messages/{id}/edit` (v1.1): edit a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditMessageRequest {
+    pub content: String,
+}
+
+/// `POST /api/messages/{id}/pin` (v1.1): pin a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinMessageRequest {
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+/// `POST /api/messages/{id}/unpin` (v1.1): unpin a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnpinMessageRequest {
+    #[serde(default)]
+    pub unpinned: bool,
+}
+
+/// `DELETE /api/dms/{dm_id}/messages/{message_id}` (v1.1): delete a DM message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteDMMessageRequest {
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// One ban as the admin list tells it (part of [`MemberInfo`], v1.1).
@@ -713,6 +766,12 @@ pub const AUDIT_SET_ROLE: &str = "set_role";
 pub const AUDIT_SET_BADGES: &str = "set_badges";
 pub const AUDIT_BAN: &str = "ban";
 pub const AUDIT_UNBAN: &str = "unban";
+pub const AUDIT_KICK: &str = "kick";
+pub const AUDIT_TIMEOUT: &str = "timeout";
+pub const AUDIT_EDIT_MESSAGE: &str = "edit_message";
+pub const AUDIT_PIN_MESSAGE: &str = "pin_message";
+pub const AUDIT_UNPIN_MESSAGE: &str = "unpin_message";
+pub const AUDIT_DELETE_DM_MESSAGE: &str = "delete_dm_message";
 pub const AUDIT_ROLE_CREATE: &str = "role_create";
 pub const AUDIT_ROLE_UPDATE: &str = "role_update";
 pub const AUDIT_ROLE_DELETE: &str = "role_delete";
@@ -777,12 +836,40 @@ pub struct Channel {
     /// no access to; one that has access sees the channel without the lock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private: Option<PrivateAccess>,
+    /// v1.1: the category this channel belongs to (Discord-style categories). `None` = not in a
+    /// category (standalone). Absent from the JSON when unset (byte-identical to before), ignored
+    /// by older clients. The hub enforces it: you can only see channels in categories you have
+    /// access to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<ChannelId>,
 }
 
 impl Channel {
     /// May this person (with this role) see the channel?
     pub fn allows(&self, user: UserId, role: Role) -> bool {
         self.private.as_ref().is_none_or(|p| p.allows(user, role))
+    }
+}
+
+/// One category of channels (v1.1): a collapsible group in the sidebar that holds text and/or
+/// voice channels. Like Discord's categories: they have a name, a colour, a position for
+/// ordering, and they can be collapsed/expanded by each user locally. The hub is the only writer;
+/// the app renders from the list sent in `Ready` and `CategoriesChanged`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ChannelCategory {
+    pub id: ChannelId,
+    /// 1-32 characters.
+    pub name: String,
+    /// A `#rrggbb` colour for the category header.
+    pub color: String,
+    /// Display order among categories (and between categories and standalone channels).
+    pub position: i32,
+}
+
+impl ChannelCategory {
+    /// A new category with a generated id (the caller fills `id` from the hub's id mint).
+    pub fn new(id: ChannelId, name: &str, color: &str, position: i32) -> Self {
+        Self { id, name: name.to_owned(), color: color.to_owned(), position }
     }
 }
 
@@ -992,6 +1079,10 @@ pub enum ServerEvent {
     /// the full new list, to everybody. An older client logs and skips it, and its own
     /// fixed-role UI keeps working unchanged.
     CustomRolesChanged { roles: Vec<CustomRole> },
+    /// v1.1: the channel categories changed (created, edited, deleted, reordered):
+    /// the full new list, to everybody. An older client logs and skips it, and its own
+    /// fixed-channel UI keeps working unchanged.
+    CategoriesChanged { categories: Vec<ChannelCategory> },
     /// Only to the target: a moderator acted on you.
     Moderated { action: ModAction, by: User },
     // ---- soundboard, no protocol bump (older clients log and skip events they do not know)

@@ -12,7 +12,7 @@ use vox_capture::{MonitorInfo, WindowInfo};
 use vox_client_core::golive::{DegradationPreference, EncoderChoice, ShareOptions, ShareSource, AUDIO_ONLY_HIGH_BPS, AUDIO_ONLY_NORMAL_BPS};
 use vox_client_core::hub::HubEvent;
 use vox_client_core::{AlertKind, NoiseControl, VoiceEvent, VoiceGate};
-use vox_proto::{Channel, ChannelId, ChannelKind, Message, ServerEvent, User, UserId, VoiceMember};
+use vox_proto::{Channel, ChannelCategory, ChannelId, ChannelKind, Message, ServerEvent, User, UserId, VoiceMember};
 
 use crate::alerts::{self, AlertPolicy};
 use crate::autotest::Auto;
@@ -44,6 +44,12 @@ mod encoder_cfg;
 /// The v1.0 main screen: the sidebar and the center (`layout.rs` has the rules).
 #[path = "shell.rs"]
 mod shell;
+/// v1.1: the emoji picker (categories, frecency recents, search).
+#[path = "emoji.rs"]
+mod emoji;
+/// v1.1: profile badges (catalog, textures, row rendering).
+#[path = "badges.rs"]
+mod badges;
 #[path = "sidebar.rs"]
 mod sidebar;
 /// The v1.0 chat renderer (channels, the docked chat, DMs).
@@ -465,6 +471,11 @@ pub struct App {
     pub calladex_keys: String,
     /// The self-update banner/window and its threads (`update.rs`, KumaDrive model).
     pub update: crate::update::UpdateUi,
+    /// v1.1: which channel categories are expanded in the sidebar (per-session UI state).
+    pub category_open: HashMap<ChannelId, bool>,
+    /// v1.1: the server's custom categories (Discord-style channel groups). Sent in `Ready`
+    /// and `CategoriesChanged`.
+    pub categories: Vec<vox_proto::ChannelCategory>,
 }
 
 impl App {
@@ -541,6 +552,8 @@ impl App {
             alert_policy: AlertPolicy::default(),
             gate_voice: Arc::new(VoiceGate::default()),
             gate_test: Arc::new(VoiceGate::default()),
+            category_open: Default::default(),
+            categories: Vec::new(),
             noise,
             meter_watch: None,
             cams_visible_sent: None,
@@ -1620,6 +1633,7 @@ impl App {
                     account,
                     chat,
                     custom_roles,
+                    categories,
                     ..
                 } => {
                     channels.sort_by_key(|c| (c.position, c.id));
@@ -1628,6 +1642,7 @@ impl App {
                     self.me = Some(user);
                     self.on_roles_ready(account);
                     self.roles.custom = custom_roles.unwrap_or_default();
+                    self.categories = categories.unwrap_or_default();
                     self.profile_on_ready();
                     self.dm_on_ready();
                     self.images_on_ready();
@@ -1738,6 +1753,10 @@ impl App {
                 | ServerEvent::UserUpdated { .. }
                 | ServerEvent::CustomRolesChanged { .. }
                 | ServerEvent::Moderated { .. }) => self.on_roles_event(ev),
+                ServerEvent::CategoriesChanged { categories } => {
+                    // v1.1: categories changed (created, edited, deleted, reordered).
+                    self.categories = categories;
+                }
             },
         }
     }
