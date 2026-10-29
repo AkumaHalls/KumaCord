@@ -172,7 +172,7 @@ impl HubClient {
 
     /// `POST /api/mod/users/{id}/mute`
     pub async fn mod_mute(&self, user: UserId, muted: bool) -> Result<()> {
-        self.post::<_, OkResponse>("server mute", &format!("api/mod/users/{user}/mute"), &ModMuteRequest { muted }).await.map(|_| ())
+        self.post::<_, OkResponse>("server mute", &format!("api/mod/users/{user}/mute"), &ModMuteRequest { muted, stream_muted: false }).await.map(|_| ())
     }
 
     /// `POST /api/mod/users/{id}/disconnect`

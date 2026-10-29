@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tokio::sync::{broadcast, watch};
-use vox_proto::{Account, Channel, ChannelCategory, ChannelId, ChannelKind, CustomStatus, Presence, ServerEvent, User, UserId, VoiceMember};
+use vox_proto::{Account, Channel, ChannelId, ChannelKind, CustomStatus, Presence, ServerEvent, User, UserId, VoiceMember};
 
 use crate::access;
 use crate::auth::Throttle;
@@ -110,9 +110,9 @@ struct Inner {
     /// v1.1: the server's custom roles (the whole list — it is small — swapped whole on
     /// every change; every `Ready` carries it).
     custom_roles: Vec<vox_proto::CustomRole>,
-    /// v1.1: the server's custom channel categories (the whole list — swapped whole on
-    /// every change; every `Ready` carries it).
-    custom_categories: Vec<vox_proto::ChannelCategory>,
+    /// v1.1: the channel categories (Discord-style collapsible sections), carried in every
+    /// `Ready` and kept in sync with the database.
+    categories: Vec<vox_proto::ChannelCategory>,
     /// Users a moderator server-muted (mirrors the database).
     server_muted: HashSet<UserId>,
     /// Presence and custom status of everybody connected (an invisible person is in here too:
@@ -333,16 +333,15 @@ impl Shared {
         self.broadcast(&ServerEvent::CustomRolesChanged { roles });
     }
 
-    /// v1.1: the server's custom channel categories as `Ready` carries them (a fresh list on every change).
-    pub fn custom_categories(&self) -> Vec<vox_proto::ChannelCategory> {
-        self.lock().custom_categories.clone()
+    /// v1.1: the channel categories carried in every `Ready`.
+    pub fn categories(&self) -> Vec<vox_proto::ChannelCategory> {
+        self.lock().categories.clone()
     }
 
-    /// v1.1: replace the whole list (the admin endpoints call this after any change) and
-    /// tell everybody at once.
+    /// v1.1: replace the whole list (admin endpoints call this after any change).
     pub fn set_categories(&self, categories: Vec<vox_proto::ChannelCategory>) {
         let mut g = self.lock();
-        g.custom_categories = categories.clone();
+        g.categories = categories.clone();
         drop(g);
         self.broadcast(&ServerEvent::CategoriesChanged { categories });
     }
@@ -390,7 +389,7 @@ impl Shared {
             chat: Some(vox_proto::ChatFeatures::ALL),
             server_id: Some(self.server_id.clone()),
             custom_roles: Some(g.custom_roles.clone()),
-            custom_categories: Some(g.custom_categories.clone()),
+            categories: Some(g.categories.clone()),
         };
         (ready, rx)
     }

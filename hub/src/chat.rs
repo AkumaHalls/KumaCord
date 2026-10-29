@@ -185,7 +185,7 @@ fn reply_refs(conn: &Connection, ids: &[i64], dm: bool, owner: &str) -> rusqlite
         let content: String = r.get(1)?;
         let quote = ReplyRef {
             id: r.get(0)?,
-            author: Some(db::display_user(r.get(2)?, r.get(3)?, &r.get::<_, String>(4)?, r.get(5)?, r.get(6)?, 0, owner)),
+            author: Some(db::display_user(r.get(2)?, r.get(3)?, &r.get::<_, String>(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get::<_, i64>(8)?.max(0) as u64, owner)),
             excerpt: reply_excerpt(strip_attachment_marker(&content, images as usize)),
             images,
             deleted: false,

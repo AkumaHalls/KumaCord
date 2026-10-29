@@ -1060,6 +1060,10 @@ pub enum ServerEvent {
         /// ride each user (`role_ids`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         custom_roles: Option<Vec<CustomRole>>,
+        /// v1.1: the channel categories (absent: a hub without them). Rendered as collapsible
+        /// sections in the sidebar. An older client logs and skips it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        categories: Option<Vec<ChannelCategory>>,
     },
     MessageCreated { message: Message },
     UserOnline { user: User },

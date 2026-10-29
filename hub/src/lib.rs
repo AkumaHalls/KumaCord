@@ -209,6 +209,10 @@ pub async fn start_tuned(opts: Options, previews: linkpreview::PreviewConfig, tu
     if let Ok(roles) = state.db.call(|c| db::list_custom_roles(c)).await {
         state.set_custom_roles(roles);
     }
+    // v1.1: channel categories ride every `Ready` too.
+    if let Ok(cats) = state.db.call(|c| db::list_categories(c)).await {
+        state.set_categories(cats);
+    }
     owner::init(&state).await?;
     // Private channels: everybody's effective role, before anybody connects.
     access::init_roles(&state).await?;
