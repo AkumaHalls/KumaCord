@@ -611,7 +611,7 @@ impl App {
             }
             ServerEvent::CategoriesChanged { categories } => {
                 // v1.1: categories changed - update the sidebar categories.
-                self.app.categories = categories;
+                self.categories = categories;
             }
             ServerEvent::Moderated { action, by } => self.on_moderated(action, &by),
             _ => {}
@@ -2048,7 +2048,7 @@ mod tests {
 
     #[test]
     fn the_people_picker_offers_members_and_moderators_only() {
-        let info = |id, name: &str, role| MemberInfo { user: User { id, username: name.into(), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None }, has_password: false, server_muted: false, created_at_ms: 0, granted: 0, banned: None };
+        let info = |id, name: &str, role| MemberInfo { user: User { id, username: name.into(), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None }, has_password: false, server_muted: false, created_at_ms: 0, granted: 0, banned: None };
         let ms = vec![info(1, "dono", Role::Owner), info(2, "adm", Role::Admin), info(3, "ana", Role::Member), info(4, "anabela", Role::Moderator), info(5, "bia", Role::Member)];
         let names = |v: Vec<&MemberInfo>| v.iter().map(|m| m.user.username.clone()).collect::<Vec<_>>();
         assert_eq!(names(pick_candidates(&ms, &[], "an")), ["ana", "anabela"]);

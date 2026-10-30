@@ -399,7 +399,7 @@ mod tests {
     use super::*;
 
     fn ch(id: ChannelId, private: Option<PrivateAccess>) -> Channel {
-        Channel { id, name: format!("c{id}"), kind: ChannelKind::Voice, position: id as i32, private }
+        Channel { id, name: format!("c{id}"), kind: ChannelKind::Voice, position: id as i32, private, category_id: None }
     }
 
     fn rules(list: &[Channel], roles: &[(UserId, Role)]) -> Rules {
@@ -457,7 +457,7 @@ mod tests {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(
             "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, role TEXT NOT NULL DEFAULT 'member', password_hash TEXT, reset_hash TEXT,
-                reset_expires_ms INTEGER, server_muted INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER NOT NULL DEFAULT 0, avatar_version TEXT, display_name TEXT, badges INTEGER NOT NULL DEFAULT 0);
+                reset_expires_ms INTEGER, server_muted INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER NOT NULL DEFAULT 0, avatar_version TEXT, display_name TEXT, banner_version TEXT, badges INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE badge_grants (user_id INTEGER PRIMARY KEY, flags INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE channels (id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('text','voice')), position INTEGER NOT NULL);
              CREATE TABLE server_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

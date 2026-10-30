@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 
 use eframe::egui::{self, Align2, Color32, Margin, Pos2, Rect, RichText, Sense, Vec2};
-use vox_proto::{ChannelCategory, ChannelKind, User, VoiceMember};
+use vox_proto::{ChannelCategory, ChannelId, ChannelKind, User, VoiceMember};
 
 use super::{channel_label, App, CameraUi, Share, ICON_PRIVATE};
 use crate::context_menu::{Lead, Origin};
@@ -82,11 +82,12 @@ impl App {
         self.dm_sidebar(ui);
 
         // v1.1: group channels into categories (Discord-style). Standalone channels (no
-        // category) go under "Sem categoria" so nothing disappears.
-        let mut by_category: std::collections::HashMap<Option<ChannelId>, Vec<&vox_proto::Channel>> =
+        // category) go under "Sem categoria" so nothing disappears. (Cloned: the section
+        // renders through `&mut self`, so borrowed channels would fight the borrow checker.)
+        let mut by_category: std::collections::HashMap<Option<ChannelId>, Vec<vox_proto::Channel>> =
             std::collections::HashMap::new();
         for c in &self.channels {
-            by_category.entry(c.category_id).or_default().push(c);
+            by_category.entry(c.category_id).or_default().push(c.clone());
         }
 
         // Sort categories by position, standalone last.
@@ -105,33 +106,33 @@ impl App {
 
         // Text channels first (top section), then voice channels, per category.
         for cat_id in &cat_ids {
-            let cat = self.categories.iter().find(|c| c.id == *cat_id).unwrap();
-            let mut text_channels: Vec<&vox_proto::Channel> = by_category
-                .remove(cat_id)
+            let cat = self.categories.iter().find(|c| c.id == *cat_id).unwrap().clone();
+            let mut text_channels: Vec<vox_proto::Channel> = by_category
+                .remove(&Some(*cat_id))
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|c| c.kind == ChannelKind::Text)
                 .collect();
             text_channels.sort_by_key(|c| c.position);
-            let mut voice_channels: Vec<&vox_proto::Channel> = by_category
-                .remove(cat_id)
+            let mut voice_channels: Vec<vox_proto::Channel> = by_category
+                .remove(&Some(*cat_id))
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|c| c.kind == ChannelKind::Voice)
                 .collect();
             voice_channels.sort_by_key(|c| c.position);
 
-            self.category_section(ui, cat, &text_channels, &voice_channels, open);
+            self.category_section(ui, &cat, &text_channels, &voice_channels, open);
         }
 
         // Standalone channels (no category) at the bottom.
-        let standalone_text: Vec<&vox_proto::Channel> = by_category
+        let standalone_text: Vec<vox_proto::Channel> = by_category
             .remove(&None)
             .unwrap_or_default()
             .into_iter()
             .filter(|c| c.kind == ChannelKind::Text)
             .collect();
-        let standalone_voice: Vec<&vox_proto::Channel> = by_category
+        let standalone_voice: Vec<vox_proto::Channel> = by_category
             .remove(&None)
             .unwrap_or_default()
             .into_iter()
@@ -159,19 +160,19 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         cat: &vox_proto::ChannelCategory,
-        text_channels: &[&vox_proto::Channel],
-        voice_channels: &[&vox_proto::Channel],
-        open: crate::app::Screen,
+        text_channels: &[vox_proto::Channel],
+        voice_channels: &[vox_proto::Channel],
+        open: Open,
     ) {
         let is_open = self.category_open.get(&cat.id).copied().unwrap_or(true);
         let caret = if is_open { ph::CARET_DOWN } else { ph::CARET_RIGHT };
 
         // Category header: colour dot + name + caret. Clicking toggles open/closed.
-        let header_rect = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
-        if header_rect.hovered() {
+        let (header_rect, header_resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+        if header_resp.hovered() {
             ui.painter().rect_filled(header_rect, radius::ROW, theme::ROW_HOVER);
         }
-        if header_rect.clicked() {
+        if header_resp.clicked() {
             self.category_open
                 .entry(cat.id)
                 .and_modify(|e| *e = !*e)
@@ -184,7 +185,8 @@ impl App {
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            ui.painter().circle_filled(Pos2::new(ui.cursor().x + 7.0, ui.cursor().y + 7.0), 5.0, color);
+            let dot = ui.next_widget_position();
+            ui.painter().circle_filled(Pos2::new(dot.x + 7.0, dot.y + 7.0), 5.0, color);
             ui.label(
                 egui::RichText::new(&cat.name).font(theme::semibold(13.0)).color(theme::GIZ),
             );
@@ -199,7 +201,7 @@ impl App {
             if !text_channels.is_empty() {
                 ui.add_space(2.0);
                 for c in text_channels {
-                    self.channel_row(ui, c, open);
+                    self.category_channel_row(ui, c, open);
                 }
                 ui.add_space(4.0);
             }
@@ -215,7 +217,7 @@ impl App {
     }
 
     /// v1.1: render a single text channel row inside a category (reuses the row logic).
-    fn channel_row(&mut self, ui: &mut egui::Ui, c: &vox_proto::Channel, open: crate::app::Screen) {
+    fn category_channel_row(&mut self, ui: &mut egui::Ui, c: &vox_proto::Channel, open: Open) {
         let unread = self.unread.get(&c.id).copied().unwrap_or(0);
         let mentions = self.chatx.mention_unread.get(&c.id).copied().unwrap_or(0);
         let hover = c.private.is_some().then_some(super::PRIVATE_HOVER);
@@ -225,7 +227,7 @@ impl App {
             icon,
             name: &c.name,
             label: &label,
-            selected: open == crate::app::Open::Text(c.id),
+            selected: open == Open::Text(c.id),
             unread: unread > 0,
             count: unread,
             mentions,
@@ -238,7 +240,7 @@ impl App {
     }
 
     /// v1.1: render a single voice channel row inside a category.
-    fn voice_channel_row(&mut self, ui: &mut egui::Ui, c: &vox_proto::Channel, open: crate::app::Screen) {
+    fn voice_channel_row(&mut self, ui: &mut egui::Ui, c: &vox_proto::Channel, open: Open) {
         let here = self.voice.channel == Some(c.id);
         let joining = self.voice.joining == Some(c.id);
         let suffix = if joining { "  (entrando...)" } else { "" };
@@ -257,7 +259,7 @@ impl App {
             icon: ph::SPEAKER_HIGH,
             name,
             label: &label,
-            selected: open == crate::app::Open::Stage(c.id),
+            selected: open == Open::Stage(c.id),
             unread: false,
             count: 0,
             mentions: 0,

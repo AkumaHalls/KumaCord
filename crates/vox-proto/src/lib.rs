@@ -1226,7 +1226,7 @@ mod tests {
         let ev = ServerEvent::VoiceStateChanged { member: m.clone() };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(matches!(serde_json::from_str::<v020::ServerEvent>(&json), Ok(v020::ServerEvent::VoiceStateChanged { .. })));
-        let ready = ServerEvent::Ready { user: user(1), channels: vec![], online: vec![user(1)], voice: vec![m], account: None, chat: None, server_id: None, custom_roles: None };
+        let ready = ServerEvent::Ready { user: user(1), channels: vec![], online: vec![user(1)], voice: vec![m], account: None, chat: None, server_id: None, custom_roles: None, categories: None };
         let json = serde_json::to_string(&ready).unwrap();
         assert!(matches!(serde_json::from_str::<v020::ServerEvent>(&json), Ok(v020::ServerEvent::Ready { .. })));
     }
@@ -1385,7 +1385,7 @@ mod tests {
     }
 
     fn role_user(id: i64, role: Role) -> User {
-        User { id, username: format!("u{id}"), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None }
+        User { id, username: format!("u{id}"), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None }
     }
 
     #[test]
@@ -1451,6 +1451,7 @@ mod tests {
             chat: None,
             server_id: Some("0123456789abcdef0123456789abcdef".into()),
             custom_roles: None,
+            categories: None,
         };
         assert!(matches!(serde_json::from_str::<v041::ServerEvent>(&serde_json::to_string(&ready).unwrap()), Ok(v041::ServerEvent::Ready { .. })));
         let msg = Message { id: 1, channel_id: 1, author: admin.clone(), content: "oi".into(), created_at_ms: 5, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] };
@@ -1708,7 +1709,7 @@ mod tests {
         assert_eq!((old.user, old.channel_id, old.streaming), (user(4), Some(5), true));
         let ev = serde_json::to_string(&ServerEvent::VoiceStateChanged { member: m.clone() }).unwrap();
         assert!(matches!(serde_json::from_str::<v050::ServerEvent>(&ev), Ok(v050::ServerEvent::VoiceStateChanged { .. })));
-        let ready = serde_json::to_string(&ServerEvent::Ready { user: user(4), channels: vec![], online: vec![user(4)], voice: vec![m], account: None, chat: None, server_id: None, custom_roles: None }).unwrap();
+        let ready = serde_json::to_string(&ServerEvent::Ready { user: user(4), channels: vec![], online: vec![user(4)], voice: vec![m], account: None, chat: None, server_id: None, custom_roles: None, categories: None }).unwrap();
         assert!(matches!(serde_json::from_str::<v050::ServerEvent>(&ready), Ok(v050::ServerEvent::Ready { voice, .. }) if voice.len() == 1));
     }
 
@@ -1789,7 +1790,7 @@ mod tests {
     }
 
     fn channel(id: i64, private: Option<PrivateAccess>) -> Channel {
-        Channel { id, name: format!("c{id}"), kind: ChannelKind::Text, position: id as i32, private }
+        Channel { id, name: format!("c{id}"), kind: ChannelKind::Text, position: id as i32, private, category_id: None }
     }
 
     #[test]
@@ -1818,7 +1819,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Channel>(&only_staff).unwrap().private, Some(PrivateAccess::default()));
         // Inside the events an old app parses.
         for ev in [
-            ServerEvent::Ready { user: user(1), channels: vec![ch.clone()], online: vec![], voice: vec![], account: None, chat: Some(ChatFeatures::ALL), server_id: None, custom_roles: None },
+            ServerEvent::Ready { user: user(1), channels: vec![ch.clone()], online: vec![], voice: vec![], account: None, chat: Some(ChatFeatures::ALL), server_id: None, custom_roles: None, categories: None },
             ServerEvent::ChannelsChanged { channels: vec![ch.clone(), channel(6, None)] },
         ] {
             let json = serde_json::to_string(&ev).unwrap();

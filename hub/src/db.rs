@@ -170,6 +170,8 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         // Badges (v1.1): the materialized effective flags — the automatic rules
         // (`badge_grants` is the manual half) recompute them; see [`recompute_badges`].
         ("badges", "INTEGER NOT NULL DEFAULT 0"),
+        // Banners (v1.1): the version of the profile banner (the image is in `banner_blobs`).
+        ("banner_version", "TEXT"),
     ] {
         if !has_column(&tx, "users", column)? {
             tx.execute_batch(&format!("ALTER TABLE users ADD COLUMN {column} {decl}"))?;
@@ -643,7 +645,7 @@ pub fn list_messages(conn: &Connection, channel_id: i64, before: Option<i64>, li
             reply: None,
             reactions: Vec::new(),
         };
-        crate::chat::raw_fields(&mut m, &r.get::<_, String>(9)?, r.get::<_, i64>(10)? != 0, r.get(11)?);
+        crate::chat::raw_fields(&mut m, &r.get::<_, String>(10)?, r.get::<_, i64>(11)? != 0, r.get(12)?);
         Ok(m)
     })?;
     let mut msgs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -945,7 +947,7 @@ pub fn list_audit(conn: &Connection, before: Option<i64>, limit: i64, owner: &st
                 None => None,
             })
         };
-        Ok(AuditEntry { id: r.get(0)?, at_ms: r.get(1)?, action: r.get(2)?, detail: r.get(3)?, actor: person(4)?, target: person(10)? })
+        Ok(AuditEntry { id: r.get(0)?, at_ms: r.get(1)?, action: r.get(2)?, detail: r.get(3)?, actor: person(4)?, target: person(11)? })
     })?;
     rows.collect()
 }

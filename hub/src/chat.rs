@@ -190,7 +190,7 @@ fn reply_refs(conn: &Connection, ids: &[i64], dm: bool, owner: &str) -> rusqlite
             images,
             deleted: false,
         };
-        Ok((r.get::<_, i64>(9)?, quote))
+        Ok((r.get::<_, i64>(10)?, quote))
     })?;
     for r in rows {
         let (container, quote) = r?;
