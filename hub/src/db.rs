@@ -882,6 +882,12 @@ pub fn set_channel_category(conn: &Connection, channel: ChannelId, category: Opt
     Ok(conn.execute("UPDATE channels SET category_id = ?1 WHERE id = ?2 AND id > 0", params![category, channel])? > 0)
 }
 
+/// v1.1: `GET /api/admin/categories` — the editor's list; everybody gets the same list in
+/// `Ready` (and `CategoriesChanged`) for the sidebar.
+pub fn list_categories_count(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM categories", [], |r| r.get(0))
+}
+
 /// One user's custom role ids, display order.
 pub fn custom_role_ids(conn: &Connection, user: UserId) -> rusqlite::Result<Vec<i64>> {
     let mut st = conn.prepare(

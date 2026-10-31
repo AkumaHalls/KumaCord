@@ -826,6 +826,94 @@ pub async fn set_channel_category(
     Ok(ok())
 }
 
+// ---------------------------------------------------------------- categories (v1.1)
+
+/// Validates the editor's fields: the name is 1-32 characters and the colour is `#rrggbb`.
+fn check_category(name: &str, color: &str) -> Result<(String, String), ApiErr> {
+    let name = name.trim();
+    let n = name.chars().count();
+    if !(1..=32).contains(&n) {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "o nome da categoria precisa de 1 a 32 caracteres"));
+    }
+    let c = color.trim().to_ascii_lowercase();
+    let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+    if !ok {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "a cor precisa ser #rrggbb"));
+    }
+    Ok((name.to_string(), format!("#{}", &c[1..])))
+}
+
+/// `GET /api/admin/categories` (v1.1): the editor's list; everybody gets the same list in
+/// `Ready` (and `CategoriesChanged`) for the sidebar.
+pub async fn list_categories(State(s): State<AppState>, me: Authed) -> ApiResult<Vec<ChannelCategory>> {
+    if !me.role.can_manage_channels() {
+        return Err(forbidden());
+    }
+    Ok(Json(s.categories()))
+}
+
+/// `POST /api/admin/categories` (v1.1): create. The sidebar regroups at once.
+/// `POST /api/admin/categories` (v1.1): create. The sidebar regroups at once. (No `id`: the hub
+/// mints one.)
+#[derive(serde::Deserialize)]
+pub struct NewCategoryRequest {
+    pub name: String,
+    pub color: String,
+    #[serde(default)]
+    pub position: i32,
+}
+
+pub async fn create_category(State(s): State<AppState>, me: Authed, body: Result<Json<NewCategoryRequest>, JsonRejection>) -> ApiResult<ChannelCategory> {
+    let Json(req) = body?;
+    can_manage_channels(&me)?;
+    let (name, color) = check_category(&req.name, &req.color)?;
+    let position = req.position;
+    let category = s.db.call(move |c| db::create_category(c, &name, &color, position as i64)).await?;
+    let list = s.db.call(|c| db::list_categories(c)).await?;
+    s.set_categories(list);
+    audit(&s, Some(me.user.id), AUDIT_CHANNEL_CREATE, None, format!("categoria {}", category.name)).await;
+    Ok(Json(category))
+}
+
+/// `POST /api/admin/categories/{id}` (v1.1): edit everything about one category.
+pub async fn update_category(State(s): State<AppState>, me: Authed, Path(id): Path<i64>, body: Result<Json<ChannelCategory>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    can_manage_channels(&me)?;
+    let (name, color) = check_category(&req.name, &req.color)?;
+    let cat_name = name.clone();
+    let category = ChannelCategory { id, name, color, position: req.position };
+    let updated = s.db.call(move |c| db::update_category(c, &category)).await?;
+    if !updated {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "categoria não encontrada"));
+    }
+    let list = s.db.call(|c| db::list_categories(c)).await?;
+    s.set_categories(list);
+    audit(&s, Some(me.user.id), AUDIT_CHANNEL_RENAME, None, format!("categoria {cat_name}")).await;
+    Ok(ok())
+}
+
+/// `DELETE /api/admin/categories/{id}` (v1.1): channels in it become standalone.
+pub async fn delete_category(State(s): State<AppState>, me: Authed, Path(id): Path<i64>) -> ApiResult<OkResponse> {
+    can_manage_channels(&me)?;
+    let (name, gone) = s
+        .db
+        .call(move |c| {
+            let name: String = c
+                .query_row("SELECT name FROM categories WHERE id = ?1", [id], |r| r.get(0))
+                .optional()?
+                .unwrap_or_default();
+            Ok((name, db::delete_category(c, id)?))
+        })
+        .await?;
+    if !gone {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "categoria não encontrada"));
+    }
+    let list = s.db.call(|c| db::list_categories(c)).await?;
+    s.set_categories(list);
+    audit(&s, Some(me.user.id), AUDIT_CHANNEL_DELETE, None, format!("categoria {name}")).await;
+    Ok(ok())
+}
+
 /// `POST /api/admin/channels/{id}/delete`: its messages go too; people in a voice channel are
 /// taken out of it.
 pub async fn delete_channel(State(s): State<AppState>, me: Authed, Path(id): Path<ChannelId>) -> ApiResult<OkResponse> {
