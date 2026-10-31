@@ -13,7 +13,7 @@ use tokio_tungstenite::tungstenite::{self, Message};
 use tracing::{debug, info, warn};
 use url::Url;
 use vox_proto::{
-    ApiError, AuditEntry, AvatarResponse, Channel, ChannelAccessRequest, ChannelCreateRequest, ChannelId, ChannelKind, ChannelRenameRequest, ChannelReorderRequest, ClaimOwnerRequest,
+    ApiError, AuditEntry, AvatarResponse, Channel, ChannelAccessRequest, ChannelCreateRequest, ChannelId, ChannelKind, ChannelRenameRequest, ChannelReorderRequest, ClaimOwnerRequest, SetChannelCategoryRequest,
     ClaimOwnerResponse, ClientEvent, HealthResponse, LinkPreview, LoginRequest, LoginResponse, MemberInfo, Message as ChatMessage, MessageId, ModMoveRequest, ModMuteRequest,
     OkResponse, PrivateAccess, BanInfo, BanRequest, CustomRole, CustomRoleRequest, ResetPasswordResponse, Role, ServerEvent, SetBadgesRequest, SetPasswordRequest, SetPasswordResponse, SetRoleRequest, SetUserCustomRolesRequest, TransferOwnerRequest, UserId,
     VoiceJoinResponse, PROTOCOL_VERSION,
@@ -300,6 +300,12 @@ impl HubClient {
     /// `POST /api/admin/channels/reorder`
     pub async fn reorder_channels(&self, ids: Vec<ChannelId>) -> Result<()> {
         self.post::<_, OkResponse>("reorder channels", "api/admin/channels/reorder", &ChannelReorderRequest { ids }).await.map(|_| ())
+    }
+
+    /// v1.1: `POST /api/admin/channels/{id}/category` — put a channel in a category
+    /// (`None` = standalone again).
+    pub async fn set_channel_category(&self, id: ChannelId, category: Option<ChannelId>) -> Result<()> {
+        self.post::<_, OkResponse>("channel category", &format!("api/admin/channels/{id}/category"), &SetChannelCategoryRequest { category_id: category }).await.map(|_| ())
     }
 
     /// `GET /api/channels`

@@ -253,6 +253,9 @@ pub struct VoiceUi {
     /// The running Go Live is "Só áudio" (no video, no preview), and at which quality.
     pub share_audio_only: bool,
     pub share_audio_high: bool,
+    /// v1.1: the sharer's own stream-audio mute (the button next to the microphone's) — separate
+    /// from the mic mute: only the audio being sent with the stream is silenced.
+    pub share_audio_muted: bool,
     /// Streamers (identities) whose live is audio-only, as the voice room reports it. Only
     /// people in our own voice channel are known (see `VoiceEvent::ShareKind`).
     pub audio_only: HashSet<String>,
@@ -1054,6 +1057,15 @@ impl App {
         self.backend.send(Cmd::StopShare);
         self.voice.share = Share::Off;
         self.voice.switching_to = None;
+        self.voice.share_audio_muted = false;
+    }
+
+    /// v1.1: the stream-audio mute button (next to the microphone's): silences only the audio of
+    /// the running share, never the microphone. The state flips when the core confirms.
+    pub fn toggle_share_audio_mute(&mut self) {
+        let muted = !self.voice.share_audio_muted;
+        self.voice.share_audio_muted = muted;
+        self.backend.send(Cmd::ShareAudioMute { muted });
     }
 
     // ------------------------------------------------------------ camera
@@ -1530,6 +1542,11 @@ impl App {
             Ev::ShareStopped => {
                 self.voice.share = Share::Off;
                 self.voice.switching_to = None;
+                self.voice.share_audio_muted = false;
+            }
+            Ev::ShareAudioMuted(muted) => {
+                // Confirmed by the core: the stream's audio mute (the sharer's own button).
+                self.voice.share_audio_muted = muted;
             }
             Ev::ShareSwitched { audio, audio_error } => {
                 if let Some(pick) = self.voice.switching_to.take() {

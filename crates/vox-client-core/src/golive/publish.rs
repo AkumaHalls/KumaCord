@@ -837,6 +837,9 @@ pub struct ActiveShare {
     attempt: Option<encoders::Attempt>,
     /// Test hooks (bitrate cap, encoder overshoot); see [`ActiveShare::set_bitrate_cap`].
     bitrate_cap: Arc<TestHooks>,
+    /// The sharer's own audio mute (v1.1): separate from the microphone mute — this one kills
+    /// only the audio of the stream being sent, as long as it lasts and across source switches.
+    audio_muted: Arc<AtomicBool>,
     video: Option<VideoProducer>,
     audio: Option<AudioProducer>,
     publication: Option<SharePublication>,
@@ -978,6 +981,7 @@ impl ActiveShare {
             encoder,
             attempt,
             bitrate_cap,
+            audio_muted: Arc::new(AtomicBool::new(false)),
             video: Some(video),
             audio: None,
             publication: Some(pubs),
@@ -1020,6 +1024,7 @@ impl ActiveShare {
             encoder: None,
             attempt: None,
             bitrate_cap: Arc::new(TestHooks::default()),
+            audio_muted: Arc::new(AtomicBool::new(false)),
             video: None,
             audio: None,
             publication: Some(pubs),
@@ -1133,6 +1138,10 @@ impl ActiveShare {
         }
         let source = self.source.clone();
         let (producer, counters, track) = self.make_audio_producer(room, &source).await?;
+        // The sharer's own audio mute (v1.1) survives source switches.
+        if self.audio_muted.load(Ordering::Relaxed) {
+            track.mute();
+        }
         self.audio_track = Some(track);
         self.audio_counters = Some(counters);
         self.audio = Some(producer);
@@ -1224,6 +1233,21 @@ impl ActiveShare {
     /// WebRTC drop guard and recovery end to end.
     pub fn set_encoder_overshoot(&self, pct: Option<u64>) {
         self.bitrate_cap.overshoot_pct.store(pct.unwrap_or(0), Ordering::Relaxed);
+    }
+
+    /// The sharer's own control (v1.1): mute only the audio of the running stream — separate from
+    /// the microphone mute, which keeps the voice going. Survives source switches (reapplied
+    /// whenever the audio track is (re)published).
+    pub fn set_audio_muted(&self, muted: bool) {
+        self.audio_muted.store(muted, Ordering::Relaxed);
+        if let Some(t) = &self.audio_track {
+            if muted {
+                t.mute();
+            } else {
+                t.unmute();
+            }
+        }
+        info!(muted, "share audio mute toggled by the sharer");
     }
 
     /// Stats extras for the pre-encoded path.
@@ -1433,6 +1457,10 @@ impl ActiveShare {
         // Replaced: the old capture stops here (its callback is gone before the call returns).
         self.audio = Some(producer);
         self.audio_counters = Some(counters);
+        // The sharer's own audio mute (v1.1) survives source switches.
+        if self.audio_muted.load(Ordering::Relaxed) {
+            track.mute();
+        }
         self.audio_track = Some(track);
         self.source = req.source.clone();
         let report = SwitchReport {

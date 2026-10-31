@@ -142,6 +142,11 @@ pub enum Cmd {
         opts: ShareOptions,
     },
     StopShare,
+    /// v1.1: mute only the audio of the running stream (the sharer's own control, separate
+    /// from the microphone mute).
+    ShareAudioMute {
+        muted: bool,
+    },
     /// Change what the running Go Live captures, without ending it.
     SwitchShare {
         source: ShareSource,
@@ -329,6 +334,8 @@ pub enum Ev {
     },
     ShareFailed(String),
     ShareStopped,
+    /// The sharer's own stream-audio mute changed (v1.1): separate from the microphone mute.
+    ShareAudioMuted(bool),
     /// The running Go Live now captures another source (it never stopped).
     ShareSwitched {
         audio: bool,
@@ -949,6 +956,13 @@ impl Controller {
                 self.streaming = false;
                 self.out.send(Ev::ShareStopped);
                 self.push_voice_state();
+            }
+            Cmd::ShareAudioMute { muted } => {
+                // The sharer's own control (v1.1): only the stream's audio, never the microphone.
+                if let Some(v) = &self.voice {
+                    v.set_share_audio_muted(muted).await;
+                }
+                self.out.send(Ev::ShareAudioMuted(muted));
             }
             Cmd::Watch(who) => {
                 // The hub can announce a live member a moment before the voice room lists them.

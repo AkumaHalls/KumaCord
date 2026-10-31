@@ -189,6 +189,8 @@ pub enum AdminCmd {
     RenameChannel { id: ChannelId, name: String },
     DeleteChannel { id: ChannelId },
     ReorderChannels { ids: Vec<ChannelId> },
+    /// v1.1: put a channel in a category (`None` = standalone again).
+    SetChannelCategory { id: ChannelId, category: Option<ChannelId> },
     /// "Reivindicar servidor": take a server with no owner with the code its console shows.
     ClaimOwner { code: String },
     /// "Transferir posse do servidor" (owner only).
@@ -231,6 +233,7 @@ pub async fn run_admin(hub: &HubClient, cmd: &AdminCmd) -> Result<AdminReply, St
         C::SetChannelAccess { id, private } => hub.set_channel_access(id, private).await.map(|_| AdminReply::Done),
         C::RenameChannel { id, name } => hub.rename_channel(id, &name).await.map(|_| AdminReply::Done),
         C::DeleteChannel { id } => hub.delete_channel(id).await.map(|_| AdminReply::Done),
+        C::SetChannelCategory { id, category } => hub.set_channel_category(id, category).await.map(|_| AdminReply::Done),
         C::ReorderChannels { ids } => hub.reorder_channels(ids).await.map(|_| AdminReply::Done),
         C::ClaimOwner { code } => hub.claim_owner(&code).await.map(AdminReply::Claimed),
         C::TransferOwner { user } => hub.transfer_owner(user.id).await.map(|_| AdminReply::Done),
@@ -1793,6 +1796,25 @@ impl App {
             if ui_kit::icon_button(ui, ph::PENCIL_SIMPLE, "Renomear", IconState::Normal).clicked() {
                 self.roles.renaming = Some((c.id, c.name.clone()));
             }
+            // v1.1: which category the channel belongs to (Discord-style groups in the sidebar).
+            let cat_button = ui_kit::icon_button(ui, ph::FOLDER_OPEN, "Categoria: onde o canal fica agrupado na barra lateral", IconState::Normal);
+            let cats = self.categories.clone();
+            egui::Popup::menu(&cat_button).id(egui::Id::new(("channel_category", c.id))).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                ui.set_min_width(220.0);
+                ui_kit::section(ui, "Categoria do canal");
+                if ui_kit::menu_row(ui, ph::FOLDER_OPEN, "Sem categoria", false).on_hover_text("O canal fica solto no fim da lista").clicked() {
+                    self.admin(AdminCmd::SetChannelCategory { id: c.id, category: None });
+                    ui.close();
+                }
+                for cat in &cats {
+                    let current = c.category_id == Some(cat.id);
+                    let mark = if current { " ✓" } else { "" };
+                    if ui_kit::menu_row(ui, ph::FOLDER_OPEN, &format!("{}{mark}", cat.name), false).on_hover_text(format!("Mover para a categoria {}", cat.name)).clicked() {
+                        self.admin(AdminCmd::SetChannelCategory { id: c.id, category: Some(cat.id) });
+                        ui.close();
+                    }
+                }
+            });
             if ui.add_enabled_ui(down.is_some(), |ui| ui_kit::icon_button(ui, ph::CARET_DOWN, "Descer na lista", IconState::Normal)).inner.clicked() {
                 *reorder = down.clone();
             }

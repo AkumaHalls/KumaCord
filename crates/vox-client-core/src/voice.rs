@@ -978,6 +978,18 @@ impl VoiceSession {
         }
     }
 
+    /// The sharer's own control (v1.1): mute only the audio of the running stream — separate from
+    /// [`VoiceSession::set_muted`], which is the microphone. Returns `false` when not sharing.
+    pub async fn set_share_audio_muted(&self, muted: bool) -> bool {
+        match self.inner.share.lock().await.active.as_ref() {
+            Some(s) => {
+                s.set_audio_muted(muted);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Start Go Live (replaces a running share).
     pub async fn start_share(&self, source: ShareSource, opts: ShareOptions) -> Result<()> {
         let mut slot = self.inner.share.lock().await;

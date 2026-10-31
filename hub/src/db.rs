@@ -45,7 +45,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection, OptionalExtension};
-use vox_proto::{AuditEntry, Channel, ChannelCategory, ChannelKind, CustomRole, Message, Role, User, UserId, badge, perm};
+use vox_proto::{AuditEntry, Channel, ChannelCategory, ChannelId, ChannelKind, CustomRole, Message, Role, User, UserId, badge, perm};
 
 use crate::util::now_ms;
 
@@ -518,7 +518,7 @@ pub fn server_muted_ids(conn: &Connection) -> rusqlite::Result<Vec<UserId>> {
 /// Every channel (with its access list when private, v0.9), in order. `id > 0` skips the
 /// downgrade guard row (`access.rs`), here and in every query on `channels`.
 pub fn list_channels(conn: &Connection) -> rusqlite::Result<Vec<Channel>> {
-    let mut st = conn.prepare("SELECT id, name, kind, position FROM channels WHERE id > 0 ORDER BY position, id")?;
+    let mut st = conn.prepare("SELECT id, name, kind, position, category_id FROM channels WHERE id > 0 ORDER BY position, id")?;
     let rows = st.query_map([], |r| {
         let kind: String = r.get(2)?;
         Ok(Channel {
@@ -527,7 +527,7 @@ pub fn list_channels(conn: &Connection) -> rusqlite::Result<Vec<Channel>> {
             kind: if kind == "voice" { ChannelKind::Voice } else { ChannelKind::Text },
             position: r.get(3)?,
             private: None,
-            category_id: None,
+            category_id: r.get(4)?,
         })
     })?;
     let mut list = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -874,6 +874,12 @@ pub fn update_category(conn: &Connection, cat: &ChannelCategory) -> rusqlite::Re
 pub fn delete_category(conn: &Connection, id: i64) -> rusqlite::Result<bool> {
     conn.execute("UPDATE channels SET category_id = NULL WHERE category_id = ?1", [id])?;
     Ok(conn.execute("DELETE FROM categories WHERE id = ?1", [id])? > 0)
+}
+
+/// v1.1: put a channel in a category (`None`: standalone again). `false`: no such channel.
+/// The caller checked that `category` exists when `Some`.
+pub fn set_channel_category(conn: &Connection, channel: ChannelId, category: Option<i64>) -> rusqlite::Result<bool> {
+    Ok(conn.execute("UPDATE channels SET category_id = ?1 WHERE id = ?2 AND id > 0", params![category, channel])? > 0)
 }
 
 /// One user's custom role ids, display order.

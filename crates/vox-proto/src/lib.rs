@@ -713,6 +713,13 @@ pub struct ChannelReorderRequest {
     pub ids: Vec<ChannelId>,
 }
 
+/// v1.1: `POST /api/admin/channels/{id}/category` — put a channel in a category
+/// (`None` makes it standalone again).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetChannelCategoryRequest {
+    pub category_id: Option<ChannelId>,
+}
+
 /// Channel names: 1 to this many characters.
 pub const CHANNEL_NAME_MAX: usize = 32;
 

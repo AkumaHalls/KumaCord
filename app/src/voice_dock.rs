@@ -307,6 +307,15 @@ impl App {
                     self.open_golive_switch();
                     ui.close();
                 }
+                let (mute_icon, mute_text) = if self.voice.share_audio_muted {
+                    (ph::SPEAKER_SLASH, "Transmitir o áudio da tela de novo")
+                } else {
+                    (ph::SPEAKER_HIGH, "Silenciar só o áudio da transmissão")
+                };
+                if ui_kit::menu_row(ui, mute_icon, mute_text, false).on_hover_text("O microfone continua como está").clicked() {
+                    self.toggle_share_audio_mute();
+                    ui.close();
+                }
                 ui.label(RichText::new(self.live_info(&encoder)).small().color(theme::NEVOA));
             }
             if !self.voice.watching.is_empty() {
@@ -344,6 +353,18 @@ impl App {
         let (hover, state) = if self.voice.deafened { ("Ouvir de novo", IconState::Off) } else { ("Ensurdecer: não ouvir nada (e mutar o microfone)", IconState::Normal) };
         if ui_kit::icon_button(ui, ph::HEADPHONES, hover, state).clicked() {
             self.toggle_deafen();
+        }
+        // v1.1: the stream-audio mute (only while live) — separate from the microphone's mute:
+        // it silences only the audio being sent with the share.
+        if matches!(self.voice.share, Share::Live { .. }) {
+            let (icon, hover, state) = if self.voice.share_audio_muted {
+                (ph::SPEAKER_SLASH, "Transmitindo o áudio da tela de novo (o microfone continua como está)", IconState::Off)
+            } else {
+                (ph::SPEAKER_HIGH, "Silenciar só o áudio da transmissão (o microfone continua como está)", IconState::Normal)
+            };
+            if ui_kit::icon_button(ui, icon, hover, state).clicked() {
+                self.toggle_share_audio_mute();
+            }
         }
     }
 

@@ -797,6 +797,35 @@ pub async fn rename_channel(State(s): State<AppState>, me: Authed, Path(id): Pat
     Ok(ok())
 }
 
+/// `POST /api/admin/channels/{id}/category` (v1.1): put the channel in a category (`null`:
+/// standalone again). The channel list changes for everybody (the sidebar regroups).
+pub async fn set_channel_category(
+    State(s): State<AppState>,
+    me: Authed,
+    Path(id): Path<ChannelId>,
+    body: Result<Json<SetChannelCategoryRequest>, JsonRejection>,
+) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    can_manage_channels(&me)?;
+    let Some(ch) = s.channel(id) else {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "canal não encontrado"));
+    };
+    if let Some(cat) = req.category_id {
+        if !s.categories().iter().any(|c| c.id == cat) {
+            return Err(ApiErr::new(StatusCode::NOT_FOUND, "categoria não encontrada"));
+        }
+    }
+    let cat = req.category_id;
+    let moved = s.db.call(move |c| db::set_channel_category(c, id, cat)).await?;
+    if !moved {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "canal não encontrado"));
+    }
+    reload_channels(&s).await?;
+    let to = req.category_id.and_then(|c| s.categories().iter().find(|x| x.id == c).map(|x| x.name.clone())).unwrap_or_else(|| "sem categoria".into());
+    audit(&s, Some(me.user.id), AUDIT_CHANNEL_RENAME, None, format!("{} -> {to}", ch.name)).await;
+    Ok(ok())
+}
+
 /// `POST /api/admin/channels/{id}/delete`: its messages go too; people in a voice channel are
 /// taken out of it.
 pub async fn delete_channel(State(s): State<AppState>, me: Authed, Path(id): Path<ChannelId>) -> ApiResult<OkResponse> {

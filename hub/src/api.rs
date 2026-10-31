@@ -55,6 +55,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/transfer-owner", post(owner::transfer))
         .route("/api/admin/channels", post(admin::create_channel))
         .route("/api/admin/channels/reorder", post(admin::reorder_channels))
+        .route("/api/admin/channels/{id}/category", post(admin::set_channel_category))
         .route("/api/admin/channels/{id}/rename", post(admin::rename_channel))
         .route("/api/admin/channels/{id}/delete", post(admin::delete_channel))
         // private channels (v0.9, `access.rs`)
