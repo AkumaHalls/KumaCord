@@ -799,8 +799,10 @@ impl VoiceSession {
         self.inner.set_muted(muted);
     }
 
-    /// Deafen silences playback, pauses remote audio forwarding (saves bandwidth) and mutes.
-    /// Undeafen restores the previous mute state.
+    /// Deafen silences the VOICE of the room (and pauses its forwarding, saving bandwidth) and
+    /// mutes the microphone. A screen share you are watching keeps playing: the stream's audio is
+    /// its own control (`stream_ctl`), like the mute of its sharer (v1.1, Discord-like). Undeafen
+    /// restores the previous mic state.
     pub fn set_deafened(&self, deafened: bool) {
         let inner = &self.inner;
         if inner.deafened.swap(deafened, Ordering::Relaxed) == deafened {
@@ -813,7 +815,11 @@ impl VoiceSession {
             inner.set_muted(inner.muted_before_deafen.load(Ordering::Relaxed));
         }
         for sub in inner.remote_audio.lock().values() {
-            sub.publication.set_enabled(!deafened);
+            // Only the room's voice is deafened; the audio of a screen share you are watching
+            // keeps playing.
+            if sub.source != TrackSource::ScreenshareAudio {
+                sub.publication.set_enabled(!deafened);
+            }
         }
         info!(deafened, "deafen toggled");
     }
@@ -1837,7 +1843,9 @@ impl Inner {
                         }
                     }
                 });
-                if self.deafened.load(Ordering::Relaxed) {
+                // Deafen mutes the room's voice; the audio of a screen share you are watching
+                // keeps playing (v1.1, Discord-like).
+                if self.deafened.load(Ordering::Relaxed) && source != TrackSource::ScreenshareAudio {
                     publication.set_enabled(false);
                 }
                 info!(identity = %identity, ?source, "remote audio subscribed");

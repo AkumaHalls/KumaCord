@@ -274,7 +274,7 @@ impl App {
                 }
             }
             if compact {
-                let deaf = if self.voice.deafened { "Ouvir de novo" } else { "Ensurdecer" };
+                let deaf = if self.voice.deafened { "Ouvir de novo" } else { "Ensurdecer a voz" };
                 if ui_kit::menu_row(ui, ph::HEADPHONES, deaf, false).clicked() {
                     self.toggle_deafen();
                     ui.close();
@@ -350,7 +350,7 @@ impl App {
             self.toggle_others_muted();
         }
         // Deafen.
-        let (hover, state) = if self.voice.deafened { ("Ouvir de novo", IconState::Off) } else { ("Ensurdecer: não ouvir nada (e mutar o microfone)", IconState::Normal) };
+        let (hover, state) = if self.voice.deafened { ("Ouvir de novo", IconState::Off) } else { ("Ensurdecer a voz: não ouvir as pessoas na sala (o microfone muda junto; a transmissão que você assiste continua)", IconState::Normal) };
         if ui_kit::icon_button(ui, ph::HEADPHONES, hover, state).clicked() {
             self.toggle_deafen();
         }
