@@ -144,7 +144,7 @@ impl Auto {
                     self.nav.sent = 1;
                     for (name, private) in [(JOGATINA, None), (MEMES, None), (ADM, Some(PrivateAccess::default()))] {
                         if channel_id(app, name, ChannelKind::Text).is_none() {
-                            app.admin(AdminCmd::CreateChannel { name: name.into(), kind: ChannelKind::Text, private });
+                            app.admin(AdminCmd::CreateChannel { name: name.into(), kind: ChannelKind::Text, private, category: None });
                         }
                     }
                 }

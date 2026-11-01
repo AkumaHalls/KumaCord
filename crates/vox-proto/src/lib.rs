@@ -687,6 +687,10 @@ pub struct ChannelCreateRequest {
     /// channels ([`ChatFeatures::private_channels`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private: Option<PrivateAccess>,
+    /// v1.1: create it inside a category (Discord creates channels inside groups). Absent when
+    /// standalone; an older hub ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<ChannelId>,
 }
 
 /// `POST /api/admin/channels/{id}/access` (Admin and Dono, v0.9): make the channel private with
@@ -1807,7 +1811,7 @@ mod tests {
         // v0.8 JSON reads as public.
         let new: Channel = serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
         assert_eq!(new, channel(3, None));
-        let req = ChannelCreateRequest { name: "x".into(), kind: ChannelKind::Voice, private: None };
+        let req = ChannelCreateRequest { name: "x".into(), kind: ChannelKind::Voice, private: None, category_id: None };
         let old = v082::ChannelCreateRequest { name: "x".into(), kind: ChannelKind::Voice };
         assert_eq!(serde_json::to_string(&req).unwrap(), serde_json::to_string(&old).unwrap());
     }
@@ -1833,7 +1837,7 @@ mod tests {
             assert!(serde_json::from_str::<v082::ServerEvent>(&json).is_ok(), "{json}");
         }
         // The create request with `private` is read by an old hub (which ignores it).
-        let req = ChannelCreateRequest { name: "x".into(), kind: ChannelKind::Text, private: Some(p) };
+        let req = ChannelCreateRequest { name: "x".into(), kind: ChannelKind::Text, private: Some(p), category_id: None };
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(serde_json::from_str::<v082::ChannelCreateRequest>(&json).unwrap().name, "x");
         assert_eq!(serde_json::from_str::<ChannelCreateRequest>(&json).unwrap(), req);

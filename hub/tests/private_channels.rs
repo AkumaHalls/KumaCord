@@ -211,7 +211,7 @@ impl Env {
     }
 
     async fn create(&self, owner: &Who, name: &str, kind: ChannelKind, private: Option<PrivateAccess>) -> Channel {
-        self.ok(owner, "/api/admin/channels", json!(ChannelCreateRequest { name: name.into(), kind, private })).await
+        self.ok(owner, "/api/admin/channels", json!(ChannelCreateRequest { name: name.into(), kind, private, category_id: None })).await
     }
 
     async fn set_access(&self, owner: &Who, ch: ChannelId, private: Option<PrivateAccess>) {

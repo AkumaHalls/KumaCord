@@ -44,6 +44,11 @@ fn icon_at(painter: &egui::Painter, x: &mut f32, cy: f32, icon: &str, color: Col
     r
 }
 
+/// Lay out a one-line label (the category header's galley).
+fn header_galley(ui: &egui::Ui, text: &str, font: egui::FontId, color: Color32) -> std::sync::Arc<egui::Galley> {
+    ui.painter().layout_no_wrap(text.to_owned(), font, color)
+}
+
 impl App {
     pub(super) fn left_panel(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("server_head").resizable(false)
@@ -81,81 +86,61 @@ impl App {
         let open = self.open_in_center();
         self.dm_sidebar(ui);
 
-        // v1.1: group channels into categories (Discord-style). Standalone channels (no
-        // category) go under "Sem categoria" so nothing disappears. (Cloned: the section
-        // renders through `&mut self`, so borrowed channels would fight the borrow checker.)
+        // v1.1 (Discord-style): channels without a category come FIRST (always visible), then the
+        // categories with their channels. Cloned: the sections render through `&mut self`.
         let mut by_category: std::collections::HashMap<Option<ChannelId>, Vec<vox_proto::Channel>> =
             std::collections::HashMap::new();
         for c in &self.channels {
             by_category.entry(c.category_id).or_default().push(c.clone());
         }
 
-        // Sort categories by position, standalone last.
-        let mut cat_ids: Vec<ChannelId> = self
-            .categories
-            .iter()
-            .map(|c| c.id)
-            .collect();
+        // Loose channels (no category): text first, then voice rooms — always drawn, never hidden.
+        let mut loose: Vec<vox_proto::Channel> = by_category.remove(&None).unwrap_or_default();
+        loose.sort_by_key(|c| (c.kind == ChannelKind::Voice, c.position, c.id));
+        for c in &loose {
+            if c.kind == ChannelKind::Text {
+                self.category_channel_row(ui, c, open);
+            } else {
+                self.voice_channel_row(ui, c, open);
+            }
+        }
+
+        // Categories, in display order. An empty category is only drawn for those who can manage
+        // channels (a member has nothing to do in it — Discord hides it too).
+        let mut cat_ids: Vec<ChannelId> = self.categories.iter().map(|c| c.id).collect();
         cat_ids.sort_by_key(|id| {
             self.categories
                 .iter()
                 .find(|c| c.id == *id)
-                .map(|c| c.position)
-                .unwrap_or(i32::MAX)
+                .map(|c| (c.position, c.id))
+                .unwrap_or((i32::MAX, *id))
         });
-
-        // Text channels first (top section), then voice channels, per category.
+        let manager = self.my_role().can_manage_channels();
         for cat_id in &cat_ids {
-            let cat = self.categories.iter().find(|c| c.id == *cat_id).unwrap().clone();
+            let Some(cat) = self.categories.iter().find(|c| c.id == *cat_id).cloned() else { continue };
             let mut text_channels: Vec<vox_proto::Channel> = by_category
                 .remove(&Some(*cat_id))
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|c| c.kind == ChannelKind::Text)
                 .collect();
-            text_channels.sort_by_key(|c| c.position);
+            text_channels.sort_by_key(|c| (c.position, c.id));
             let mut voice_channels: Vec<vox_proto::Channel> = by_category
                 .remove(&Some(*cat_id))
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|c| c.kind == ChannelKind::Voice)
                 .collect();
-            voice_channels.sort_by_key(|c| c.position);
-
+            voice_channels.sort_by_key(|c| (c.position, c.id));
+            if text_channels.is_empty() && voice_channels.is_empty() && !manager {
+                continue;
+            }
             self.category_section(ui, &cat, &text_channels, &voice_channels, open);
-        }
-
-        // Standalone channels (no category) at the bottom.
-        let standalone_text: Vec<vox_proto::Channel> = by_category
-            .remove(&None)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|c| c.kind == ChannelKind::Text)
-            .collect();
-        let standalone_voice: Vec<vox_proto::Channel> = by_category
-            .remove(&None)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|c| c.kind == ChannelKind::Voice)
-            .collect();
-        if !standalone_text.is_empty() || !standalone_voice.is_empty() {
-            self.category_section(
-                ui,
-                &vox_proto::ChannelCategory {
-                    id: 0,
-                    name: "Sem categoria".to_owned(),
-                    color: "#949BA4".to_owned(),
-                    position: i32::MAX,
-                },
-                &standalone_text,
-                &standalone_voice,
-                open,
-            );
         }
     }
 
-    /// v1.1: one collapsible category section in the sidebar. Draws the category header (name +
-    /// colour chip + expand/caret), then its text and voice channels when open.
+    /// v1.1 (Discord-style): one collapsible category — a thin header in CAPS with the caret on
+    /// the left and the category's colour on the text; its channels (text, then voice) when open.
     fn category_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -167,8 +152,8 @@ impl App {
         let is_open = self.category_open.get(&cat.id).copied().unwrap_or(true);
         let caret = if is_open { ph::CARET_DOWN } else { ph::CARET_RIGHT };
 
-        // Category header: colour dot + name + caret. Clicking toggles open/closed.
-        let (header_rect, header_resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+        // The header: caret + NAME IN CAPS, in the category's colour. Click toggles open/closed.
+        let (header_rect, header_resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::click());
         if header_resp.hovered() {
             ui.painter().rect_filled(header_rect, radius::ROW, theme::ROW_HOVER);
         }
@@ -178,41 +163,24 @@ impl App {
                 .and_modify(|e| *e = !*e)
                 .or_insert(false);
         }
-
-        let color = Color32::from_hex(cat.color.get(1..).unwrap_or("5865F2")).unwrap_or(theme::GIZ);
-        let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-        ui.painter().circle_filled(r.center(), 5.0, color);
-
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            let dot = ui.next_widget_position();
-            ui.painter().circle_filled(Pos2::new(dot.x + 7.0, dot.y + 7.0), 5.0, color);
-            ui.label(
-                egui::RichText::new(&cat.name).font(theme::semibold(13.0)).color(theme::GIZ),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(caret).font(theme::body(14.0)).color(theme::NEVOA));
-            });
-        });
+        let color = Color32::from_hex(cat.color.get(1..).unwrap_or("5865F2")).unwrap_or(theme::NEVOA);
+        let label = header_galley(ui, &format!("{caret} {}", cat.name.to_uppercase()), theme::semibold(11.5), color);
+        ui.painter().galley(
+            Pos2::new(header_rect.left() + 8.0, header_rect.center().y - label.size().y / 2.0),
+            label,
+            color,
+        );
 
         if is_open {
+            ui.add_space(2.0);
+            // Text channels first, then the voice rooms (Discord's order inside a category).
+            for c in text_channels {
+                self.category_channel_row(ui, c, open);
+            }
+            for c in voice_channels {
+                self.voice_channel_row(ui, c, open);
+            }
             ui.add_space(4.0);
-            // Text channels inside the category.
-            if !text_channels.is_empty() {
-                ui.add_space(2.0);
-                for c in text_channels {
-                    self.category_channel_row(ui, c, open);
-                }
-                ui.add_space(4.0);
-            }
-            // Voice channels inside the category.
-            if !voice_channels.is_empty() {
-                ui.add_space(2.0);
-                for c in voice_channels {
-                    self.voice_channel_row(ui, c, open);
-                }
-                ui.add_space(4.0);
-            }
         }
     }
 

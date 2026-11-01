@@ -276,7 +276,7 @@ impl Auto {
                 if self.fx.m3.is_some_and(|id| Self::fx_has(app, geral, id)) {
                     return self.fail("B's deleted picture is still here");
                 }
-                app.admin(AdminCmd::CreateChannel { name: TEMP_NAME.into(), kind: ChannelKind::Text, private: None });
+                app.admin(AdminCmd::CreateChannel { name: TEMP_NAME.into(), kind: ChannelKind::Text, private: None, category: None });
                 self.goto(14, "part 3: creating a channel");
             }
             14 => {
@@ -311,7 +311,7 @@ impl Auto {
                 if let Err(e) = Self::fx_channel_forgotten(app, c1, self.fx.epoch_before) {
                     return self.fail(&e);
                 }
-                app.admin(AdminCmd::CreateChannel { name: LONG_NAME.into(), kind: ChannelKind::Text, private: None });
+                app.admin(AdminCmd::CreateChannel { name: LONG_NAME.into(), kind: ChannelKind::Text, private: None, category: None });
                 self.goto(17, "channel gone with all its state; creating one again");
             }
             17 => {

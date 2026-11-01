@@ -183,7 +183,8 @@ pub enum AdminCmd {
     ResetPassword { user: User },
     Audit { before: Option<i64> },
     /// v0.9: `private` makes it private from the start.
-    CreateChannel { name: String, kind: ChannelKind, private: Option<PrivateAccess> },
+    /// v0.9: `private` makes it private from the start. v1.1: created inside `category` when given.
+    CreateChannel { name: String, kind: ChannelKind, private: Option<PrivateAccess>, category: Option<ChannelId> },
     /// "Canal privado" (v0.9): private with this list, or public again (`None`).
     SetChannelAccess { id: ChannelId, private: Option<PrivateAccess> },
     RenameChannel { id: ChannelId, name: String },
@@ -191,6 +192,10 @@ pub enum AdminCmd {
     ReorderChannels { ids: Vec<ChannelId> },
     /// v1.1: put a channel in a category (`None` = standalone again).
     SetChannelCategory { id: ChannelId, category: Option<ChannelId> },
+    /// v1.1: create a channel category (Discord-style collapsible group in the sidebar).
+    CreateCategory { name: String, color: String, position: i32 },
+    /// v1.1: delete a channel category (its channels become standalone).
+    DeleteCategory { id: ChannelId },
     /// "Reivindicar servidor": take a server with no owner with the code its console shows.
     ClaimOwner { code: String },
     /// "Transferir posse do servidor" (owner only).
@@ -229,11 +234,13 @@ pub async fn run_admin(hub: &HubClient, cmd: &AdminCmd) -> Result<AdminReply, St
         C::SetMemberCustomRoles { user, role_ids } => hub.set_custom_roles(user, &role_ids).await.map(|_| AdminReply::Done),
         C::ResetPassword { user } => hub.reset_password(user.id).await.map(AdminReply::ResetCode),
         C::Audit { before } => hub.audit_log(before, AUDIT_PAGE).await.map(AdminReply::Audit),
-        C::CreateChannel { name, kind, private } => hub.create_channel(&name, kind, private).await.map(|_| AdminReply::Done),
+        C::CreateChannel { name, kind, private, category } => hub.create_channel(&name, kind, private, category).await.map(|_| AdminReply::Done),
         C::SetChannelAccess { id, private } => hub.set_channel_access(id, private).await.map(|_| AdminReply::Done),
         C::RenameChannel { id, name } => hub.rename_channel(id, &name).await.map(|_| AdminReply::Done),
         C::DeleteChannel { id } => hub.delete_channel(id).await.map(|_| AdminReply::Done),
         C::SetChannelCategory { id, category } => hub.set_channel_category(id, category).await.map(|_| AdminReply::Done),
+        C::CreateCategory { name, color, position } => hub.create_category(&name, &color, position).await.map(|_| AdminReply::Done),
+        C::DeleteCategory { id } => hub.delete_category(id).await.map(|_| AdminReply::Done),
         C::ReorderChannels { ids } => hub.reorder_channels(ids).await.map(|_| AdminReply::Done),
         C::ClaimOwner { code } => hub.claim_owner(&code).await.map(AdminReply::Claimed),
         C::TransferOwner { user } => hub.transfer_owner(user.id).await.map(|_| AdminReply::Done),
@@ -340,6 +347,11 @@ pub struct RolesUi {
     pub audit_more: bool,
     pub new_channel: String,
     pub new_voice: bool,
+    /// v1.1: the categories editor ("Nova categoria" form + the list).
+    pub new_category: String,
+    pub new_category_color: String,
+    /// v1.1: the category each new channel is created in (the editor's picker).
+    pub new_channel_category: Option<ChannelId>,
     pub renaming: Option<(ChannelId, String)>,
     /// "Canal privado" of the new channel (v0.9).
     pub new_access: AccessDraft,
@@ -1676,6 +1688,9 @@ impl App {
 
     fn channels_tab(&mut self, ui: &mut egui::Ui) {
         ui_kit::page_title(ui, "Canais", Some("A ordem daqui é a da lateral. Apagar um canal de texto leva as mensagens dele junto."));
+        // v1.1: the categories of the sidebar (Discord-style groups) — list, create, delete.
+        self.categories_group(ui);
+        ui.add_space(space::L);
         let mut chans = self.channels.clone();
         chans.sort_by_key(|c| (c.position, c.id));
         let ids: Vec<ChannelId> = chans.iter().map(|c| c.id).collect();
@@ -1829,6 +1844,54 @@ impl App {
     }
 
     /// "Novo canal": text or voice, the name and (v0.9) private from the start.
+    /// v1.1 (Discord-style): the categories of the sidebar — the list (with "apagar") and the
+    /// "Nova categoria" form (name + colour). Channels are assigned in their rows (the 📁 icon).
+    fn categories_group(&mut self, ui: &mut egui::Ui) {
+        ui_kit::section(ui, "Categorias");
+        ui.add_space(space::S);
+        ui_kit::group_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 6.0;
+            if self.categories.is_empty() {
+                ui_kit::hint(ui, "Nenhuma categoria ainda: os canais ficam soltos, no topo da barra lateral.");
+            }
+            for cat in self.categories.clone() {
+                let color = egui::Color32::from_hex(cat.color.get(1..).unwrap_or("5865F2")).unwrap_or(theme::NEVOA);
+                ui.horizontal(|ui| {
+                    let (dot, _) = ui.allocate_exact_size(egui::Vec2::splat(12.0), egui::Sense::hover());
+                    ui.painter().circle_filled(dot.center(), 4.0, color);
+                    ui.label(egui::RichText::new(&cat.name).color(theme::GIZ));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.label(egui::RichText::new(format!("ordem {}", cat.position)).small().color(theme::NEVOA));
+                        if ui_kit::icon_button(ui, ph::TRASH, "Apagar categoria (os canais dela ficam soltos)", IconState::Normal).clicked() {
+                            self.admin(AdminCmd::DeleteCategory { id: cat.id });
+                        }
+                    });
+                });
+            }
+            ui.separator();
+            ui_kit::field_label(ui, "Nova categoria");
+            ui.horizontal(|ui| {
+                ui.add(ui_kit::field(&mut self.roles.new_category).hint_text("ex.: Jogos").desired_width(180.0));
+                ui.add(ui_kit::field(&mut self.roles.new_category_color).hint_text("#5865F2").desired_width(90.0));
+            });
+            ui.add_space(space::S);
+            let name = self.roles.new_category.trim().to_string();
+            if ui.add_enabled_ui(!name.is_empty(), |ui| ui_kit::button(ui, Kind::Secondary, Some(ph::PLUS), "Criar categoria")).inner.clicked() {
+                let color = if self.roles.new_category_color.trim().starts_with('#') {
+                    self.roles.new_category_color.trim().to_string()
+                } else {
+                    format!("#{}", self.roles.new_category_color.trim())
+                };
+                let position = self.categories.len() as i32;
+                self.admin(AdminCmd::CreateCategory { name, color, position });
+                self.roles.new_category.clear();
+                self.roles.new_category_color.clear();
+            }
+        });
+    }
+
     fn new_channel_group(&mut self, ui: &mut egui::Ui) {
         let private_ok = self.chatx.features.private_channels;
         ui_kit::section(ui, "Novo canal");
@@ -1844,6 +1907,21 @@ impl App {
             ui_kit::field_label(ui, "Nome do canal");
             let r = ui.add(ui_kit::field(&mut self.roles.new_channel).hint_text(if self.roles.new_voice { "ex.: Sala 3" } else { "ex.: jogatina" }).desired_width(280.0));
             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            // v1.1: which category the new channel starts in (Discord creates it inside the group).
+            if !self.categories.is_empty() {
+                ui_kit::field_label(ui, "Categoria");
+                ui.horizontal(|ui| {
+                    let current = self.roles.new_channel_category;
+                    if ui.selectable_label(current.is_none(), "Sem categoria").clicked() {
+                        self.roles.new_channel_category = None;
+                    }
+                    for cat in &self.categories {
+                        if ui.selectable_label(current == Some(cat.id), &cat.name).clicked() {
+                            self.roles.new_channel_category = Some(cat.id);
+                        }
+                    }
+                });
+            }
             if private_ok {
                 let mut draft = std::mem::take(&mut self.roles.new_access);
                 access_fields(ui, &mut draft, &self.roles.members, self.roles.members_loaded, ("access", -1));
@@ -1860,7 +1938,8 @@ impl App {
             let name = self.roles.new_channel.trim().to_string();
             let kind = if self.roles.new_voice { ChannelKind::Voice } else { ChannelKind::Text };
             let private = if private_ok { self.roles.new_access.to_access() } else { None };
-            self.admin(AdminCmd::CreateChannel { name, kind, private });
+            let category = self.roles.new_channel_category;
+            self.admin(AdminCmd::CreateChannel { name, kind, private, category });
         }
     }
 

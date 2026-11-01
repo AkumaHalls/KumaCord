@@ -13,7 +13,7 @@ use tokio_tungstenite::tungstenite::{self, Message};
 use tracing::{debug, info, warn};
 use url::Url;
 use vox_proto::{
-    ApiError, AuditEntry, AvatarResponse, Channel, ChannelAccessRequest, ChannelCreateRequest, ChannelId, ChannelKind, ChannelRenameRequest, ChannelReorderRequest, ClaimOwnerRequest, SetChannelCategoryRequest,
+    ApiError, AuditEntry, AvatarResponse, Channel, ChannelAccessRequest, ChannelCategory, ChannelCreateRequest, ChannelId, ChannelKind, ChannelRenameRequest, ChannelReorderRequest, ClaimOwnerRequest, SetChannelCategoryRequest,
     ClaimOwnerResponse, ClientEvent, HealthResponse, LinkPreview, LoginRequest, LoginResponse, MemberInfo, Message as ChatMessage, MessageId, ModMoveRequest, ModMuteRequest,
     OkResponse, PrivateAccess, BanInfo, BanRequest, CustomRole, CustomRoleRequest, ResetPasswordResponse, Role, ServerEvent, SetBadgesRequest, SetPasswordRequest, SetPasswordResponse, SetRoleRequest, SetUserCustomRolesRequest, TransferOwnerRequest, UserId,
     VoiceJoinResponse, PROTOCOL_VERSION,
@@ -275,9 +275,10 @@ impl HubClient {
         self.get("audit log", url).await
     }
 
-    /// `POST /api/admin/channels` (v0.9: `private` makes it private from the start).
-    pub async fn create_channel(&self, name: &str, kind: ChannelKind, private: Option<PrivateAccess>) -> Result<Channel> {
-        self.post("create channel", "api/admin/channels", &ChannelCreateRequest { name: name.to_string(), kind, private }).await
+    /// `POST /api/admin/channels` (v0.9: `private` makes it private from the start; v1.1: created
+    /// inside `category` when given).
+    pub async fn create_channel(&self, name: &str, kind: ChannelKind, private: Option<PrivateAccess>, category: Option<ChannelId>) -> Result<Channel> {
+        self.post("create channel", "api/admin/channels", &ChannelCreateRequest { name: name.to_string(), kind, private, category_id: category }).await
     }
 
     /// `POST /api/admin/channels/{id}/access` (v0.9): private with this list, or public (`None`).
@@ -306,6 +307,17 @@ impl HubClient {
     /// (`None` = standalone again).
     pub async fn set_channel_category(&self, id: ChannelId, category: Option<ChannelId>) -> Result<()> {
         self.post::<_, OkResponse>("channel category", &format!("api/admin/channels/{id}/category"), &SetChannelCategoryRequest { category_id: category }).await.map(|_| ())
+    }
+
+    /// v1.1: `POST /api/admin/categories` — create a channel category.
+    pub async fn create_category(&self, name: &str, color: &str, position: i32) -> Result<ChannelCategory> {
+        self.post::<_, ChannelCategory>("create category", "api/admin/categories", &serde_json::json!({ "name": name, "color": color, "position": position })).await
+    }
+
+    /// v1.1: `DELETE /api/admin/categories/{id}` — its channels become standalone.
+    pub async fn delete_category(&self, id: ChannelId) -> Result<()> {
+        let resp = self.auth(self.http.delete(self.url(&format!("api/admin/categories/{id}"))?))?.send().await.context("delete category request")?;
+        Self::parse("delete category", resp).await.map(|_: OkResponse| ())
     }
 
     /// `GET /api/channels`

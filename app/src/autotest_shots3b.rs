@@ -114,7 +114,7 @@ impl Auto {
                         (SALA2, ChannelKind::Voice, None),
                     ] {
                         if channel_id(app, name, kind).is_none() {
-                            app.admin(AdminCmd::CreateChannel { name: name.into(), kind, private });
+                            app.admin(AdminCmd::CreateChannel { name: name.into(), kind, private, category: None });
                         }
                     }
                 }

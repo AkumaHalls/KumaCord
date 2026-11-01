@@ -738,7 +738,12 @@ pub async fn create_channel(State(s): State<AppState>, me: Authed, body: Result<
     let Json(req) = body?;
     can_manage_channels(&me)?;
     let name = check_channel_name(&req.name)?;
-    let (kind, private) = (req.kind, req.private.clone());
+    let (kind, private, category) = (req.kind, req.private.clone(), req.category_id);
+    if let Some(cat) = category {
+        if !s.categories().iter().any(|c| c.id == cat) {
+            return Err(ApiErr::new(StatusCode::NOT_FOUND, "categoria não encontrada"));
+        }
+    }
     // v0.9: private from the start, in the same transaction (it is never public for a moment).
     let ch = s
         .db
@@ -747,6 +752,11 @@ pub async fn create_channel(State(s): State<AppState>, me: Authed, body: Result<
             let mut ch = db::create_channel(&tx, &name, kind)?;
             if let Some(p) = &private {
                 ch.private = crate::access::store(&tx, ch.id, Some(p))?;
+            }
+            // v1.1: created inside a category (the caller checked it exists).
+            if let Some(cat) = category {
+                db::set_channel_category(&tx, ch.id, Some(cat))?;
+                ch.category_id = Some(cat);
             }
             tx.commit()?;
             Ok(ch)

@@ -481,7 +481,7 @@ async fn leaving_a_call_for_a_hidden_voice_channel_looks_like_a_hang_up() {
     let env = setup().await;
     let (owner, _) = env.staff().await;
     let (ana, bia) = (env.who("Ana").await, env.who("Bia").await);
-    let r = env.post(&owner, "/api/admin/channels", json!(ChannelCreateRequest { name: "segredo".into(), kind: ChannelKind::Voice, private: Some(PrivateAccess { roles: vec![], users: vec![bia.user.id] }) })).await;
+    let r = env.post(&owner, "/api/admin/channels", json!(ChannelCreateRequest { name: "segredo".into(), kind: ChannelKind::Voice, private: Some(PrivateAccess { roles: vec![], users: vec![bia.user.id] }), category_id: None })).await;
     assert_eq!(r.status(), StatusCode::OK);
     let hidden: Channel = r.json().await.unwrap();
     let channels: Vec<Channel> = env.get(&ana, "/api/channels").await.json().await.unwrap();

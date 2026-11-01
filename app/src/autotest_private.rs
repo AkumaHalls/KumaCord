@@ -113,8 +113,8 @@ impl Auto {
                     return if self.waited(60) { self.fail("B or C never got ready") } else { None };
                 }
                 let access = Some(PrivateAccess { roles: vec![], users: self.pv.b.into_iter().collect() });
-                app.admin(AdminCmd::CreateChannel { name: TEXT_NAME.into(), kind: ChannelKind::Text, private: access.clone() });
-                app.admin(AdminCmd::CreateChannel { name: VOICE_NAME.into(), kind: ChannelKind::Voice, private: access });
+                app.admin(AdminCmd::CreateChannel { name: TEXT_NAME.into(), kind: ChannelKind::Text, private: access.clone(), category: None });
+                app.admin(AdminCmd::CreateChannel { name: VOICE_NAME.into(), kind: ChannelKind::Voice, private: access, category: None });
                 self.goto(5, "part 1: creating a private text and a private voice channel for B");
             }
             5 => {

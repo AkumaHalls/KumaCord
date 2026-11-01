@@ -185,7 +185,7 @@ impl Hub {
     }
 
     async fn create_channel(&self, token: &str, name: &str) -> Channel {
-        self.ok(token, "/api/admin/channels", json!(ChannelCreateRequest { name: name.into(), kind: ChannelKind::Text, private: None })).await
+        self.ok(token, "/api/admin/channels", json!(ChannelCreateRequest { name: name.into(), kind: ChannelKind::Text, private: None, category_id: None })).await
     }
 
     async fn dm_line(&self, token: &str, dm: i64, text: &str) -> i64 {
