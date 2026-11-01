@@ -120,6 +120,8 @@ struct Source {
     buf: VecDeque<i16>,
     primed: bool,
     ctl: SourceCtl,
+    /// v1.1: voice sources are deafened; stream sources (a screen share being watched) are not.
+    kind: SourceKind,
     /// Gain at the end of the previous block (start of the next ramp).
     applied: f32,
     underruns: u64,
@@ -171,6 +173,15 @@ pub struct Mixer {
     sound_gain: Gain,
 }
 
+/// v1.1 (Discord-like): a voice source is silenced by deafen; a watched screen share's audio is
+/// not — it keeps playing when you deafen the room.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SourceKind {
+    #[default]
+    Voice,
+    Stream,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SourceStats {
     pub queued_samples: usize,
@@ -185,18 +196,28 @@ impl Mixer {
 
     /// A source at unity gain with nothing controlling it.
     pub fn add_source(&self) -> SourceId {
-        self.add_source_with(SourceCtl::default())
+        self.add_source_with_kind(SourceCtl::default(), SourceKind::Voice)
     }
 
     /// A source whose volume / mute follow `ctl` (starting at its current value, no ramp).
     pub fn add_source_with(&self, ctl: SourceCtl) -> SourceId {
+        self.add_source_with_kind(ctl, SourceKind::Voice)
+    }
+
+    /// v1.1: a stream source (the audio of a screen share being watched): it is **not** silenced
+    /// by deafen — only the room's voice is.
+    pub fn add_stream_source_with(&self, ctl: SourceCtl) -> SourceId {
+        self.add_source_with_kind(ctl, SourceKind::Stream)
+    }
+
+    fn add_source_with_kind(&self, ctl: SourceCtl, kind: SourceKind) -> SourceId {
         let mut g = self.inner.lock();
         let id = g.next_id;
         g.next_id += 1;
         let applied = ctl.target();
         g.sources.insert(
             id,
-            Source { buf: VecDeque::with_capacity(MAX_SAMPLES), primed: false, ctl, applied, underruns: 0, overflow_drops: 0 },
+            Source { buf: VecDeque::with_capacity(MAX_SAMPLES), primed: false, ctl, kind, applied, underruns: 0, overflow_drops: 0 },
         );
         id
     }
@@ -306,12 +327,20 @@ impl Mixer {
     /// single source never makes queues grow. Alert sounds are not included: see
     /// [`Mixer::mix_ui`].
     pub fn mix(&self, out: &mut [i16]) {
+        self.mix_with_deafen(out, false)
+    }
+
+    /// v1.1: the same mix with the session's deafen applied: voice sources are silenced (and so
+    /// are soundboard clips, which go to the room), but the audio of a screen share being watched
+    /// ([`SourceKind::Stream`]) keeps playing.
+    pub fn mix_with_deafen(&self, out: &mut [i16], deafened: bool) {
         let mut g = self.inner.lock();
         let Inner { sources, acc, sounds, sound_applied, .. } = &mut *g;
         acc.clear();
         acc.resize(out.len(), 0);
         for s in sources.values_mut() {
-            let target = s.ctl.target();
+            // v1.1: deafen silences the room's voice; a watched screen share keeps playing.
+            let target = if deafened && s.kind == SourceKind::Voice { 0.0 } else { s.ctl.target() };
             if !s.primed {
                 if s.buf.len() < PRIME_SAMPLES {
                     s.applied = target;
@@ -349,7 +378,10 @@ impl Mixer {
             }
         }
         if !sounds.is_empty() {
-            let (from, to) = (*sound_applied, self.sound_gain.effective());
+            // v1.1: deafened silences the soundboard clips too (they go to the room), but never
+            // the UI sounds (`mix_ui`). The stream sources keep their own controls.
+            let to_gain = if deafened { 0.0 } else { self.sound_gain.effective() };
+            let (from, to) = (*sound_applied, to_gain);
             *sound_applied = to;
             let frames = out.len() / MIX_CHANNELS;
             let step = (to - from) / frames.max(1) as f32;
@@ -366,7 +398,7 @@ impl Mixer {
             }
             sounds.retain(|v| v.pos < v.frames());
         } else {
-            *sound_applied = self.sound_gain.effective();
+            *sound_applied = if deafened { 0.0 } else { self.sound_gain.effective() };
         }
         for (o, a) in out.iter_mut().zip(acc.iter()) {
             *o = (*a).clamp(i16::MIN as i32, i16::MAX as i32) as i16;

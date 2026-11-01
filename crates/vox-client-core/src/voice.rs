@@ -550,11 +550,14 @@ impl VoiceSession {
             prefs.set_user_audio(who, a.sanitized());
         }
         prefs.set_others_muted(cfg.others_muted);
+        // v1.1: the deafen flag lives in `prefs` and is shared with every voice source of the
+        // mixer, so deafening silences the room's voice but not a watched screen share.
+        let deafened_flag = prefs.deafened_flag();
         let inner = Arc::new(Inner {
             room,
             identity: identity.clone(),
             muted: Arc::new(AtomicBool::new(cfg.start_muted)),
-            deafened: Arc::new(AtomicBool::new(false)),
+            deafened: deafened_flag,
             muted_before_deafen: AtomicBool::new(false),
             mic_unavailable: AtomicBool::new(false),
             volume: Arc::new(AtomicU32::new(cfg.output_volume.unwrap_or(1.0).clamp(0.0, 2.0).to_bits())),
@@ -1826,7 +1829,8 @@ impl Inner {
                     return;
                 }
                 let ctl = if source == TrackSource::ScreenshareAudio { self.prefs.stream_ctl(&identity) } else { self.prefs.mic_ctl(&identity) };
-                let id = self.mixer.add_source_with(ctl);
+                // v1.1: a watched screen share's audio is a stream source — deafen does not touch it.
+                let id = if source == TrackSource::ScreenshareAudio { self.mixer.add_stream_source_with(ctl) } else { self.mixer.add_source_with(ctl) };
                 let counters = Arc::new(StreamCounters::default());
                 let mut stream = NativeAudioStream::new(audio.rtc_track(), MIX_RATE as i32, MIX_CHANNELS as i32);
                 let mixer = self.mixer.clone();

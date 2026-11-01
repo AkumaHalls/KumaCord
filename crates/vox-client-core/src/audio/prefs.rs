@@ -60,6 +60,9 @@ struct UserGains {
 pub struct AudioPrefs {
     users: Mutex<HashMap<String, Arc<UserGains>>>,
     others_muted: Arc<AtomicBool>,
+    /// The session's deafen switch, shared with the mixer's voice controls (v1.1): a screen share
+    /// you are watching is not deafened — only the room's voice is.
+    deafened: Arc<AtomicBool>,
 }
 
 impl AudioPrefs {
@@ -113,6 +116,13 @@ impl AudioPrefs {
     /// Screenshare audio is not affected: it has its own volume / mute.
     pub fn set_others_muted(&self, muted: bool) {
         self.others_muted.store(muted, Ordering::Relaxed);
+    }
+
+    /// v1.1: the session's deafen switch — the voice session hands this very flag to its mixer
+    /// sources (see [`mic_ctl`]), so deafening silences the room's voice but not a screen share
+    /// you are watching.
+    pub fn deafened_flag(&self) -> Arc<AtomicBool> {
+        self.deafened.clone()
     }
 
     pub fn others_muted(&self) -> bool {

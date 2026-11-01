@@ -633,14 +633,13 @@ struct PlaybackState {
 impl PlaybackState {
     fn pull_block(&mut self) {
         self.block.resize(MIX_10MS, 0);
-        self.mixer.mix(&mut self.block);
-        let deafened = self.deafened.load(Ordering::Relaxed);
-        if deafened {
-            self.block.iter_mut().for_each(|s| *s = 0);
-        }
+        // v1.1 (Discord-like): deafen silences the room's voice and the soundboard clips, but the
+        // audio of a screen share being watched keeps playing (see `Mixer::mix_with_deafen`).
+        self.mixer.mix_with_deafen(&mut self.block, self.deafened.load(Ordering::Relaxed));
         // Alert sounds go in after the deafen silencing: deafen mutes people, not the user's own
         // feedback sounds (so the undeafen chime is heard).
         let alert = self.mixer.mix_ui(&mut self.block);
+        let deafened = self.deafened.load(Ordering::Relaxed);
         if let (Some(apm), true) = (&self.apm, !deafened || alert) {
             // Far-end reference for AEC3 (only what is actually played, alerts included).
             self.rev.clear();
@@ -774,11 +773,13 @@ mod tests {
         let voice = mixer.add_source();
         mixer.push(voice, &vec![8000i16; 6 * MIX_10MS]);
         mixer.play_ui(Arc::from(vec![1000i16; 4 * MIX_10MS]), 1.0);
+        // The deafen ramps the voice out over one block (anti-click); after it settles, only the
+        // alert is heard.
+        let _fade = pulled(&mut st);
         let block = pulled(&mut st);
-        assert_eq!(block.len(), MIX_10MS);
         let want = 1000.0 / 32768.0;
         assert!(block.iter().all(|&s| (s - want).abs() < 1e-6), "only the alert is heard while deafened");
-        // Same without deafen: voice and alert add up.
+        // Same without deafen: voice and alert add up from the first block.
         let (mut st, mixer) = state(false);
         let voice = mixer.add_source();
         mixer.push(voice, &vec![8000i16; 6 * MIX_10MS]);
@@ -793,6 +794,9 @@ mod tests {
         let (mut st, mixer) = state(true);
         mixer.play_sound(Arc::from(vec![4000i16; 6 * 480]), 1);
         mixer.play_ui(Arc::from(vec![1000i16; 4 * MIX_10MS]), 1.0);
+        // The clip fades out over one block (anti-click); then only the alert is heard, and the
+        // silenced clip is still consumed, not queued up.
+        let _fade = pulled(&mut st);
         let block = pulled(&mut st);
         let want = 1000.0 / 32768.0;
         assert!(block.iter().all(|&s| (s - want).abs() < 1e-6), "deafened: the alert only, not the clip");
