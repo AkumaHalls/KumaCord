@@ -142,6 +142,10 @@ pub struct Settings {
     pub share_audio: bool,
     /// "Priorizar fluidez": keep the frame rate under congestion (default: drop fps first).
     pub share_smooth: bool,
+    /// v1.1.9: the launch cinematic behind the home screen.
+    pub intro: bool,
+    /// v1.1.9: the cinematic's music (the speaker button over it).
+    pub intro_sound: bool,
     pub ptt_enabled: bool,
     pub ptt_vk: u32,
     pub ptt_name: String,
@@ -233,6 +237,8 @@ impl Default for Settings {
             preset: Preset::default(),
             share_audio: true,
             share_smooth: false,
+            intro: true,
+            intro_sound: true,
             ptt_enabled: false,
             ptt_vk: 0,
             ptt_name: String::new(),

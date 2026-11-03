@@ -19,6 +19,7 @@ mod filedlg;
 mod forms;
 mod host;
 mod layout;
+mod launcher;
 mod links;
 mod meter;
 mod migrate;

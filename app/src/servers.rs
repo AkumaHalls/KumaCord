@@ -825,12 +825,17 @@ impl App {
             Plan::AskPassword => {
                 self.servers.form_open = true;
                 self.servers.focus_password = true;
+                self.form.show_password = true;
+                self.form.show_invite = false;
+                self.password_hint = Some(title.clone());
                 self.form.error = Some(format!("Digite a senha do servidor \"{title}\" para entrar (ela não está salva neste computador)."));
             }
             Plan::AskPersonal => {
                 self.servers.form_open = true;
                 self.form.need_personal = true;
                 self.form.remember_device = true;
+                self.form.show_password = false;
+                self.password_hint = None;
                 self.form.error = Some(format!("Digite a senha pessoal de \"{}\" para entrar em \"{title}\" (este computador não está lembrado).", e.username));
             }
         }
@@ -964,6 +969,9 @@ impl App {
     // ------------------------------------------------------------ UI
 
     /// "Seus servidores salvos" above the form; returns whether the form shows under it.
+    /// v1.1.9: no longer drawn (the launcher shows the one official server); kept for the
+    /// autotests and the migration paths that still read it.
+    #[allow(dead_code)]
     pub(crate) fn saved_servers(&mut self, ui: &mut egui::Ui) -> bool {
         if self.settings.servers.servers.is_empty() {
             self.servers.form_open = true;

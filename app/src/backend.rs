@@ -135,6 +135,14 @@ pub enum Cmd {
         device: Option<String>,
         standalone: bool,
     },
+    /// v1.1.9: the launcher's music, on a loop until [`Cmd::StopUiClip`]. Decoded on first use
+    /// (`assets/intro/intro.mp3`) and played through the standalone output.
+    PlayUiClip {
+        volume: f32,
+        device: Option<String>,
+    },
+    /// v1.1.9: silence the launcher's music (the user pressed "Entrar no servidor").
+    StopUiClip,
     ListSources,
     ListDevices,
     StartShare {
@@ -528,6 +536,8 @@ enum Internal {
     Sounds(u64, vox_client_core::hub::SoundsReply),
     /// A soundboard clip that had to be downloaded before it could be played.
     LateSound(sounds::LateSound),
+    /// v1.1.9: the launcher's music decoded (or not).
+    LauncherClip(Option<Arc<[i16]>>),
 }
 
 #[derive(Clone)]
@@ -598,6 +608,13 @@ struct Controller {
     cam: camera::CamBackend,
     /// Alert sounds while not in a voice channel (opens the output lazily).
     ui_player: UiPlayer,
+    /// v1.1.9: the launcher's theme, decoded once (a few hundred KB of PCM).
+    launcher_clip: Option<Arc<[i16]>>,
+    /// The music is wanted right now (a decode may still be in flight).
+    launcher_wanted: bool,
+    /// The gain and device of that request, applied when the decode finishes.
+    launcher_gain: f32,
+    launcher_device: Option<String>,
     /// The server soundboard (see `backend/sounds.rs`).
     sb: sounds::SoundState,
 }
@@ -652,6 +669,10 @@ impl Controller {
             camera_preview_gen: 0,
             cam: Default::default(),
             ui_player: UiPlayer::new(),
+            launcher_clip: None,
+            launcher_wanted: false,
+            launcher_gain: 0.5,
+            launcher_device: None,
             sb: Default::default(),
         }
     }
@@ -854,6 +875,11 @@ impl Controller {
                 }
             }
             Cmd::PlayAlert { kind, volume, device, standalone } => self.play_alert(kind, volume, device, standalone),
+            Cmd::PlayUiClip { volume, device } => self.play_ui_clip(volume, device),
+            Cmd::StopUiClip => {
+                self.launcher_wanted = false;
+                self.ui_player.stop();
+            }
             Cmd::ListSources => {
                 let out = self.out.clone();
                 tokio::task::spawn_blocking(move || {
@@ -1198,6 +1224,28 @@ impl Controller {
         tracing::debug!(alert = kind.name(), path = "standalone output", queued, "alert sound");
     }
 
+    /// v1.1.9: the launcher's music. The clip is decoded once, on a blocking thread (symphonia);
+    /// a second request before the first decode lands simply replaces the gain/device.
+    fn play_ui_clip(&mut self, volume: f32, device: Option<String>) {
+        if self.no_playback {
+            tracing::debug!("launcher music suppressed (VOX_NO_PLAYBACK)");
+            return;
+        }
+        self.launcher_wanted = true;
+        self.launcher_gain = (volume * 0.5).clamp(0.0, 1.0);
+        self.launcher_device = device;
+        if let Some(pcm) = self.launcher_clip.clone() {
+            let queued = self.ui_player.play_pcm_loop(pcm, self.launcher_gain, self.launcher_device.as_deref());
+            tracing::debug!(queued, "launcher music");
+            return;
+        }
+        let tx = self.int_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let pcm = vox_client_core::audio::clip::decode_48k_stereo(include_bytes!("../assets/intro/intro.mp3"), "mp3");
+            let _ = tx.send(Internal::LauncherClip(pcm));
+        });
+    }
+
     /// Open the mic test on its own thread (opening a device can take a while); the result comes
     /// back as `Internal::MicTestOpened`. Restarting replaces a test that is running.
     fn start_mic_test(&mut self, input_device: Option<String>, output_device: Option<String>, volume_pct: u32, gate: Arc<VoiceGate>, noise: Arc<NoiseControl>) {
@@ -1485,6 +1533,17 @@ impl Controller {
 
     async fn on_internal(&mut self, ev: Internal) {
         match ev {
+            Internal::LauncherClip(pcm) => {
+                if let Some(pcm) = pcm {
+                    self.launcher_clip = Some(pcm);
+                }
+                // Stopped while the decode ran: nothing to play.
+                if self.launcher_wanted {
+                    if let Some(pcm) = self.launcher_clip.clone() {
+                        self.ui_player.play_pcm_loop(pcm, self.launcher_gain, self.launcher_device.as_deref());
+                    }
+                }
+            }
             Internal::MicTestOpened(gen, res) => {
                 if gen != self.mic_test_gen {
                     // Stopped (or restarted) while the devices were opening.

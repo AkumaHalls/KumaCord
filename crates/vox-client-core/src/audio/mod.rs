@@ -1,6 +1,7 @@
 //! Audio plumbing shared by voice and Go Live: device I/O, playback mixer, helpers.
 
 pub mod alerts;
+pub mod clip;
 pub mod denoise;
 pub mod dfn;
 #[cfg(test)]

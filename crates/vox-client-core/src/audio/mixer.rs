@@ -133,6 +133,8 @@ struct UiVoice {
     samples: Arc<[i16]>,
     pos: usize,
     gain: f32,
+    /// The launcher's music: restarts at the end instead of being dropped ([`Mixer::play_ui_loop`]).
+    looping: bool,
 }
 
 /// At most this many alert sounds overlap; further ones are dropped (a flood cannot pile up).
@@ -256,11 +258,21 @@ impl Mixer {
     /// (interleaved stereo, 48 kHz) the next time [`Mixer::mix_ui`] runs and is dropped when it
     /// ends. Returns false (and plays nothing) when [`MAX_UI_VOICES`] are already playing.
     pub fn play_ui(&self, samples: Arc<[i16]>, gain: f32) -> bool {
+        self.push_ui(samples, gain, false)
+    }
+
+    /// Like [`Mixer::play_ui`], but the clip restarts when it ends and plays until
+    /// [`Mixer::clear_ui`] (the launcher's music, which runs while the login screen is up).
+    pub fn play_ui_loop(&self, samples: Arc<[i16]>, gain: f32) -> bool {
+        self.push_ui(samples, gain, true)
+    }
+
+    fn push_ui(&self, samples: Arc<[i16]>, gain: f32, looping: bool) -> bool {
         let mut g = self.inner.lock();
-        if g.ui.len() >= MAX_UI_VOICES || samples.is_empty() {
+        if g.ui.len() >= MAX_UI_VOICES || samples.len() < 2 {
             return false;
         }
-        g.ui.push(UiVoice { samples, pos: 0, gain: clamp_gain(gain) });
+        g.ui.push(UiVoice { samples, pos: 0, gain: clamp_gain(gain), looping });
         true
     }
 
@@ -311,14 +323,25 @@ impl Mixer {
             return false;
         }
         for v in g.ui.iter_mut() {
-            let n = out.len().min(v.samples.len() - v.pos);
-            for (o, s) in out[..n].iter_mut().zip(&v.samples[v.pos..v.pos + n]) {
-                let mixed = *o as i32 + (*s as f32 * v.gain).round() as i32;
-                *o = mixed.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            let mut written = 0;
+            while written < out.len() {
+                let n = (out.len() - written).min(v.samples.len() - v.pos);
+                for (o, s) in out[written..written + n].iter_mut().zip(&v.samples[v.pos..v.pos + n]) {
+                    let mixed = *o as i32 + (*s as f32 * v.gain).round() as i32;
+                    *o = mixed.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                }
+                v.pos += n;
+                written += n;
+                if v.pos < v.samples.len() {
+                    break;
+                }
+                if !v.looping {
+                    break;
+                }
+                v.pos = 0;
             }
-            v.pos += n;
         }
-        g.ui.retain(|v| v.pos < v.samples.len());
+        g.ui.retain(|v| v.looping || v.pos < v.samples.len());
         true
     }
 
@@ -595,6 +618,11 @@ mod tests {
         Arc::from(vec![v; frames * MIX_CHANNELS])
     }
 
+    /// One stereo frame: left `l`, right `r` (for the loop tests' phase checks).
+    fn ui_buf_two(l: i16, r: i16) -> Arc<[i16]> {
+        Arc::from(vec![l, r])
+    }
+
     #[test]
     fn ui_sounds_play_through_to_the_end_and_are_removed() {
         let m = Mixer::new();
@@ -628,6 +656,30 @@ mod tests {
         let mut out = vec![i16::MAX - 10; MIX_10MS];
         m.mix_ui(&mut out);
         assert!(out.iter().all(|&s| s == i16::MAX));
+    }
+
+    #[test]
+    fn a_looping_ui_sound_wraps_until_cleared() {
+        let m = Mixer::new();
+        // Two frames per block of this 2-frame clip: 1000, 2000, 1000, 2000, ...
+        assert!(m.play_ui_loop(ui_buf_two(1000, 2000), 1.0));
+        let mut out = Vec::with_capacity(MIX_10MS * 2);
+        let mut block = vec![0i16; MIX_10MS];
+        for _ in 0..3 {
+            block.fill(0);
+            assert!(m.mix_ui(&mut block), "still playing after many blocks");
+            out.extend_from_slice(&block);
+        }
+        // 2880 frames = 1440 clip loops exactly, so the phase is back at the start.
+        for (i, &s) in out.iter().enumerate() {
+            let want = if i % 2 == 0 { 1000 } else { 2000 };
+            assert_eq!(s, want, "frame {i}");
+        }
+        assert_eq!(m.ui_active(), 1, "a loop never ends by itself");
+        m.clear_ui();
+        assert_eq!(m.ui_active(), 0);
+        let mut out = vec![0i16; MIX_10MS];
+        assert!(!m.mix_ui(&mut out));
     }
 
     #[test]

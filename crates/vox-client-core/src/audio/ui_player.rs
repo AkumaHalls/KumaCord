@@ -62,13 +62,23 @@ impl UiPlayer {
     /// Like [`UiPlayer::play`] for any clip: `samples` are interleaved stereo, 48 kHz (the trim
     /// editor's "Ouvir trecho" plays the clip it would upload).
     pub fn play_pcm(&self, samples: Arc<[i16]>, gain: f32, device: Option<&str>) -> bool {
+        self.start(samples, gain, device, false)
+    }
+
+    /// Like [`UiPlayer::play_pcm`], on a loop until [`UiPlayer::stop`] (the launcher's music).
+    pub fn play_pcm_loop(&self, samples: Arc<[i16]>, gain: f32, device: Option<&str>) -> bool {
+        self.start(samples, gain, device, true)
+    }
+
+    fn start(&self, samples: Arc<[i16]>, gain: f32, device: Option<&str>, looping: bool) -> bool {
         let mut st = self.shared.state.lock();
         if st.retry_at.is_some_and(|t| Instant::now() < t) {
             debug!("ui sound dropped: the output device failed recently");
             return false;
         }
         // Queue under the state lock so the worker's "idle, close now" check cannot miss it.
-        if !self.shared.mixer.play_ui(samples, gain) {
+        let queued = if looping { self.shared.mixer.play_ui_loop(samples, gain) } else { self.shared.mixer.play_ui(samples, gain) };
+        if !queued {
             return false;
         }
         if !st.running {
@@ -84,6 +94,16 @@ impl UiPlayer {
             }
         }
         true
+    }
+
+    /// Silence whatever this player is playing (the stream itself closes after [`IDLE_CLOSE`]).
+    pub fn stop(&self) {
+        self.shared.mixer.clear_ui();
+    }
+
+    /// Clips still playing (a looping one keeps counting until [`UiPlayer::stop`]).
+    pub fn active(&self) -> usize {
+        self.shared.mixer.ui_active()
     }
 
     /// Whether an output stream is currently open (or opening) for alerts.

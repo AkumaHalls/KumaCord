@@ -19,3 +19,4 @@
 *.key
 *.pfx
 *.p12
+brag-output/

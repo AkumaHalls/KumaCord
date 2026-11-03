@@ -186,6 +186,13 @@ pub struct ConnectForm {
     /// that address and name: the next login there goes only with what is typed now (no saved
     /// password, no saved login token) and, when it works, saves this server as the one.
     pub manual: Option<String>,
+    /// v1.1.9: the server password field is on screen (the server asked for it, or "Tenho um
+    /// convite" was closed while it was needed).
+    pub show_password: bool,
+    /// v1.1.9: the invite field is open ("Tenho um convite").
+    pub show_invite: bool,
+    /// v1.1.9: the server password is shown while typing (the eye on its field).
+    pub reveal_password: bool,
 }
 
 #[derive(Default)]
@@ -479,19 +486,35 @@ pub struct App {
     /// v1.1: the server's custom categories (Discord-style channel groups). Sent in `Ready`
     /// and `CategoriesChanged`.
     pub categories: Vec<vox_proto::ChannelCategory>,
+    /// v1.1.9: the launch cinematic behind the home screen (`launcher.rs`).
+    pub intro: crate::launcher::Intro,
+    /// v1.1.9: the server name whose saved password is missing (the field appears with a hint).
+    pub password_hint: Option<String>,
+    /// The launcher's music was asked of the backend and has not been stopped yet.
+    intro_music_started: bool,
 }
 
 impl App {
     pub fn new(backend: Backend, repaint: Repaint, settings: Settings, persist: bool, auto: Option<Auto>) -> Self {
         let (ptt_tx, ptt_rx) = std_mpsc::channel();
+        // v1.1.9: the field is not an address anymore. Only a pasted invite (or the fixed home)
+        // belongs there; an old server address in the settings stays out of the launcher.
+        let saved_server = settings.server.clone();
         let mut form = ConnectForm {
-            url: settings.server.clone(),
+            url: if vox_proto::looks_like_invite(&saved_server)
+                || crate::backend::normalize_url(&saved_server) == crate::backend::normalize_url(crate::brand::HOME_URL)
+            {
+                saved_server
+            } else {
+                String::new()
+            },
             user: settings.username.clone(),
             remember: settings.remember_password,
             remember_device: true,
             save_server: true,
             ..Default::default()
         };
+        let intro = crate::launcher::Intro::new(settings.intro, settings.intro_sound);
         let servers = crate::servers::ServersUi::new(settings.servers.servers.is_empty());
         if let Some(p) = settings.saved_password() {
             form.password = p;
@@ -580,6 +603,9 @@ impl App {
             stage_fullscreen: false,
             calladex: None,
             calladex_keys: String::new(),
+            intro,
+            password_hint: None,
+            intro_music_started: false,
         };
         app.center_mode = app.settings.layout.center_mode;
         app.apply_gate_config();
@@ -604,6 +630,38 @@ impl App {
         }
     }
 
+    /// v1.1.9: stop the launch cinematic and its music (the user is entering the server, or the
+    /// movie was skipped).
+    fn stop_intro(&mut self) {
+        self.intro.stop();
+        if self.intro_music_started {
+            self.intro_music_started = false;
+            self.backend.send(Cmd::StopUiClip);
+        }
+    }
+
+    /// v1.1.9: every frame on the home screen — advance the movie and keep its music in step
+    /// with what the movie says it wants (playing, sound on, not skipped).
+    fn intro_tick(&mut self, ctx: &egui::Context) {
+        if self.screen != Screen::Connect {
+            return;
+        }
+        self.intro.tick(ctx);
+        let want = self.intro.wants_music();
+        if want && !self.intro_music_started {
+            self.intro_music_started = true;
+            let gain = (self.settings.volume_pct as f32 / 100.0).clamp(0.0, 1.0);
+            self.backend.send(Cmd::PlayUiClip { volume: gain, device: self.settings.output_device.clone() });
+        } else if !want && self.intro_music_started {
+            self.intro_music_started = false;
+            self.backend.send(Cmd::StopUiClip);
+        }
+        if let Some(on) = self.intro.take_sound_change() {
+            self.settings.intro_sound = on;
+            self.save_settings();
+        }
+    }
+
     pub fn connect(&mut self) {
         if self.form.busy {
             return;
@@ -612,7 +670,10 @@ impl App {
         // AkumaLabs: the field is invite-only; nothing typed there is ever taken as an address.
         // The one exception is the fixed home itself, which a saved-server click fills in.
         let is_home = crate::backend::normalize_url(&typed) == crate::backend::normalize_url(crate::brand::HOME_URL);
-        if !typed.is_empty() && !vox_proto::looks_like_invite(&typed) && !is_home {
+        // Autotests drive their own dev hubs (`--server 127.0.0.1:...`): the launcher's
+        // invite-only rule must not lock them out of the app they are testing.
+        let dev_hub = vox_client_core::testmode::background();
+        if !typed.is_empty() && !vox_proto::looks_like_invite(&typed) && !is_home && !dev_hub {
             self.form.error = Some("Este campo aceita apenas um convite vox1-... Deixe-o vazio e entre com a senha do servidor.".into());
             return;
         }
@@ -632,11 +693,16 @@ impl App {
         let urls = self.servers_before_connect(&url, &user);
         if vox_proto::looks_like_invite(&url) {
             // A `vox1-` invite code instead of an address (see `host.rs`).
+            self.stop_intro();
             self.connect_invite(&url, &user);
             return;
         }
         self.form.busy = true;
         self.form.error = None;
+        self.password_hint = None;
+        // Entering: the cinematic and its music stop here (the login may still fail, and the home
+        // screen then stays as a still background).
+        self.stop_intro();
         // Item 12: a typed personal password wins; otherwise this computer's token for the name.
         let personal = Some(self.form.personal.clone()).filter(|p| !p.is_empty());
         let typed = crate::backend::normalize_url(&url);
@@ -687,6 +753,10 @@ impl App {
         self.logouts_pending += 1;
         self.reset_session();
         self.screen = Screen::Connect;
+        // Back home: the cinematic starts over (stopped when the login was made).
+        self.intro.restart();
+        self.password_hint = None;
+        self.form.show_password = false;
     }
 
     fn reset_session(&mut self) {
@@ -1419,6 +1489,8 @@ impl App {
                 self.reset_session();
                 self.screen = Screen::Connect;
                 self.form.error = reason;
+                // The session ended: the launcher comes back to life.
+                self.intro.restart();
             }
             Ev::Hub(ev) => self.on_hub(ev),
             Ev::Sound(ev) => self.on_sound_event(ev),
@@ -2014,6 +2086,7 @@ impl eframe::App for App {
         self.sync_meter_watch();
         self.sync_cameras_visible(ctx);
         self.sound_tick();
+        self.intro_tick(ctx);
         self.profile_tick(ctx);
         self.dm_tick(ctx);
         // Before `notify_tick`: leaving the app while hosting asks first (`host.rs`).

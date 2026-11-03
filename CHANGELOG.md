@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.1.9] — 2026-11-03
+
+### Mudado
+
+- **Launcher novo (estilo League of Legends)**: a tela de entrada virou uma abertura de verdade —
+  a cinemática da comunidade roda em tela cheia ao fundo, com a marca no topo, o letreiro grande
+  à esquerda e um cartão translúcido à direita. A música da abertura toca em loop (botão de som no
+  canto) e **tudo para quando você clica em "Entrar no servidor"**. "Pular" deixa a abertura de
+  lado na hora.
+- **Um só servidor, já escolhido**: o launcher mostra o cartão do servidor oficial da AkumaLabs
+  (`OFICIAL`), já preenchido — não existe mais lista de servidores nem campo de endereço na
+  entrada. O campo aceita apenas um convite `vox1-...`.
+- **Senha do servidor fora do fluxo**: o campo só aparece quando o servidor pede (senha errada,
+  entrada salva sem senha ou convite fechado). Com ele vem o olho para mostrar a senha enquanto
+  digita. Quem entra pelo convite nunca vê o campo.
+
+### Adicionado
+
+- Áudio da abertura com controle próprio: o alto-falante no canto silencia/liga e a escolha fica
+  salva nas configurações (respeitando o volume local).
+- A cinemática recomeça ao sair do servidor ("Trocar de servidor" ou logout): a abertura volta a
+  tocar como na primeira vez.
+
+### Técnico
+
+- Vídeo entregue como 400 frames WebP (960×540, 20 fps, ~20 s) num pacote embutido no binário —
+  sem decoder de vídeo novo; decode em thread própria, uma textura viva por vez.
+- Música decodificada (symphonia) e tocada em loop pelo mixer, com saturação e parada limpa.
+- Autotestes recebem um still do primeiro quadro (sem loop nem som) e o gate volta a aceitar os
+  hubs de dev via modo de teste.
+- Delta de auditoria de segurança: `SECURITY-AUDIT-2026-11-03.md`.
+
 ## [1.0.10] — 2026-10-28
 
 ### Mudado
