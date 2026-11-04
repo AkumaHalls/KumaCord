@@ -400,10 +400,10 @@ mod imp {
     unsafe fn menu(st: &State) -> Option<usize> {
         let m = CreatePopupMenu();
         // v1.0: sentence case, "Abrir" in bold (what a double click does), "Sair" set apart.
-        AppendMenuW(m, MF_STRING, CMD_OPEN, wide("Abrir AkumaLabs").as_ptr());
+        AppendMenuW(m, MF_STRING, CMD_OPEN, wide("Abrir KumaCord").as_ptr());
         SetMenuDefaultItem(m, CMD_OPEN as u32, 0);
         AppendMenuW(m, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(m, MF_STRING, CMD_QUIT, wide("Sair do AkumaLabs").as_ptr());
+        AppendMenuW(m, MF_STRING, CMD_QUIT, wide("Sair do KumaCord").as_ptr());
         let mut p = POINT { x: 0, y: 0 };
         GetCursorPos(&mut p);
         // The menu closes when you click elsewhere only if its owner is the foreground window

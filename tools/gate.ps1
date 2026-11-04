@@ -90,7 +90,7 @@ function Run-Clients($tag, $specs, $timeout, [switch]$NoHub) {
   $hub = if ($NoHub) { $null } else { Start-Hub $tag }
   $procs = @()
   foreach ($s in $specs) {
-    $exe = if ($s.exe) { $s.exe } else { "$B\AkumaLabs.exe" }
+    $exe = if ($s.exe) { $s.exe } else { "$B\KumaCord.exe" }
     $server = if ($s.server) { $s.server } else { "--server http://127.0.0.1:7997 --password x" }
     $args = "--autotest $($s.role) $server --name $($s.name) --run-id $tag --log-dir `"$G\$tag\$($s.name)`" $($s.extra)"
     # Our own clients keep their windows at the bottom without focus (background test mode). An
@@ -232,7 +232,7 @@ use_external_ip = false
   $line = "srvlist :"
   foreach ($phase in "phase1", "phase2") {
     $a = "--autotest srvlist --server http://127.0.0.1:7997 --password $pw1 --name slA1 --run-id srvlist --log-dir `"$sd\$phase`" --mode $phase --settings-dir `"$cfg`""
-    $p = Start-Process "$B\AkumaLabs.exe" -ArgumentList $a -PassThru
+    $p = Start-Process "$B\KumaCord.exe" -ArgumentList $a -PassThru
     $null = $p.Handle   # keeps the handle, so ExitCode is readable once it has exited
     if (-not $p.WaitForExit(180000)) { Stop-Process -Id $p.Id -Force; $line += " $phase=TIMEOUT"; break }
     $line += " $phase=$($p.ExitCode)"
@@ -252,11 +252,11 @@ if (Want "calladex") {
   $hub = Start-Hub "calladex"
   $parts = @()
   foreach ($n in "cdxB1", "cdxC1") {
-    $parts += Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest idle --server http://127.0.0.1:7997 --password x --name $n --run-id calladex --log-dir `"$G\calladex\$n`"" -PassThru
+    $parts += Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest idle --server http://127.0.0.1:7997 --password x --name $n --run-id calladex --log-dir `"$G\calladex\$n`"" -PassThru
     Start-Sleep 2
   }
   Start-Sleep 3
-  $c = Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest calladex --server http://127.0.0.1:7997 --password x --name dono --run-id calladex --log-dir `"$G\calladex\dono`"" -PassThru
+  $c = Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest calladex --server http://127.0.0.1:7997 --password x --name dono --run-id calladex --log-dir `"$G\calladex\dono`"" -PassThru
   $null = $c.Handle
   $line = "calladex :"
   if ($c.WaitForExit(180000)) { $line += " dono=$($c.ExitCode)" } else { Stop-Process -Id $c.Id -Force; $line += " dono=TIMEOUT" }

@@ -84,7 +84,7 @@ pub async fn run_invite(hub: &HubClient, cmd: &InviteCmd) -> Result<InviteReply,
         if l.contains("too many active invites") {
             format!("Já existem {} convites valendo. Revogue alguns antes de criar outro.", vox_proto::INVITE_MAX_ACTIVE)
         } else if l.contains("http 404") || l.contains("http 405") {
-            "Este servidor é de uma versão antiga, sem convites. Peça para quem hospeda atualizar o AkumaLabs.".into()
+            "Este servidor é de uma versão antiga, sem convites. Peça para quem hospeda atualizar o KumaCord.".into()
         } else {
             crate::roles::admin_error(&e)
         }
@@ -97,7 +97,7 @@ pub fn code_error_text(e: InviteCodeError) -> &'static str {
         InviteCodeError::NotAnInvite | InviteCodeError::Typo => {
             "O código de convite está incompleto ou tem um erro de digitação. Copie e cole de novo, inteiro (começa com vox1-)."
         }
-        InviteCodeError::NewerVersion => "Este convite foi feito por uma versão mais nova do AkumaLabs. Atualize o app e tente de novo.",
+        InviteCodeError::NewerVersion => "Este convite foi feito por uma versão mais nova do KumaCord. Atualize o app e tente de novo.",
         InviteCodeError::Damaged => "Este código de convite está danificado. Peça um novo a quem te convidou.",
     }
 }
@@ -254,10 +254,10 @@ pub fn reach_text(st: &HostStatus) -> (String, egui::Color32) {
     }
 }
 
-const FIREWALL_TEXT: &str = "Se o Windows perguntar se o AkumaLabs (e o \"livekit-server\", o servidor de voz) pode usar a rede, clique em \"Permitir acesso\". \
+const FIREWALL_TEXT: &str = "Se o Windows perguntar se o KumaCord (e o \"livekit-server\", o servidor de voz) pode usar a rede, clique em \"Permitir acesso\". \
      Sem isso, só este computador consegue entrar.";
 
-const HONEST_TEXT: &str = "O código esconde o endereço do servidor de quem só olha, mas não é um segredo absoluto: o AkumaLabs é aberto, \
+const HONEST_TEXT: &str = "O código esconde o endereço do servidor de quem só olha, mas não é um segredo absoluto: o KumaCord é aberto, \
      e quem entra no servidor fica sabendo o IP (é assim que a conexão funciona). A proteção de verdade é o convite: ele vence, \
      tem limite de usos e pode ser revogado.";
 
@@ -706,7 +706,7 @@ impl App {
         ui.add_space(space::XL);
         ui_kit::hint(
             ui,
-            "O servidor roda neste computador e fica ligado enquanto o AkumaLabs estiver aberto (ou na bandeja). \
+            "O servidor roda neste computador e fica ligado enquanto o KumaCord estiver aberto (ou na bandeja). \
              Na primeira vez o app baixa o servidor de voz (uns 20 MB). Depois é só mandar um convite para os amigos.",
         );
     }
@@ -717,9 +717,9 @@ impl App {
         self.host_panel(ctx);
         let name = self.host.hosted.as_ref().map(|h| h.name.clone()).unwrap_or_default();
         if self.host.confirm_quit {
-            let answer = ui_kit::confirm(ctx, "host_quit", "Sair do AkumaLabs?", "Sair e desligar", Kind::Danger, true, |ui| {
+            let answer = ui_kit::confirm(ctx, "host_quit", "Sair do KumaCord?", "Sair e desligar", Kind::Danger, true, |ui| {
                 ui_kit::body_text(ui, format!("Seu servidor \"{name}\" vai desligar e todo mundo cai."));
-                ui_kit::hint(ui, "Para deixar o servidor ligado, feche a janela pelo X: o AkumaLabs fica na bandeja.");
+                ui_kit::hint(ui, "Para deixar o servidor ligado, feche a janela pelo X: o KumaCord fica na bandeja.");
             });
             match answer {
                 Some(true) => {
@@ -942,7 +942,7 @@ impl App {
             }
             if let Some((_, code)) = self.host.inv.last.clone() {
                 ui.add_space(space::M);
-                ui_kit::body_text(ui, "Convite pronto! Mande este código para os amigos (WhatsApp, Discord...). Eles colam no campo \"Servidor ou convite\" do AkumaLabs:");
+                ui_kit::body_text(ui, "Convite pronto! Mande este código para os amigos (WhatsApp, Discord...). Eles colam no campo \"Servidor ou convite\" do KumaCord:");
                 egui::Frame::new().fill(theme::FUNDO).corner_radius(theme::radius::ROW).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.add(egui::Label::new(RichText::new(&code).monospace().color(theme::GIZ)).wrap());

@@ -67,10 +67,10 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          name: AkumaLabs ${{ github.ref_name }}
+          name: KumaCord ${{ github.ref_name }}
           body_path: dist/release-body.md
           files: |
-            dist/AkumaLabs-*-setup.exe
-            dist/AkumaLabs-*-setup.exe.sig
-            dist/AkumaLabs-*-Windows.zip
+            dist/KumaCord-*-setup.exe
+            dist/KumaCord-*-setup.exe.sig
+            dist/KumaCord-*-Windows.zip
             dist/latest.json

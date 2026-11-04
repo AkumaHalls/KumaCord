@@ -296,7 +296,7 @@ fn main() {
     };
     let rp = repaint.clone();
     let result = eframe::run_native(
-        "AkumaLabs",
+        brand::APP_NAME,
         options,
         Box::new(move |cc| {
             rp.set(cc.egui_ctx.clone());
@@ -311,7 +311,7 @@ fn main() {
     if let Err(e) = result {
         tracing::error!(error = %e, "ui failed");
     }
-    tracing::info!("AkumaLabs exited");
+    tracing::info!("KumaCord exited");
     drop(log);
     std::process::exit(EXIT_CODE.load(Ordering::Relaxed));
 }

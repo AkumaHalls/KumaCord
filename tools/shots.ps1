@@ -57,7 +57,7 @@ function Wait-Exit($p, $secs) {
 
 # The gallery: no server.
 if (-not $Stage -and -not $Nav -and -not $Phase3 -and -not $Phase3b -and -not $Calladex) {
-  $k = Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest kit --hold 2 --name kit --run-id kit --log-dir `"$G\kit`"" -PassThru
+  $k = Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest kit --hold 2 --name kit --run-id kit --log-dir `"$G\kit`"" -PassThru
   $null = $k.Handle
   "kit : " + (Wait-Exit $k 60)
 }
@@ -85,11 +85,11 @@ if ($Calladex) {
   # Three members online first (they are the card's entries), then the owner takes the pictures.
   $parts = @()
   foreach ($n in "Lua", "Sol", "Rio") {
-    $parts += Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest idle --hold 120 $srv --name $n --run-id calladex --log-dir `"$G\$n`"" -PassThru
+    $parts += Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest idle --hold 120 $srv --name $n --run-id calladex --log-dir `"$G\$n`"" -PassThru
     Start-Sleep 2
   }
   Start-Sleep 3
-  $c = Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest calladex $srv --name dono --run-id calladex --log-dir `"$G\dono`"" -PassThru
+  $c = Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest calladex $srv --name dono --run-id calladex --log-dir `"$G\dono`"" -PassThru
   $null = $c.Handle
   "calladex : " + (Wait-Exit $c 180)
   foreach ($p in $parts) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
@@ -101,9 +101,9 @@ if ($Calladex) {
 }
 if ($Nav) {
   # The owner checks and takes the pictures; the other person sits in the voice room (camera on).
-  $nb = Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest nav-b $srv --name visita --run-id nav --log-dir `"$G\nav-b`"" -PassThru
+  $nb = Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest nav-b $srv --name visita --run-id nav --log-dir `"$G\nav-b`"" -PassThru
   Start-Sleep 3
-  $na = Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest nav-a $srv --name dono --run-id nav --log-dir `"$G\nav-a`"" -PassThru
+  $na = Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest nav-a $srv --name dono --run-id nav --log-dir `"$G\nav-a`"" -PassThru
   $null = $na.Handle
   "nav : " + (Wait-Exit $na 240)
   Start-Sleep 2
@@ -118,16 +118,16 @@ if ($Phase3b) {
   # The host panel first: a server hosted inside the app (the gate's host-mode environment).
   $env:VOX_HOST_DIR = "$G\host"; $env:VOX_HOST_OFFLINE = "1"; $env:VOX_HOST_BIND = "127.0.0.1"
   $env:VOX_HOST_FIRST_BLOCK = "1"; $env:VOX_HOST_LAN = "127.0.0.1/8"; $env:VOX_HOST_LIVEKIT_BIN = $LK
-  $h = Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest shots3b-host --name dono --run-id shots3b --log-dir `"$G\host-log`"" -PassThru
+  $h = Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest shots3b-host --name dono --run-id shots3b --log-dir `"$G\host-log`"" -PassThru
   $null = $h.Handle
   "shots3b-host : " + (Wait-Exit $h 180)
   foreach ($k in "VOX_HOST_DIR", "VOX_HOST_OFFLINE", "VOX_HOST_BIND", "VOX_HOST_FIRST_BLOCK", "VOX_HOST_LAN", "VOX_HOST_LIVEKIT_BIN") { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
   Start-Sleep 1
   Get-CimInstance Win32_Process -Filter "Name='livekit-server.exe'" | Where-Object { $_.CommandLine -match [regex]::Escape("$G\host") } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
   # Then the owner and a partner on the dev hub.
-  $pb = Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest shots3b-b $srv --name lua --run-id shots3b --log-dir `"$G\lua`"" -PassThru
+  $pb = Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest shots3b-b $srv --name lua --run-id shots3b --log-dir `"$G\lua`"" -PassThru
   Start-Sleep 3
-  $pa = Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest shots3b-a $srv --name dono --run-id shots3b --log-dir `"$G\dono`"" -PassThru
+  $pa = Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest shots3b-a $srv --name dono --run-id shots3b --log-dir `"$G\dono`"" -PassThru
   $null = $pa.Handle
   "shots3b-a : " + (Wait-Exit $pa 300)
   Start-Sleep 2
@@ -142,7 +142,7 @@ if ($Phase3) {
   # Two test windows: the only cards the Go Live picker is left with (never the person's own windows).
   $tws = @(1, 2) | ForEach-Object { Start-Process "$B\examples\test_window.exe" -RedirectStandardOutput "$G\tw$_.txt" -PassThru }
   Start-Sleep 4
-  $s = Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest shots3 $srv --name dono --run-id shots3 --log-dir `"$G\dono`"" -PassThru
+  $s = Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest shots3 $srv --name dono --run-id shots3 --log-dir `"$G\dono`"" -PassThru
   $null = $s.Handle
   "shots3 : " + (Wait-Exit $s 300)
   foreach ($p in $tws) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
@@ -157,13 +157,13 @@ if ($Phase3) {
   Start-Sleep 5
   $hw = @(1, 2) | ForEach-Object { [int64]((Get-Content "$G\tw$_.txt" -ErrorAction SilentlyContinue | Select-String -Pattern '^hwnd=(\d+)' | Select-Object -First 1).Matches.Groups[1].Value) }
   $parts = @()
-  $parts += Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest multi-a $srv --name Lua --hwnd $($hw[0]) --run-id stage --log-dir `"$G\a1`"" -PassThru
+  $parts += Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest multi-a $srv --name Lua --hwnd $($hw[0]) --run-id stage --log-dir `"$G\a1`"" -PassThru
   Start-Sleep 2
-  $parts += Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest multi-a $srv --name Sol --hwnd $($hw[1]) --run-id stage --log-dir `"$G\a2`"" -PassThru
+  $parts += Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest multi-a $srv --name Sol --hwnd $($hw[1]) --run-id stage --log-dir `"$G\a2`"" -PassThru
   Start-Sleep 2
-  $parts += Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest cam-a --hold 20 $srv --name Rio --run-id stage --log-dir `"$G\cam`"" -PassThru
+  $parts += Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest cam-a --hold 20 $srv --name Rio --run-id stage --log-dir `"$G\cam`"" -PassThru
   Start-Sleep 3
-  $s = Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest stage-b $srv --name dono --run-id stage --log-dir `"$G\dono`"" -PassThru
+  $s = Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest stage-b $srv --name dono --run-id stage --log-dir `"$G\dono`"" -PassThru
   $null = $s.Handle
   "stage : " + (Wait-Exit $s 300)
   Start-Sleep 5
@@ -174,9 +174,9 @@ if ($Phase3) {
   Get-ChildItem $Out -Filter stage-*.png | ForEach-Object { "{0}  {1:N0} KB" -f $_.Name, ($_.Length / 1KB) }
   return
 }
-$cam = Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest cam-a --hold 120 $srv --name dono --run-id shots --log-dir `"$G\dono`"" -PassThru
+$cam = Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest cam-a --hold 120 $srv --name dono --run-id shots --log-dir `"$G\dono`"" -PassThru
 Start-Sleep 3
-$s = Start-Process "$B\AkumaLabs.exe" -ArgumentList "--autotest shots $srv --name visita --run-id shots --log-dir `"$G\visita`"" -PassThru
+$s = Start-Process "$B\KumaCord.exe" -ArgumentList "--autotest shots $srv --name visita --run-id shots --log-dir `"$G\visita`"" -PassThru
 $null = $s.Handle
 "shots : " + (Wait-Exit $s 180)
 if (-not $cam.HasExited) { Stop-Process -Id $cam.Id -Force }

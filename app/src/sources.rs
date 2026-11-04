@@ -538,7 +538,7 @@ fn show_audio(ui: &mut egui::Ui, picker: &mut Picker, inp: GridInput<'_>) -> Gri
         let (cols, card_w) = grid_layout(ui.available_width() - 12.0, AUDIO_CARD_MIN_W, CARD_GAP);
         ui.spacing_mut().item_spacing = Vec2::splat(CARD_GAP);
         let mut items: Vec<(Pick, String, String)> =
-            vec![(Pick::AllSound, "Todo o som do PC".to_string(), "menos o AkumaLabs (a voz da chamada não volta)".to_string())];
+            vec![(Pick::AllSound, "Todo o som do PC".to_string(), "menos o KumaCord (a voz da chamada não volta)".to_string())];
         for a in &apps {
             let sub = match (a.windows, truncate_title(&a.title, TITLE_MAX_CHARS)) {
                 (1, t) => t,

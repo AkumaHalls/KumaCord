@@ -418,7 +418,7 @@ impl App {
                     ui.add_space(2.0);
                     ui.label(egui::RichText::new(ph::SPARKLE).font(theme::body(20.0)).color(accent));
                     ui.label(
-                        egui::RichText::new(if mandatory { "Atualização obrigatória" } else { "Novidades do AkumaLabs" })
+                        egui::RichText::new(if mandatory { "Atualização obrigatória" } else { "Novidades do KumaCord" })
                             .font(theme::display(20.0))
                             .color(theme::GIZ),
                     );
@@ -606,7 +606,7 @@ impl App {
         ui.add_space(4.0);
         ui.add(
             egui::Label::new(
-                egui::RichText::new("Não feche o AkumaLabs — ele reinicia sozinho quando a instalação termina.")
+                egui::RichText::new("Não feche o KumaCord — ele reinicia sozinho quando a instalação termina.")
                     .font(theme::body(11.5))
                     .color(theme::NEVOA),
             )
@@ -642,7 +642,7 @@ fn feed_url() -> String {
 
 fn http_get(url: &str) -> reqwest::Result<reqwest::blocking::Response> {
     reqwest::blocking::Client::builder()
-        .user_agent(concat!("AkumaLabs/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("KumaCord/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
         .build()?
         .get(url)
@@ -680,7 +680,7 @@ fn check_thread(tx: Sender<Msg>) {
 fn install_thread(tx: Sender<Msg>, manifest: Manifest) {
     let result = (|| -> Result<(), String> {
         // Baixa para o temp, conferindo o hash na stream.
-        let dest = std::env::temp_dir().join(format!("AkumaLabs-{}-setup.exe", manifest.version));
+        let dest = std::env::temp_dir().join(format!("KumaCord-{}-setup.exe", manifest.version));
         let mut rsp = http_get(&manifest.url).map_err(|e| format!("o download não começou ({e})"))?;
         let total = rsp.content_length();
         let mut file = std::fs::File::create(&dest).map_err(|e| format!("não deu para criar o arquivo temporário ({e})"))?;

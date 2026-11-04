@@ -16,7 +16,7 @@ KumaCord é o app + servidor da **AkumaLabs**: canais de texto, salas de voz, we
 
 | Pasta | O que é |
 |---|---|
-| `app/` | Client Windows/macOS (egui) — gera `AkumaLabs.exe` |
+| `app/` | Client Windows/macOS (egui) — gera `KumaCord.exe` |
 | `hub/` | Servidor (axum + SQLite + LiveKit supervisor) — gera `kumacord-server` |
 | `crates/` | Protocolo, núcleo do client, captura, logging |
 | `Dockerfile` + `docker-compose.yml` | Deploy do servidor em container (Portainer-friendly) |
@@ -59,14 +59,14 @@ Em VPS não existe "PC do servidor" para reivindicar a propriedade no primeiro l
 - **Recomendado:** fixe `owner = "seu-nick"` no `config.toml` — esse nome é o Dono para sempre.
 - Alternativa: sem dono definido, o console do container imprime um código único (`docker logs kumacord`); entre com qualquer nome e use o código em *Configurações* para virar Dono.
 
-## Client (app AkumaLabs)
+## Client (app KumaCord)
 
 **Baixe em [Releases](https://github.com/AkumaHalls/KumaCord/releases/latest):**
 
 | Arquivo | Auto-update |
 |---|---|
-| `AkumaLabs-<versão>-setup.exe` | ✅ **recomendado** — instala sem administrador e se atualiza sozinho |
-| `AkumaLabs-<versão>-Windows.zip` | ❌ portátil (extraia e rode `AkumaLabs.exe`) |
+| `KumaCord-<versão>-setup.exe` | ✅ **recomendado** — instala sem administrador e se atualiza sozinho |
+| `KumaCord-<versão>-Windows.zip` | ❌ portátil (extraia e rode `KumaCord.exe`; a pasta `intro\` vai junto) |
 
 O app verifica atualizações na inicialização (e em **Configurações → Sobre → Verificar atualizações**), avisa em qualquer tela quando há versão nova e atualiza sozinho: baixa o instalador, valida **SHA-256 + assinatura minisign** (a chave pública vai compilada no app; a privada é um secret do CI — assinatura inválida não instala) e reinicia na versão nova.
 
@@ -83,10 +83,12 @@ Build a partir do fonte (Windows): Rust stable (MSVC) + Visual Studio Build Tool
 
 ```powershell
 cargo build --release -p voxhub-app
-# target\release\AkumaLabs.exe
+# target\release\KumaCord.exe
+# (a abertura — intro\intro.pack e intro\intro.mp3 — vem de app\assets\intro;
+#  para o build local encontrar, rode tools\intro\build.ps1)
 ```
 
-Build (macOS, Apple Silicon): `cargo build --release -p voxhub-app` → `target/release/AkumaLabs` (veja `tools/package-mac.sh`).
+Build (macOS, Apple Silicon): `cargo build --release -p voxhub-app` → `target/release/KumaCord` (veja `tools/package-mac.sh`).
 
 Entrar: **nome + senha do servidor**, ou colar um **convite** `vox1-...` (o convite carrega só o token — o endereço continua sendo o fixo; convite de outro servidor simplesmente não autentica). Admins criam convites dentro do app (*Convidar*), com expiração, limite de usos e revogação.
 

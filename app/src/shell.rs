@@ -217,7 +217,7 @@ impl App {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("{}  {}", ph::INFO, super::dms::HOST_NOTE)).font(theme::body(12.0)).color(theme::NEVOA))
-                    .on_hover_text("Só vocês dois veem esta conversa no AkumaLabs (nem admins nem o dono pelo app). Mas ela fica gravada no computador que hospeda o servidor, e quem hospeda poderia ler o arquivo.");
+                    .on_hover_text("Só vocês dois veem esta conversa no KumaCord (nem admins nem o dono pelo app). Mas ela fica gravada no computador que hospeda o servidor, e quem hospeda poderia ler o arquivo.");
             });
             if conv.blocked {
                 // The block state: a kit notice with the way out right in it.

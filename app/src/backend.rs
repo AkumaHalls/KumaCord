@@ -136,7 +136,7 @@ pub enum Cmd {
         standalone: bool,
     },
     /// v1.1.9: the launcher's music, on a loop until [`Cmd::StopUiClip`]. Decoded on first use
-    /// (`assets/intro/intro.mp3`) and played through the standalone output.
+    /// (`intro\intro.mp3`, next to the exe) and played through the standalone output.
     PlayUiClip {
         volume: f32,
         device: Option<String>,
@@ -1240,8 +1240,15 @@ impl Controller {
             return;
         }
         let tx = self.int_tx.clone();
+        // The full track ships next to the exe (`intro\intro.mp3`), like the movie's frames.
+        let path = crate::launcher::music_path();
         tokio::task::spawn_blocking(move || {
-            let pcm = vox_client_core::audio::clip::decode_48k_stereo(include_bytes!("../assets/intro/intro.mp3"), "mp3");
+            let pcm = path
+                .and_then(|p| std::fs::read(p).ok())
+                .and_then(|bytes| vox_client_core::audio::clip::decode_48k_stereo(&bytes, "mp3"));
+            if pcm.is_none() {
+                tracing::debug!("launcher music: no readable track next to the app");
+            }
             let _ = tx.send(Internal::LauncherClip(pcm));
         });
     }
@@ -1442,7 +1449,7 @@ async fn login_at(url: &str, creds: &Creds, remember_device: bool, guard: &Guard
             client = PROTOCOL_VERSION,
             "protocol version mismatch"
         );
-        return Err(LoginFail::Msg("Versão incompatível com o servidor. Peça a versão mais recente do AkumaLabs ao host.".into()));
+        return Err(LoginFail::Msg("Versão incompatível com o servidor. Peça a versão mais recente do KumaCord ao host.".into()));
     }
     // v1.0.1: a saved password / login token goes only to the server it was saved for.
     let answered = health.server_id.as_deref().filter(|id| vox_proto::is_server_id(id));
@@ -2147,7 +2154,7 @@ async fn run_join(hub: &HubClient, channel: ChannelId, via: JoinVia, cfg: VoiceC
 pub fn voice_error_message(e: &anyhow::Error) -> String {
     match e.downcast_ref::<JoinError>().map(|j| j.step) {
         Some(JoinStep::Signal) => "Não foi possível conectar ao servidor de voz (etapa: conexão com a porta 7880). \
-             Verifique sua internet e se VPN, antivírus ou firewall não estão bloqueando o AkumaLabs."
+             Verifique sua internet e se VPN, antivírus ou firewall não estão bloqueando o KumaCord."
             .into(),
         Some(JoinStep::Media) => "Não foi possível conectar o áudio da sala (etapa: conexão de mídia). \
              A rede parece estar bloqueando a conexão de voz. Tente outra rede ou desligue VPN, antivírus ou firewall."
@@ -2227,7 +2234,7 @@ pub fn friendly(e: &anyhow::Error) -> String {
     } else if l.contains(vox_proto::ERR_TOO_MANY_MENTIONS) {
         "Menções demais numa mensagem só.".into()
     } else if l.contains("protocol version mismatch") {
-        "Versão incompatível com o servidor. Peça a versão mais recente do AkumaLabs ao host.".into()
+        "Versão incompatível com o servidor. Peça a versão mais recente do KumaCord ao host.".into()
     } else if l.contains(vox_proto::ERR_TOO_MANY_ATTEMPTS) {
         "Muitas tentativas seguidas. Aguarde alguns segundos e tente de novo.".into()
     } else if l.contains("username must be") {

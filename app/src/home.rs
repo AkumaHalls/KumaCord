@@ -260,8 +260,8 @@ impl App {
         brand::paint_logo(p, ui.ctx(), icon.center(), 30.0);
         let text_x = icon.right() + 12.0;
         p.text(Pos2::new(text_x, rect.top() + 15.0), egui::Align2::LEFT_TOP, "AkumaLabs", theme::semibold(15.5), theme::GIZ);
-        let address = brand::HOME_URL.trim_start_matches("http://").trim_end_matches('/');
-        p.text(Pos2::new(text_x, rect.top() + 36.0), egui::Align2::LEFT_TOP, address, egui::FontId::monospace(11.5), theme::NEVOA);
+        // Never the address: the launcher picks the server for the user.
+        p.text(Pos2::new(text_x, rect.top() + 36.0), egui::Align2::LEFT_TOP, "Servidor oficial da comunidade", theme::body(11.5), theme::NEVOA);
         // "OFICIAL" on the right.
         let text = "OFICIAL";
         let g = p.layout_no_wrap(text.to_owned(), theme::semibold(9.5), egui::Color32::from_rgb(0xE7, 0xDE, 0xFF));

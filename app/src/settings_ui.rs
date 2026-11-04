@@ -174,7 +174,7 @@ impl App {
         ui.painter().text(
             Pos2::new(nav.left() + 18.0, nav.bottom() - 16.0),
             Align2::LEFT_BOTTOM,
-            format!("AkumaLabs {}", env!("CARGO_PKG_VERSION")),
+            format!("KumaCord {}", env!("CARGO_PKG_VERSION")),
             theme::body(size::SMALL),
             theme::NEVOA,
         );
@@ -447,7 +447,7 @@ impl App {
         if self.settings.ptt_enabled && self.settings.ptt_vk == 0 {
             note_colored(ui, "Escolha uma tecla para o push-to-talk funcionar.", true, theme::AVISO);
         } else {
-            note(ui, "Funciona com o AkumaLabs em segundo plano (no jogo, por exemplo).", true);
+            note(ui, "Funciona com o KumaCord em segundo plano (no jogo, por exemplo).", true);
         }
     }
 
@@ -510,7 +510,7 @@ impl App {
         row(ui, "Janela", |ui| {
             if ui
                 .checkbox(&mut self.settings.stream_popout, "Abrir transmissões em janela separada")
-                .on_hover_text("Desligado: a transmissão aparece dentro do AkumaLabs, na chamada.")
+                .on_hover_text("Desligado: a transmissão aparece dentro do KumaCord, na chamada.")
                 .changed()
             {
                 vox_client_core::golive::Viewer::set_open_inline(!self.settings.stream_popout);
@@ -533,11 +533,11 @@ impl App {
                 }
             });
         });
-        note(ui, "Com o AkumaLabs fora de foco, minimizado ou na bandeja: o botão da barra de tarefas pisca, ganha o número de não lidas e o Windows avisa quem escreveu. Clicar no aviso abre a conversa.", true);
+        note(ui, "Com o KumaCord fora de foco, minimizado ou na bandeja: o botão da barra de tarefas pisca, ganha o número de não lidas e o Windows avisa quem escreveu. Clicar no aviso abre a conversa.", true);
         row(ui, "Bandeja", |ui| {
             ch.save |= ui
                 .checkbox(&mut self.settings.notify.tray_on_close, "Ao fechar, minimizar para a bandeja")
-                .on_hover_text("O AkumaLabs continua aberto (e a chamada continua) perto do relógio. Clique no ícone para abrir; botão direito e Sair para fechar de verdade.")
+                .on_hover_text("O KumaCord continua aberto (e a chamada continua) perto do relógio. Clique no ícone para abrir; botão direito e Sair para fechar de verdade.")
                 .changed();
         });
         forms::divider(ui);

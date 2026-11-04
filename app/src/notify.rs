@@ -502,7 +502,7 @@ impl App {
             self.settings.notify.tray_hint_shown = true;
             self.save_settings();
             if let Some(t) = &self.notify.tray {
-                t.balloon("O AkumaLabs continua aberto", "Ele ficou na bandeja do sistema. Clique no ícone para abrir ou use o botão direito para sair.");
+                t.balloon("O KumaCord continua aberto", "Ele ficou na bandeja do sistema. Clique no ícone para abrir ou use o botão direito para sair.");
             }
         }
     }
@@ -594,7 +594,7 @@ impl App {
         }
         let Some(hwnd) = self.video.parent else { return };
         let r = self.repaint.clone();
-        match Tray::start(hwnd, "AkumaLabs", self.notify.tx.clone(), move || r.wake()) {
+        match Tray::start(hwnd, "KumaCord", self.notify.tx.clone(), move || r.wake()) {
             Ok(t) => {
                 tracing::info!("tray icon ready");
                 self.notify.tray = Some(t);

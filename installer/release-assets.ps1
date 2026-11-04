@@ -1,17 +1,17 @@
-# release-assets.ps1 — monta TODOS os artefatos da release do client AkumaLabs.
+# release-assets.ps1 - monta TODOS os artefatos da release do client KumaCord.
 #
 # Uso local (a partir da raiz do repo, com o build feito):
-#   powershell -File installer\release-assets.ps1 -Version 1.0.3 -MinisignKey <caminho da chave privada>
+#   powershell -File installer\release-assets.ps1 -Version 1.2.0 -MinisignKey <caminho da chave privada>
 #
-# No CI (GitHub Actions): a chave vem da env AKUMALABS_SIGNING_KEY (o conteúdo
+# No CI (GitHub Actions): a chave vem da env AKUMALABS_SIGNING_KEY (o conteudo
 # do arquivo .key, sem senha), e o minisign.exe precisa estar no PATH.
 #
 # Produz em <repo>\dist\:
-#   AkumaLabs-<ver>-setup.exe        instalador NSIS (o que o auto-update usa)
-#   AkumaLabs-<ver>-setup.exe.sig    a assinatura minisign do instalador
-#   AkumaLabs-<ver>-Windows.zip      versão portátil (sem auto-update)
-#   latest.json                      o feed que o app consulta
-#   release-body.md                  o corpo da release (seção do CHANGELOG)
+#   KumaCord-<ver>-setup.exe        instalador NSIS (o que o auto-update usa)
+#   KumaCord-<ver>-setup.exe.sig    a assinatura minisign do instalador
+#   KumaCord-<ver>-Windows.zip      versao portatil (sem auto-update)
+#   latest.json                     o feed que o app consulta
+#   release-body.md                 o corpo da release (secao do CHANGELOG)
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$MinisignKey = "",
@@ -23,7 +23,15 @@ if (-not $RepoRoot) { $RepoRoot = (Get-Location).Path }
 $dist = Join-Path $RepoRoot "dist"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 $tag = "v$Version"
-$setup = Join-Path $dist "AkumaLabs-$Version-setup.exe"
+$setup = Join-Path $dist "KumaCord-$Version-setup.exe"
+
+# 0. Os assets da abertura (o filme inteiro e a trilha): vao AO LADO do exe,
+# nao dentro dele, e sao obrigatorios para empacotar.
+$introPack = Join-Path $RepoRoot "app\assets\intro\intro.pack"
+$introMp3 = Join-Path $RepoRoot "app\assets\intro\intro.mp3"
+foreach ($a in @($introPack, $introMp3)) {
+    if (-not (Test-Path $a)) { throw "falta o asset da abertura: $a (rode tools\intro\build.ps1)" }
+}
 
 # 1. O instalador NSIS (requer makensis no PATH ou na pasta padrao, e build de release pronto).
 # TODOS os caminhos vao absolutos via /D: o makensis do Windows resolve os
@@ -35,26 +43,28 @@ if (-not $makensis) {
     if (Test-Path $cand) { $makensis = $cand }
 }
 if (-not $makensis) { throw "makensis nao encontrado - instale o NSIS (choco install nsis)" }
-$exe = Join-Path $RepoRoot "target\release\AkumaLabs.exe"
+$exe = Join-Path $RepoRoot "target\release\KumaCord.exe"
 if (-not (Test-Path $exe)) { throw "build o client antes: cargo build --release -p voxhub-app (faltou $exe)" }
-$exeDir = Join-Path $RepoRoot "target\release"
-$nsi = Join-Path $RepoRoot "installer\AkumaLabs.nsi"
+$nsi = Join-Path $RepoRoot "installer\KumaCord.nsi"
 $icon = Join-Path $RepoRoot "installer\akumalabs-setup.ico"
 $leiame = Join-Path $RepoRoot "installer\LEIA-ME.txt"
-& $makensis /DVERSION=$Version /DINPUT_EXE="$exe" /DOUT_FILE="$setup" /DICON_FILE="$icon" /DLEIAME_FILE="$leiame" $nsi | Out-Null
+& $makensis /DVERSION=$Version /DINPUT_EXE="$exe" /DOUT_FILE="$setup" /DICON_FILE="$icon" /DLEIAME_FILE="$leiame" /DINTRO_PACK="$introPack" /DINTRO_MP3="$introMp3" $nsi | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "makensis falhou" }
-if (-not (Test-Path $setup)) { throw "o instalador não apareceu em $setup" }
+if (-not (Test-Path $setup)) { throw "o instalador nao apareceu em $setup" }
 Write-Host "setup.exe pronto: $setup"
 
-# 2. O zip portátil.
+# 2. O zip portatil (exe + a abertura, que o app le do lado do exe).
 $portable = Join-Path $dist "portable-$Version"
 New-Item -ItemType Directory -Force -Path $portable | Out-Null
-Copy-Item $exe $portable
+Copy-Item $exe (Join-Path $portable "KumaCord.exe")
 Copy-Item (Join-Path $RepoRoot "installer\LEIA-ME.txt") $portable
-$zip = Join-Path $dist "AkumaLabs-$Version-Windows.zip"
+New-Item -ItemType Directory -Force -Path (Join-Path $portable "intro") | Out-Null
+Copy-Item $introPack (Join-Path $portable "intro")
+Copy-Item $introMp3 (Join-Path $portable "intro")
+$zip = Join-Path $dist "KumaCord-$Version-Windows.zip"
 Compress-Archive -Path $portable -DestinationPath $zip -Force
 Remove-Item $portable -Recurse -Force
-Write-Host "zip portátil pronto: $zip"
+Write-Host "zip portatil pronto: $zip"
 
 # 3. SHA-256 do instalador.
 $sha = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -64,7 +74,7 @@ Write-Host "sha256: $sha"
 $sig = "$setup.sig"
 if (-not $MinisignKey -and $env:AKUMALABS_SIGNING_KEY) {
     $MinisignKey = Join-Path $dist "release-signing.key"
-    # A env carrega o conteúdo do arquivo (com comentário e sem senha).
+    # A env carrega o conteudo do arquivo (com comentario e sem senha).
     $env:AKUMALABS_SIGNING_KEY -split "`n" | ForEach-Object { $_.TrimEnd("`r") } | Set-Content $MinisignKey -Encoding ascii
 }
 if (-not $MinisignKey) { throw "sem chave de assinatura: -MinisignKey ou env AKUMALABS_SIGNING_KEY" }
@@ -74,7 +84,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $sig)) { throw "minisign falhou ao a
 $signature = ((Get-Content $sig -Raw) -replace "`r", "").TrimEnd()
 Write-Host "assinatura ok"
 
-# 5. As notas desta versão (a seção [x.y.z] do CHANGELOG, como no KumaDrive).
+# 5. As notas desta versao (a secao [x.y.z] do CHANGELOG, como no KumaDrive).
 $changelog = Join-Path $RepoRoot "CHANGELOG.md"
 $notes = ""
 if (Test-Path $changelog) {
@@ -86,13 +96,13 @@ if (Test-Path $changelog) {
         if ($inSection) { $notes += "$l`n" }
     }
 }
-if (-not $notes.Trim()) { $notes = "Veja o CHANGELOG.md do projeto para os detalhes desta versão." }
+if (-not $notes.Trim()) { $notes = "Veja o CHANGELOG.md do projeto para os detalhes desta versao." }
 
 # 6. O feed que o app consulta (o campo `signature` carrega o .sig inteiro).
 $manifest = [ordered]@{
     version   = $Version
     notes     = $notes.TrimEnd()
-    url       = "https://github.com/AkumaHalls/KumaCord/releases/download/$tag/AkumaLabs-$Version-setup.exe"
+    url       = "https://github.com/AkumaHalls/KumaCord/releases/download/$tag/KumaCord-$Version-setup.exe"
     sha256    = $sha
     signature = $signature
 }
@@ -101,19 +111,19 @@ Write-Host "latest.json pronto"
 
 # 7. O corpo da release.
 $body = @"
-## AkumaLabs $tag
+## KumaCord $tag
 
-### Novidades desta versão
+### Novidades desta versao
 
 $($notes.TrimEnd())
 
 ---
 
 **Windows**
-- **`AkumaLabs-$Version-setup.exe`** (recomendado — suporta atualização automática)
-- `AkumaLabs-$Version-Windows.zip` (portátil; sem atualização automática)
+- **`KumaCord-$Version-setup.exe`** (recomendado - suporta atualizacao automatica)
+- `KumaCord-$Version-Windows.zip` (portatil; sem atualizacao automatica)
 
-O app instalado avisa e atualiza sozinho quando há versão nova.
+O app instalado avisa e atualiza sozinho quando ha versao nova.
 "@
 $body | Set-Content (Join-Path $dist "release-body.md") -Encoding utf8
 Write-Host "release-body.md pronto"

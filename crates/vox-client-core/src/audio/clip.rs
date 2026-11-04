@@ -1,5 +1,5 @@
-//! The launcher's music: one short clip decoded ahead of the first repaint, so the home screen
-//! can play it on a loop while the user decides to enter (before any voice session exists).
+//! The launcher's music: the movie's own track decoded ahead of the first repaint, so the home
+//! screen can play it on a loop while the user decides to enter (before any voice session exists).
 //!
 //! The file is decoded with symphonia (the same pure-Rust decoders the soundboard uses) into
 //! interleaved stereo at 48 kHz — the rate every output device path in this crate expects — and
@@ -18,8 +18,9 @@ use symphonia::core::probe::Hint;
 
 use super::resample::LinearResampler;
 
-/// Nothing played by the launcher may be longer than this; the packed clip is about 20 s.
-pub const MAX_CLIP_SECS: u32 = 60;
+/// Nothing played by the launcher may be longer than this; the shipped theme is the movie's own
+/// track (~3:50), so the cap only guards against a damaged header claiming hours of audio.
+pub const MAX_CLIP_SECS: u32 = 300;
 /// Everything the mixer plays from a buffer is stereo at this rate.
 pub const CLIP_RATE: u32 = 48_000;
 
@@ -139,5 +140,17 @@ mod tests {
     fn garbage_is_none_not_a_panic() {
         assert!(decode_48k_stereo(&[0u8; 64], "mp3").is_none());
         assert!(decode_48k_stereo(b"", "mp3").is_none());
+    }
+
+    /// The launcher's theme, the real file this build ships: it must decode whole (a decode that
+    /// bails early would loop a fragment instead of the full movie's ~3:50).
+    #[test]
+    fn the_shipped_launcher_theme_decodes_whole() {
+        let mp3 = include_bytes!("../../../../app/assets/intro/intro.mp3");
+        let pcm = decode_48k_stereo(mp3, "mp3").expect("the shipped mp3 decodes");
+        let frames = pcm.len() / 2;
+        // The whole track at 48 kHz (3:50 = 230 s): a few ms of fades, no missing minutes.
+        assert!(frames > 48_000 * 225, "expected ~11 million frames, got {frames}");
+        assert!(frames < 48_000 * 240, "unreasonably long: {frames}");
     }
 }

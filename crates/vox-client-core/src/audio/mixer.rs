@@ -166,6 +166,9 @@ struct Inner {
     sounds: Vec<SoundVoice>,
     /// Soundboard gain at the end of the previous block (start of the next ramp).
     sound_applied: f32,
+    /// Total samples the ui mix has written. The ui-sound worker watches it to tell a device
+    /// that is pulling audio (a looping launcher theme) from one that stalled (never calls back).
+    ui_mixed: u64,
 }
 
 #[derive(Default)]
@@ -308,6 +311,11 @@ impl Mixer {
         self.inner.lock().ui.len()
     }
 
+    /// Total samples the ui mix has written since this mixer exists (see [`Inner::ui_mixed`]).
+    pub fn ui_mixed(&self) -> u64 {
+        self.inner.lock().ui_mixed
+    }
+
     /// Forget every alert sound (they never started, e.g. because the device failed to open).
     pub fn clear_ui(&self) {
         self.inner.lock().ui.clear();
@@ -342,6 +350,7 @@ impl Mixer {
             }
         }
         g.ui.retain(|v| v.looping || v.pos < v.samples.len());
+        g.ui_mixed += out.len() as u64;
         true
     }
 
@@ -680,6 +689,24 @@ mod tests {
         assert_eq!(m.ui_active(), 0);
         let mut out = vec![0i16; MIX_10MS];
         assert!(!m.mix_ui(&mut out));
+    }
+
+    #[test]
+    fn the_ui_mix_counts_its_samples_for_the_stall_watchdog() {
+        let m = Mixer::new();
+        assert_eq!(m.ui_mixed(), 0);
+        assert!(m.play_ui_loop(ui_buf_two(1000, 2000), 1.0));
+        let mut out = vec![0i16; MIX_10MS];
+        for _ in 0..5 {
+            let before = m.ui_mixed();
+            assert!(m.mix_ui(&mut out));
+            assert_eq!(m.ui_mixed(), before + MIX_10MS as u64, "every block advances the counter");
+        }
+        // Silence (nothing playing) does not move it: that is the stalled-device signature.
+        let before = m.ui_mixed();
+        m.clear_ui();
+        assert!(!m.mix_ui(&mut out));
+        assert_eq!(m.ui_mixed(), before);
     }
 
     #[test]

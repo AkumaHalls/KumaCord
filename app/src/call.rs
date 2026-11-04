@@ -456,7 +456,7 @@ impl App {
         }
         if let Ok(v) = Viewer::get() {
             let name = key.parse::<UserId>().map(|id| self.name_of(id)).unwrap_or_else(|_| key.to_string());
-            v.set_title(key, &format!("AkumaLabs - transmissão de {name}"));
+            v.set_title(key, &format!("KumaCord - transmissão de {name}"));
             v.pop_out(key, out);
         }
         if out && self.call.fullscreen_key.as_deref() == Some(key) {

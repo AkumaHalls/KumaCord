@@ -23,7 +23,7 @@
 # VOX_NO_MIC=1). Processes are stopped by their exact PID only.
 #
 # Build first:  cargo build --release --workspace   (with CARGO_TARGET_DIR=target-v02)
-# Usage:        powershell -ExecutionPolicy Bypass -File tools\perf.ps1 [-Exe <AkumaLabs.exe>] [-Assets <main tree>] [-Label name]
+# Usage:        powershell -ExecutionPolicy Bypass -File tools\perf.ps1 [-Exe <KumaCord.exe>] [-Assets <main tree>] [-Label name]
 #                 [-Out results.csv] [-Only home,call,watch,camera] [-Secs 20] [-Repeat 1]
 param(
   [string]$Exe = "",
@@ -42,7 +42,7 @@ $B = if (-not $env:CARGO_TARGET_DIR) { "$R\target-v02\release" } elseif ([IO.Pat
 # bin\livekit-server.exe (and, for the gate, releases\) come from -Assets: the repo by default, or the
 # main tree when this runs from a git worktree without them (read only).
 if (-not $Assets) { $Assets = $R }
-if (-not $Exe) { $Exe = "$B\AkumaLabs.exe" }
+if (-not $Exe) { $Exe = "$B\KumaCord.exe" }
 $Exe = (Resolve-Path $Exe).Path
 $LK = "$Assets\bin\livekit-server.exe"
 $G = Join-Path $env:TEMP "concord-perf"
@@ -158,7 +158,7 @@ for ($run = 1; $run -le $Repeat; $run++) {
   if (Want "home") {
     $tag = "home$run"
     $ad = "$G\$tag\appdata"
-    # (Both folders: -Exe may be an older voxhub.exe, compared with the new AkumaLabs.exe.)
+    # (Both folders: -Exe may be an older voxhub.exe, compared with the new KumaCord.exe.)
     foreach ($app in "concord", "voxhub") {
       New-Item -ItemType Directory "$ad\$app" -Force | Out-Null
       '{"notify":{"windows":"off","tray_on_close":false}}' | Set-Content "$ad\$app\settings.json" -Encoding ascii

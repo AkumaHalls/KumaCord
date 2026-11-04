@@ -3,11 +3,11 @@ name = "voxhub-app"
 edition.workspace = true
 version.workspace = true
 publish.workspace = true
-description = "AkumaLabs desktop app (egui): connect, chat, voice, Go Live."
+description = "KumaCord desktop app (egui): connect, chat, voice, Go Live."
 
-# The package keeps its old name; the program is `AkumaLabs.exe`.
+# The package keeps its old name; the program is `KumaCord.exe`.
 [[bin]]
-name = "AkumaLabs"
+name = "KumaCord"
 path = "src/main.rs"
 
 [dependencies]

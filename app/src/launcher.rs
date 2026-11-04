@@ -1,38 +1,68 @@
-//! The launch cinematic: the community's own edit (`assets/intro/intro.pack`, 20 s of it) as the
-//! background of the home screen, with the login card over it — the League of Legends launcher's
-//! idea, in the AkumaLabs' own footage.
+//! The launch cinematic: the community's own edit as the background of the home screen, with the
+//! login card over it — the League of Legends launcher's idea, in the community's own footage.
 //!
-//! The pack is a sequence of WebP frames packed at build time (`intro.pack`: magic, size, fps,
-//! frame lengths, then the images), so no video decoder is linked: one worker thread decodes the
-//! frame for the current second into an egui texture while the UI stays responsive, and two
-//! textures at most are alive at once (960 × 540 each). The music is a 20 s MP3 next to the pack,
-//! decoded once by the backend ([`vox_client_core::audio::clip`]) and looped through the mixer.
+//! The whole movie is a sequence of WebP frames packed at build time (`intro.pack`: magic, size,
+//! fps, frame lengths, then the images), shipped **next to the exe** (`intro\intro.pack`, put
+//! there by the installer and the portable zip) instead of inside it: a three-minute cinematic is
+//! ~60 MB, and the exe stays small for the auto-update. No video decoder is linked either: one
+//! worker thread reads and decodes the frame for the current moment into an egui texture while the
+//! UI stays responsive, and only two textures at most are alive at once (960 × 405 each).
+//!
+//! The music is the movie's own track (`intro\intro.mp3`), decoded once by the backend
+//! ([`vox_client_core::audio::clip`]) and looped through the mixer.
 //!
 //! Everything here is best-effort and silent: a missing or damaged pack simply leaves the plain
 //! gradient background, and autotests get a still first frame (no decode loop, no music) so they
 //! stay fast.
 
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Pos2, Rect, TextureHandle, TextureOptions};
 
-/// The packed frames (see `brag-output/work/pack_intro.py`).
-const PACK: &[u8] = include_bytes!("../assets/intro/intro.pack");
+/// The pack format's magic (see `tools/intro/pack.py`).
 const MAGIC: &[u8; 5] = b"AKUI1";
 /// The background of the home screen before the first frame arrives (and behind a still one).
 pub const BACKDROP: Color32 = Color32::from_rgb(0x08, 0x09, 0x12);
 /// The scrims' colour (near-black, a touch blue).
 const SCRIM: Color32 = Color32::from_rgb(0x06, 0x08, 0x14);
 
-/// One frame: where it sits in [`PACK`] and how long it is.
+/// Where this build keeps the cinematic and its music: `intro\` next to the exe (the installer and
+/// the portable zip put them there), or the source tree when running from `cargo run`, the
+/// autotests or a dev build.
+pub(crate) fn asset_dir() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("intro"));
+            candidates.push(dir.to_path_buf());
+        }
+    }
+    candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join("intro"));
+    candidates.into_iter().find(|d| d.join("intro.pack").is_file())
+}
+
+/// The movie's file, when this build has one.
+pub(crate) fn pack_path() -> Option<PathBuf> {
+    asset_dir().map(|d| d.join("intro.pack")).filter(|p| p.is_file())
+}
+
+/// The movie's soundtrack, when this build has one.
+pub(crate) fn music_path() -> Option<PathBuf> {
+    asset_dir().map(|d| d.join("intro.mp3")).filter(|p| p.is_file())
+}
+
+/// One frame: where it sits in the pack and how long it is.
 #[derive(Clone, Copy)]
 struct Frame {
-    offset: usize,
+    offset: u64,
     len: usize,
 }
 
-/// The pack's header, parsed once.
+/// The pack's header, parsed once (the frames are read on demand, never all at once).
 struct Frames {
     frames: Vec<Frame>,
     width: usize,
@@ -41,31 +71,37 @@ struct Frames {
 }
 
 impl Frames {
-    fn parse(pack: &'static [u8]) -> Option<Self> {
-        let head = pack.get(..5)?;
-        if head != MAGIC {
+    fn parse(path: &Path) -> Option<Self> {
+        let mut file = File::open(path).ok()?;
+        // Only the header and the frame table are read here (a few KB, however long the movie).
+        let mut head = [0u8; 15];
+        file.read_exact(&mut head).ok()?;
+        if &head[..5] != MAGIC {
             return None;
         }
-        let u16_at = |i: usize| pack.get(i..i + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
-        let u32_at = |i: usize| pack.get(i..i + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-        let width = u16_at(5)? as usize;
-        let height = u16_at(7)? as usize;
-        let fps = u16_at(9)?;
-        let count = u32_at(11)? as usize;
-        if width == 0 || height == 0 || count == 0 || fps == 0 {
+        let u16_at = |i: usize| u16::from_le_bytes([head[i], head[i + 1]]);
+        let u32_at = |i: usize| u32::from_le_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]]);
+        let width = u16_at(5) as usize;
+        let height = u16_at(7) as usize;
+        let fps = u16_at(9);
+        let count = u32_at(11) as usize;
+        let file_len = file.metadata().ok()?.len();
+        // The table itself must fit the file: a damaged header cannot ask for a huge allocation.
+        if width == 0 || height == 0 || fps == 0 || count == 0 || count as u64 * 4 > file_len.saturating_sub(15) {
             return None;
         }
-        let table = 15;
+        let mut table = vec![0u8; count * 4];
+        file.read_exact(&mut table).ok()?;
         let mut frames = Vec::with_capacity(count);
-        let mut offset = table + count * 4;
+        let mut offset = 15 + count as u64 * 4;
         for i in 0..count {
-            let len = u32_at(table + i * 4)? as usize;
+            let len = u32::from_le_bytes(table[i * 4..i * 4 + 4].try_into().ok()?) as usize;
             let frame = Frame { offset, len };
-            if frame.offset + frame.len > pack.len() {
+            if len == 0 || frame.offset + frame.len as u64 > file_len {
                 return None;
             }
             frames.push(frame);
-            offset += len;
+            offset += len as u64;
         }
         Some(Frames { frames, width, height, fps: fps as f32 })
     }
@@ -74,6 +110,8 @@ impl Frames {
 /// The home screen's background movie.
 pub struct Intro {
     frames: Option<Frames>,
+    /// The pack the worker reads (`None` when there is nothing to play).
+    pack: Option<PathBuf>,
     /// Where the clock started (the loop's phase is measured from here).
     started: Instant,
     texture: Option<TextureHandle>,
@@ -98,11 +136,14 @@ impl Intro {
     /// Start the movie (unless the settings turn it off). On any problem this is an inert
     /// background: nothing fails, nothing is logged loudly.
     pub fn new(enabled: bool, sound: bool) -> Self {
-        let frames = Frames::parse(PACK).filter(|f| !f.frames.is_empty());
+        let pack = pack_path();
+        let frames = pack.as_deref().and_then(Frames::parse).filter(|f| !f.frames.is_empty());
+        let pack = pack.filter(|_| frames.is_some());
         // Autotests: a still first frame keeps their timing (and the screenshots) intact.
         let still = vox_client_core::testmode::background();
         let mut this = Self {
             frames,
+            pack,
             started: Instant::now(),
             texture: None,
             shown: usize::MAX,
@@ -120,11 +161,16 @@ impl Intro {
         this
     }
 
+    /// Whether this build has a movie to show at all.
+    pub fn available(&self) -> bool {
+        self.frames.is_some()
+    }
+
     /// Start (or restart) the movie from its first frame.
     pub fn restart(&mut self) {
-        if self.frames.is_none() {
+        let (Some(path), Some(frames)) = (self.pack.clone(), self.frames.as_ref()) else {
             return;
-        }
+        };
         self.started = Instant::now();
         self.playing = true;
         self.pending = None;
@@ -133,8 +179,10 @@ impl Intro {
         if self.tx.is_none() {
             let (req_tx, req_rx) = mpsc::channel::<usize>();
             let (frame_tx, frame_rx) = mpsc::channel::<(usize, egui::ColorImage)>();
-            let frames: Vec<Frame> = self.frames.as_ref().map(|f| f.frames.clone()).unwrap_or_default();
-            let spawned = std::thread::Builder::new().name("vox-intro".into()).spawn(move || worker(&frames, req_rx, frame_tx));
+            let table: Vec<Frame> = frames.frames.clone();
+            let spawned = std::thread::Builder::new()
+                .name("vox-intro".into())
+                .spawn(move || worker(path, table, req_rx, frame_tx));
             if spawned.is_ok() {
                 self.tx = Some(req_tx);
                 self.rx = Some(frame_rx);
@@ -257,7 +305,7 @@ impl Intro {
                 let h = (image / box_ratio) as f32;
                 Rect::from_min_max(Pos2::new(0.0, (1.0 - h) / 2.0), Pos2::new(1.0, 1.0 - (1.0 - h) / 2.0))
             } else {
-                // Taller: crop the sides of the 16:9 frame, keeping the middle.
+                // Taller: crop the sides of the cinematic frame, keeping the middle.
                 let w = (box_ratio / image) as f32;
                 Rect::from_min_max(Pos2::new((1.0 - w) / 2.0, 0.0), Pos2::new(1.0 - (1.0 - w) / 2.0, 1.0))
             };
@@ -290,12 +338,25 @@ fn gradient(painter: &egui::Painter, rect: Rect, from: Color32, to: Color32, hor
     painter.add(egui::Shape::mesh(mesh));
 }
 
-/// Decode the frame asked for and send it back; ends when the app drops the channels.
-fn worker(frames: &[Frame], rx: Receiver<usize>, tx: Sender<(usize, egui::ColorImage)>) {
+/// Read, decode and send the frames asked for; ends when the app drops the channels.
+fn worker(path: PathBuf, frames: Vec<Frame>, rx: Receiver<usize>, tx: Sender<(usize, egui::ColorImage)>) {
+    let Ok(mut file) = File::open(&path) else {
+        tracing::warn!(path = %path.display(), "launcher movie: cannot open the pack");
+        return;
+    };
+    let mut buf: Vec<u8> = Vec::new();
     while let Ok(index) = rx.recv() {
         let Some(frame) = frames.get(index) else { return };
-        let Some(bytes) = PACK.get(frame.offset..frame.offset + frame.len) else { return };
-        let Ok(image) = image::load_from_memory_with_format(bytes, image::ImageFormat::WebP) else { return };
+        buf.resize(frame.len, 0);
+        // A frame that cannot be read or decoded is skipped, not fatal: the movie goes on.
+        if file.seek(SeekFrom::Start(frame.offset)).is_err() || file.read_exact(&mut buf).is_err() {
+            tracing::debug!(index, "launcher movie: frame read failed");
+            continue;
+        }
+        let Ok(image) = image::load_from_memory_with_format(&buf, image::ImageFormat::WebP) else {
+            tracing::debug!(index, "launcher movie: frame decode failed");
+            continue;
+        };
         let image = image.into_rgba8();
         let color = egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw());
         if tx.send((index, color)).is_err() {
@@ -308,33 +369,57 @@ fn worker(frames: &[Frame], rx: Receiver<usize>, tx: Sender<(usize, egui::ColorI
 mod tests {
     use super::*;
 
+    fn repo_pack() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join("intro").join("intro.pack")
+    }
+
     #[test]
     fn the_shipped_pack_parses_and_holds_every_frame() {
-        let frames = Frames::parse(PACK).expect("the pack this build embeds");
-        assert_eq!((frames.width, frames.height), (960, 540));
-        assert_eq!(frames.fps, 20.0);
-        assert!(frames.frames.len() >= 20, "at least a second of movie");
+        let pack = repo_pack();
+        let frames = Frames::parse(&pack).expect("the pack this build ships");
+        assert_eq!((frames.width, frames.height), (960, 404));
+        assert_eq!(frames.fps, 15.0);
+        // The whole cinematic (~3:50), not a clip: at least three minutes of frames.
+        assert!(frames.frames.len() > 15 * 180, "expected the full movie, got {} frames", frames.frames.len());
         // Every frame starts where the one before it ended (after the header's frame table).
-        let mut end = 15 + frames.frames.len() * 4;
+        let mut end = 15 + frames.frames.len() as u64 * 4;
         for f in &frames.frames {
             assert!(f.len > 0, "an empty frame");
             assert_eq!(f.offset, end);
-            end = f.offset + f.len;
+            end = f.offset + f.len as u64;
         }
-        assert_eq!(end, PACK.len());
+        assert_eq!(end, std::fs::metadata(&pack).unwrap().len());
     }
 
     #[test]
     fn the_first_frame_is_a_webp_image() {
-        let frames = Frames::parse(PACK).unwrap();
+        let frames = Frames::parse(&repo_pack()).unwrap();
         let f = frames.frames[0];
-        let image = image::load_from_memory_with_format(&PACK[f.offset..f.offset + f.len], image::ImageFormat::WebP).expect("frame 0 decodes");
-        assert_eq!((image.width(), image.height()), (960, 540));
+        let mut buf = vec![0u8; f.len];
+        let mut file = File::open(repo_pack()).unwrap();
+        file.seek(SeekFrom::Start(f.offset)).unwrap();
+        file.read_exact(&mut buf).unwrap();
+        let image = image::load_from_memory_with_format(&buf, image::ImageFormat::WebP).expect("frame 0 decodes");
+        assert_eq!((image.width(), image.height()), (960, 404));
     }
 
     #[test]
     fn a_damaged_header_is_refused() {
-        assert!(Frames::parse(b"nope!").is_none());
-        assert!(Frames::parse(b"AKUI1\xc0\x03\x1c\x02\x14\x00\x01\x00\x00\x00\xff\xff\xff\x7f").is_none());
+        let dir = std::env::temp_dir().join(format!("kumacord-intro-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let junk = dir.join("junk.pack");
+        std::fs::write(&junk, b"nope!").unwrap();
+        assert!(Frames::parse(&junk).is_none());
+        // A header that promises a table larger than the file.
+        std::fs::write(&junk, b"AKUI1\xc0\x03\x1c\x02\x14\x00\x01\x00\x00\x00").unwrap();
+        assert!(Frames::parse(&junk).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_dev_tree_finds_the_movie() {
+        // `cargo test` runs from `target\debug\deps`, so this is the source-tree fallback.
+        assert!(asset_dir().is_some(), "the repo's assets/intro must resolve");
+        assert!(pack_path().is_some());
     }
 }

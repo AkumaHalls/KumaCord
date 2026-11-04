@@ -32,7 +32,7 @@ fn screen_permission_note(ui: &mut egui::Ui) -> bool {
     note_colored(
         ui,
         format!(
-            "{} O macOS ainda não deixou o AkumaLabs gravar a tela. Ligue o AkumaLabs em Ajustes do Sistema > Privacidade e Segurança > Gravação de Tela e Áudio do Sistema e depois feche e abra o AkumaLabs de novo.",
+            "{} O macOS ainda não deixou o KumaCord gravar a tela. Ligue o KumaCord em Ajustes do Sistema > Privacidade e Segurança > Gravação de Tela e Áudio do Sistema e depois feche e abra o KumaCord de novo.",
             ph::WARNING
         ),
         false,
@@ -169,7 +169,7 @@ impl App {
                 forms::row(ui, "Áudio", |ui| {
                     ui.checkbox(&mut self.golive.audio, "Compartilhar o áudio do app");
                 });
-                note(ui, "Janela: só o som daquele app. Tela inteira: o som do PC, menos o do AkumaLabs.", true);
+                note(ui, "Janela: só o som daquele app. Tela inteira: o som do PC, menos o do KumaCord.", true);
             }
             if switching && !switch_in_place {
                 note_colored(

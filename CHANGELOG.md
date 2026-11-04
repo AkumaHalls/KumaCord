@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.2.0] — 2026-11-04
+
+### Mudado
+
+- **O app agora se chama KumaCord**: título da janela, ícone na bandeja, atalhos, instalador
+  (`KumaCord-<versão>-setup.exe` → `KumaCord.exe`) e todas as telas. O **servidor continua
+  AkumaLabs** — é a comunidade que ele serve, e o cartão `OFICIAL` do launcher segue com esse nome.
+  Quem já tem a versão antiga é atualizado no lugar: o instalador remove a instalação anterior
+  (`AkumaLabs.exe`, atalhos e a entrada em "Aplicativos") sem tocar nos seus dados.
+- **A cinemática inteira na abertura**: antes eram só 20 segundos do filme; agora a abertura toca
+  **o vídeo completo (~3min50) em loop**, com a trilha inteira — e as duas param quando você clica
+  em "Entrar no servidor". O filme e a música saem de dentro do exe e passam a viajar na pasta
+  `intro\` ao lado do executável (instalador e `.zip` portátil já os levam), então o app em si
+  continua leve para atualizar. Sem a pasta, o app abre normal, só sem a abertura.
+- **O cartão do servidor não mostra mais o endereço/IP**: só o nome e o selo `OFICIAL`. O endereço
+  continua fixo no código e é escolhido pelo launcher.
+
+### Corrigido
+
+- **A música da abertura parava nos primeiros segundos**: o vigia do dispositivo de som tratava
+  uma faixa em loop (que "nunca termina", por definição) como aparelho travado e cortava o áudio
+  aos 10 s. Agora ele mede o consumo real de amostras do mixer — um aparelho saudável toca a
+  trilha inteira; só um aparelho que parou de consumir é fechado.
+
+### Técnico
+
+- Abertura entregue como frames WebP (960 px, 15 fps, filme inteiro) em `intro.pack`, lidos **sob
+  demanda do disco** (o cabeçalho é lido uma vez; cada quadro é lido e decodificado na hora, numa
+  thread própria), com duas texturas vivas no máximo. Nenhum decoder de vídeo novo no binário.
+- `tools/intro/build.ps1` + `tools/intro/pack.py` regeneram os assets a partir do vídeo original
+  (ffmpeg + Python), e `installer/release-assets.ps1` valida que eles existem antes de empacotar.
+- Autotestes continuam recebendo um still do primeiro quadro (sem loop nem som).
+
 ## [1.1.9] — 2026-11-03
 
 ### Mudado

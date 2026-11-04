@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Embed `ico` and the version info as `exe_name` (e.g. "AkumaLabs.exe") described as `description`.
+/// Embed `ico` and the version info as `exe_name` (e.g. "KumaCord.exe") described as `description`.
 pub fn embed(ico: &Path, exe_name: &str, description: &str) {
     println!("cargo:rerun-if-changed={}", ico.display());
     println!("cargo:rerun-if-changed=../tools/build_winres.rs");

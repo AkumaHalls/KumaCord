@@ -16,7 +16,9 @@ use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Vec2};
 use crate::theme;
 
 /// The app's name as a wordmark.
-pub const APP_NAME: &str = "AkumaLabs";
+/// The app's display name (window title, wordmark, tray, About). The **server** keeps the
+/// AkumaLabs name — the app and the community it serves are different things on purpose.
+pub const APP_NAME: &str = "KumaCord";
 
 /// The one server this client ever connects to (the brand's own hub). An invite typed into the
 /// connect form carries only its token: whatever addresses the code embeds, the client goes to
@@ -91,7 +93,7 @@ pub fn logo(ui: &mut egui::Ui, side: f32) -> egui::Response {
     resp
 }
 
-/// The logo and the wordmark "AkumaLabs" side by side (the home screen, Configurações → Sobre).
+/// The logo and the wordmark (`APP_NAME`) side by side (the home screen, Configurações → Sobre).
 pub fn wordmark(ui: &mut egui::Ui, logo_side: f32, text_size: f32) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = logo_side * 0.3;
@@ -178,7 +180,7 @@ mod tests {
 
     #[test]
     fn the_app_points_at_one_well_formed_home() {
-        assert_eq!(APP_NAME, "AkumaLabs");
+        assert_eq!(APP_NAME, "KumaCord");
         assert!(HOME_URL.starts_with("http://"), "the hub speaks plain http");
         let host_port = HOME_URL.trim_start_matches("http://");
         let (host, port) = host_port.rsplit_once(':').expect("host:port");

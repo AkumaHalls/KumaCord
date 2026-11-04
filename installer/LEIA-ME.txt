@@ -1,16 +1,16 @@
-AkumaLabs — app de voz, tela e chat da comunidade
-====================================================
+KumaCord — app de voz, tela e chat da comunidade
+=================================================
 
 COMO INSTALAR
 -------------
-1. Execute o instalador (AkumaLabs-*-setup.exe). Não pede administrador:
+1. Execute o instalador (KumaCord-*-setup.exe). Não pede administrador:
    instala na sua pasta de usuário e cria o atalho no Menu Iniciar.
 2. Na primeira execução o Windows pode mostrar "O Windows protegeu o
    computador" (o app não é assinado digitalmente). Clique em
    "Mais informações" e depois em "Executar assim mesmo".
 
 ATUALIZAÇÕES AUTOMÁTICAS
---------------------------
+------------------------
 O app verifica a cada inicialização (e em Configurações → Sobre →
 "Verificar atualizações"). Quando há versão nova ele avisa em qualquer
 tela e atualiza sozinho: baixa o instalador, confere a assinatura
@@ -22,16 +22,26 @@ COMO ENTRAR
 - Digite seu nome (como os outros vão te ver).
 - Digite a SENHA DO SERVIDOR que a organização divulgou
   (ou cole um CONVITE vox1-... recebido, se te enviarem um).
-- Clique em Conectar. Pronto: voz, vídeo, chat e compartilhamento de tela.
+- Clique em Entrar no servidor. Pronto: voz, vídeo, chat e
+  compartilhamento de tela.
 
 Este app conecta apenas ao servidor oficial da AkumaLabs: não há campo
 de endereço nem opção de hospedar pelo app.
+
+A ABERTURA (VÍDEO E MÚSICA)
+---------------------------
+A cinemática da comunidade roda inteira ao fundo da tela de entrada, com
+a trilha em loop. Ela mora na pasta "intro" ao lado do KumaCord.exe
+(intro.pack e intro.mp3): se você apagar a pasta, o app abre normal, só
+sem a abertura. Ela para quando você entra no servidor.
 
 ONDE FICAM SEUS DADOS
 ---------------------
 Configurações e servidores salvos: %APPDATA%\AkumaLabs\
 Registros (logs): %LOCALAPPDATA%\AkumaLabs\logs
-(Desinstalar NÃO apaga essas pastas; apague na mão se quiser zerar tudo.)
+(A pasta mantém o nome antigo de propósito: é assim que suas
+configurações e senhas salvas sobrevivem à troca de nome.
+Desinstalar NÃO apaga essas pastas; apague na mão se quiser zerar tudo.)
 
 REQUISITOS
 ----------

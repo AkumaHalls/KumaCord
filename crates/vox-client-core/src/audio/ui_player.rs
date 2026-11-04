@@ -17,7 +17,9 @@ use super::mixer::Mixer;
 
 /// The stream stays open this long after the last alert finished (back-to-back alerts reuse it).
 pub const IDLE_CLOSE: Duration = Duration::from_secs(4);
-/// Never keep the stream for an alert that does not finish (a stalled device) longer than this.
+/// A device that stops consuming the mix (opens but never calls the mixer back) is closed after
+/// this long, even with sounds queued — a looping launcher theme keeps a *healthy* device busy
+/// forever, so the test is the mixer's sample counter, not the voices.
 const STALL_LIMIT: Duration = Duration::from_secs(10);
 /// After a failed open, alerts are dropped for this long instead of retrying on every event.
 const RETRY_AFTER: Duration = Duration::from_secs(30);
@@ -134,6 +136,10 @@ fn worker(shared: Arc<Shared>, device: Option<String>) {
     }
     debug!(ms = started.elapsed().as_millis() as u64, "alert sounds: output opened");
     let mut idle_since: Option<Instant> = None;
+    // The stall watchdog measures *consumption*, not activity: a looping clip (the launcher's
+    // theme) is active forever by design, but a healthy device keeps pulling samples from the
+    // mixer. Only a device that stops calling back leaves the counter frozen.
+    let mut stall_watch = shared.mixer.ui_mixed();
     let mut busy_since = Instant::now();
     loop {
         std::thread::sleep(POLL);
@@ -141,7 +147,12 @@ fn worker(shared: Arc<Shared>, device: Option<String>) {
         let now = Instant::now();
         if active {
             idle_since = None;
-            if now.duration_since(busy_since) > STALL_LIMIT {
+            let mixed = shared.mixer.ui_mixed();
+            if mixed != stall_watch {
+                // The device is consuming: the clock for the stall test starts over.
+                stall_watch = mixed;
+                busy_since = now;
+            } else if now.duration_since(busy_since) > STALL_LIMIT {
                 warn!("alert sounds: the output device is not consuming audio; closing it");
                 shared.mixer.clear_ui();
                 shared.state.lock().retry_at = Some(now + RETRY_AFTER);
