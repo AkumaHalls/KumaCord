@@ -63,7 +63,9 @@ Copy-Item $introPack (Join-Path $portable "intro")
 Copy-Item $introMp3 (Join-Path $portable "intro")
 $zip = Join-Path $dist "KumaCord-$Version-Windows.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
-Compress-Archive -Path (Join-Path $portable "*") -DestinationPath $zip -Force
+Push-Location $portable
+Compress-Archive -Path * -DestinationPath $zip -Force
+Pop-Location
 Remove-Item $portable -Recurse -Force
 Write-Host "zip portatil pronto: $zip"
 
@@ -75,10 +77,11 @@ Write-Host "sha256: $sha"
 $sig = "$setup.sig"
 if (-not $MinisignKey -and $env:AKUMALABS_SIGNING_KEY) {
     $MinisignKey = Join-Path $dist "release-signing.key"
-    ($env:AKUMALABS_SIGNING_KEY -replace "`r","") | Set-Content $MinisignKey -Encoding ascii -NoNewline
+    $key = $env:AKUMALABS_SIGNING_KEY -replace "`r", ""
+    [System.IO.File]::WriteAllText($MinisignKey, $key, [System.Text.Encoding]::ASCII)
 }
 if (-not $MinisignKey) { throw "sem chave de assinatura: -MinisignKey ou env AKUMALABS_SIGNING_KEY" }
-& minisign -S -s $MinisignKey -m $setup -x $sig -W
+"`n" | & minisign -S -s $MinisignKey -m $setup -x $sig
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $sig)) { throw "minisign falhou ao assinar" }
 # O .sig vem com CRLF (Windows); o decoder do app espera \n.
 $signature = ((Get-Content $sig -Raw) -replace "`r", "").TrimEnd()
