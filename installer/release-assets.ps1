@@ -77,8 +77,8 @@ Write-Host "sha256: $sha"
 $sig = "$setup.sig"
 if (-not $MinisignKey -and $env:AKUMALABS_SIGNING_KEY) {
     $MinisignKey = Join-Path $dist "release-signing.key"
-    $key = $env:AKUMALABS_SIGNING_KEY -replace "`r", ""
-    [System.IO.File]::WriteAllText($MinisignKey, $key, [System.Text.Encoding]::ASCII)
+    # A env carrega o conteudo do arquivo
+    ($env:AKUMALABS_SIGNING_KEY -split "`n" | ForEach-Object { $_.TrimEnd("`r") }) | Set-Content $MinisignKey -Encoding ascii
 }
 if (-not $MinisignKey) { throw "sem chave de assinatura: -MinisignKey ou env AKUMALABS_SIGNING_KEY" }
 "`n" | & minisign -S -s $MinisignKey -m $setup -x $sig
