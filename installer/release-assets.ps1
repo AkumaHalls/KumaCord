@@ -62,7 +62,8 @@ New-Item -ItemType Directory -Force -Path (Join-Path $portable "intro") | Out-Nu
 Copy-Item $introPack (Join-Path $portable "intro")
 Copy-Item $introMp3 (Join-Path $portable "intro")
 $zip = Join-Path $dist "KumaCord-$Version-Windows.zip"
-Compress-Archive -Path $portable -DestinationPath $zip -Force
+if (Test-Path $zip) { Remove-Item $zip -Force }
+Compress-Archive -Path (Join-Path $portable "*") -DestinationPath $zip -Force
 Remove-Item $portable -Recurse -Force
 Write-Host "zip portatil pronto: $zip"
 
@@ -74,11 +75,10 @@ Write-Host "sha256: $sha"
 $sig = "$setup.sig"
 if (-not $MinisignKey -and $env:AKUMALABS_SIGNING_KEY) {
     $MinisignKey = Join-Path $dist "release-signing.key"
-    # A env carrega o conteudo do arquivo (com comentario e sem senha).
-    $env:AKUMALABS_SIGNING_KEY -split "`n" | ForEach-Object { $_.TrimEnd("`r") } | Set-Content $MinisignKey -Encoding ascii
+    ($env:AKUMALABS_SIGNING_KEY -replace "`r","") | Set-Content $MinisignKey -Encoding ascii -NoNewline
 }
 if (-not $MinisignKey) { throw "sem chave de assinatura: -MinisignKey ou env AKUMALABS_SIGNING_KEY" }
-"`n" | & minisign -S -s $MinisignKey -m $setup -x $sig
+& minisign -S -s $MinisignKey -m $setup -x $sig -W
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $sig)) { throw "minisign falhou ao assinar" }
 # O .sig vem com CRLF (Windows); o decoder do app espera \n.
 $signature = ((Get-Content $sig -Raw) -replace "`r", "").TrimEnd()
