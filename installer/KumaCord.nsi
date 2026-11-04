@@ -72,7 +72,7 @@ LoadLanguageFile "${NSISDIR}\Contrib\Language files\PortugueseBR.nlf"
 Page directory
 Page instfiles
 UninstPage uninstConfirm
-UninstPage uninstfiles
+UninstPage instfiles
 
 Section "Instalar"
   ; Uma instancia aberta travaria a troca do exe: fecha antes (best effort).
