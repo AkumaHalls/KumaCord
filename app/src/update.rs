@@ -39,6 +39,9 @@ const MAX_DOWNLOAD: usize = 200 * 1024 * 1024;
 /// Carência padrão para atualizar (horas) quando o feed não diz; depois disso
 /// a atualização vira obrigatória.
 const DEFAULT_GRACE_HOURS: u64 = 72;
+/// De quantas em quantas horas o app verifica sozinho se há versão nova (o Discord
+/// faz isso sem você pedir: a seta aparece sozinha quando está pronta).
+const AUTO_CHECK_HOURS: u64 = 2;
 
 /// O brilho da notificação: o dourado virou o blurple do Discord (a marca do espelho
 /// v1.1.1) sobre o dark novo — contraste alto, sem inventar cor solta pelo app.
@@ -107,6 +110,9 @@ enum Phase {
     Downloading { manifest: Box<Manifest>, done: u64, total: Option<u64> },
     /// Baixou; conferindo hash e assinatura antes de instalar.
     Verifying,
+    /// Conferido e pronto: o instalador espera o clique (seta no canto), como o
+    /// "update ready" do Discord — o app segue rodando enquanto a decisão não vem.
+    Pending { manifest: Box<Manifest>, path: std::path::PathBuf },
     /// Instalador lançado: reiniciando.
     Restarting,
 }
@@ -118,6 +124,8 @@ enum Msg {
     Failed(String),
     Progress { done: u64, total: Option<u64> },
     Verifying,
+    /// Baixou e conferiu: o instalador está em `path`, esperando o clique.
+    Pending { manifest: Box<Manifest>, path: std::path::PathBuf },
     Restarting,
 }
 
@@ -139,6 +147,10 @@ pub struct UpdateUi {
     rx: Option<Receiver<Msg>>,
     /// Conta os passos de "verificando" para animar as reticências.
     blink: u32,
+    /// Quando a última verificação automática aconteceu (`None` = nunca, checa já).
+    last_auto_check: Option<std::time::Instant>,
+    /// A checagem em curso partiu do relógio (fundo) e não do clique do usuário.
+    update_install_was_requested: bool,
 }
 
 impl UpdateUi {
@@ -160,9 +172,37 @@ impl App {
     /// A versão nova que está esperando decisão, se houver.
     pub fn update_available_version(&self) -> Option<String> {
         match &self.update.phase {
-            Phase::Available(m) | Phase::Downloading { manifest: m, .. } => Some(m.version.clone()),
+            Phase::Available(m)
+            | Phase::Downloading { manifest: m, .. }
+            | Phase::Pending { manifest: m, .. } => Some(m.version.clone()),
             _ => None,
         }
+    }
+
+    /// Há uma atualização verificada esperando o clique (a seta no canto)?
+    pub fn update_pending(&self) -> bool {
+        matches!(self.update.phase, Phase::Pending { .. })
+    }
+
+    /// O caminho do instalador que está esperando o clique.
+    pub fn update_pending_path(&self) -> Option<std::path::PathBuf> {
+        match &self.update.phase {
+            Phase::Pending { path, .. } => Some(path.clone()),
+            _ => None,
+        }
+    }
+
+    /// O usuário clicou na seta: aplica a atualização já verificada.
+    pub fn update_apply_start(&mut self) {
+        let Some(path) = self.update_pending_path() else {
+            return;
+        };
+        self.update.phase = Phase::Restarting;
+        std::thread::spawn(move || {
+            if let Err(e) = launch_installer(&path) {
+                tracing::warn!(error = %e, "update: falha ao aplicar a atualização");
+            }
+        });
     }
 
     /// A última resposta de uma checagem manual (status do Sobre).
@@ -182,7 +222,9 @@ impl App {
     /// Hora (unix ms) em que a carência desta versão acaba, se há versão nova.
     fn update_deadline_ms(&self) -> Option<(String, u64)> {
         let manifest = match &self.update.phase {
-            Phase::Available(m) | Phase::Downloading { manifest: m, .. } => m,
+            Phase::Available(m)
+            | Phase::Downloading { manifest: m, .. }
+            | Phase::Pending { manifest: m, .. } => m,
             _ => return None,
         };
         let (version, seen) = self.update.first_seen.clone()?;
@@ -239,6 +281,18 @@ impl App {
     pub fn update_install_start(&mut self) {
         let Phase::Available(m) = &self.update.phase else { return };
         let manifest: Manifest = (**m).clone();
+        self.update.update_install_was_requested = true;
+        self.update.phase = Phase::Downloading { manifest: Box::new(manifest.clone()), done: 0, total: None };
+        let (tx, rx) = std::sync::mpsc::channel::<Msg>();
+        self.update.rx = Some(rx);
+        std::thread::spawn(move || install_thread(tx, manifest));
+    }
+
+    /// Download em segundo plano, sem clique do usuário (o comportamento do Discord).
+    fn update_auto_install(&mut self) {
+        let Phase::Available(m) = &self.update.phase else { return };
+        let manifest: Manifest = (**m).clone();
+        self.update.update_install_was_requested = false;
         self.update.phase = Phase::Downloading { manifest: Box::new(manifest.clone()), done: 0, total: None };
         let (tx, rx) = std::sync::mpsc::channel::<Msg>();
         self.update.rx = Some(rx);
@@ -276,6 +330,15 @@ impl App {
                         tracing::warn!("update: prazo vencido - atualização obrigatória");
                         self.update.window_open = true;
                     }
+                    // Comportamento do Discord: encontrou versão nova sozinho, já baixa e
+                    // verifica em segundo plano. A seta aparece quando estiver pronta.
+                    if !self.update.update_install_was_requested {
+                        tracing::info!(
+                            version = %self.update_available_version().unwrap_or_default(),
+                            "update: baixando em segundo plano"
+                        );
+                        self.update_auto_install();
+                    }
                 }
                 Msg::Failed(e) => {
                     self.update.manual_status = Some(format!("Não deu para verificar: {e}"));
@@ -288,6 +351,10 @@ impl App {
                     }
                 }
                 Msg::Verifying => self.update.phase = Phase::Verifying,
+                Msg::Pending { manifest, path } => {
+                    tracing::info!(version = %manifest.version, "update: pronto, esperando o clique");
+                    self.update.phase = Phase::Pending { manifest, path };
+                }
                 Msg::Restarting => {
                     self.update.phase = Phase::Restarting;
                 }
@@ -317,6 +384,72 @@ impl App {
     }
 
     /// O banner em qualquer tela (não é toast: não some sozinho).
+    /// Verificação automática em segundo plano (o comportamento do Discord): de tempo
+    /// em tempo o app olha o feed sozinho; se achar versão nova, baixa e verifica sem
+    /// perguntar, e a seta aparece quando estiver pronta. Chamada uma vez por quadro.
+    pub fn auto_update_tick(&mut self, ctx: &egui::Context) {
+        // Só quando está parado: nunca competir com uma ação do usuário.
+        if !matches!(
+            self.update.phase,
+            Phase::Idle | Phase::UpToDate | Phase::Failed
+        ) {
+            return;
+        }
+        let due = self
+            .update
+            .last_auto_check
+            .is_none_or(|t| t.elapsed().as_secs() >= AUTO_CHECK_HOURS * 3600);
+        if !due {
+            return;
+        }
+        self.update.last_auto_check = Some(std::time::Instant::now());
+        tracing::info!("update: verificação automática em segundo plano");
+        self.update_check_start(false);
+        // Se achar versão nova, baixa sozinho (o aviso continua aparecendo, mas o
+        // trabalho pesado já estará feito quando o usuário clicar).
+        ctx.request_repaint_after(std::time::Duration::from_secs(3600));
+    }
+
+    /// O aviso/banner de versão nova (o que existe hoje).
+    /// direito, visível só quando há uma atualização verificada esperando o clique.
+    /// Clicar instala na hora.
+    pub fn update_badge(&mut self, ctx: &egui::Context) {
+        if !self.update_pending() {
+            return;
+        }
+        let version = self.update_available_version().unwrap_or_default();
+        let r = egui::Area::new(egui::Id::new("update_badge"))
+            .order(egui::Order::Tooltip)
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
+            .interactable(true)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(theme::ABAJUR)
+                    .corner_radius(egui::CornerRadius::same(17))
+                    .inner_margin(egui::Margin::symmetric(11, 11))
+                    .shadow(egui::epaint::Shadow {
+                        offset: [0, 2],
+                        blur: 8,
+                        spread: 0,
+                        color: Color32::from_black_alpha(90),
+                    })
+                    .show(ui, |ui| {
+                        crate::ui_kit::icon_button(
+                            ui,
+                            ph::DOWNLOAD_SIMPLE,
+                            &format!("Atualização v{version} pronta — clique para instalar"),
+                            crate::ui_kit::IconState::Normal,
+                        )
+                        .clicked()
+                    })
+                    .inner
+            });
+        if r.response.clicked() {
+            self.update_apply_start();
+        }
+    }
+
+    /// O aviso/banner de versão nova (o que existe hoje).
     pub fn update_notice(&mut self, ctx: &egui::Context) {
         let (version, notes_len) = match &self.update.phase {
             Phase::Available(m) => (m.version.clone(), m.notes.as_deref().map(str::len).unwrap_or(0)),
@@ -715,26 +848,39 @@ fn install_thread(tx: Sender<Msg>, manifest: Manifest) {
         let pk = public_key().ok_or("a chave de assinatura embutida é inválida")?;
         let sig = minisign_verify::Signature::decode(&manifest.signature).map_err(|_| "a assinatura publicada é ilegível".to_string())?;
         pk.verify(&bytes, &sig, false).map_err(|_| "a assinatura do instalador não é válida (arquivo rejeitado)".to_string())?;
-        tracing::info!(path = %dest.display(), "update: instalador verificado; lançando");
-        // Lança direto: o instalador mata este app no primeiro passo (taskkill
-        // no .nsi) e segue com os arquivos livres - nada de trampolim com
-        // `timeout`, que morre sem console anexo.
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            std::process::Command::new(&dest)
-                .arg("/S")
-                .creation_flags(0x0800_0000)
-                .spawn()
-                .map_err(|e| format!("não deu para executar o instalador ({e})"))?;
-        }
-        let _ = tx.send(Msg::Restarting);
+        tracing::info!(path = %dest.display(), "update: instalador verificado; esperando o clique");
+        // Discord model: o instalador verificado espera o usuário (a seta no canto)
+        // em vez de disparar sozinho — o app segue rodando enquanto a decisão não vem.
+        let _ = tx.send(Msg::Pending {
+            manifest: Box::new(manifest),
+            path: dest,
+        });
         Ok(())
     })();
     if let Err(e) = result {
         tracing::warn!(error = %e, "update: instalação falhou");
         let _ = tx.send(Msg::Failed(e));
     }
+}
+
+/// Lança o instalador já verificado. O instalador mata este app no primeiro passo
+/// (taskkill no .nsi) e segue com os arquivos livres — nada de trampolim com
+/// `timeout`, que morre sem console anexo.
+fn launch_installer(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new(path)
+            .arg("/S")
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .map_err(|e| format!("não deu para executar o instalador ({e})"))?;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 /// A segunda linha do `.pub` (a base64); a primeira é só comentário.

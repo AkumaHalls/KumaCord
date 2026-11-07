@@ -290,6 +290,28 @@ pub struct VoiceUi {
     pub camera: CameraUi,
     /// Other participants (identities) whose camera is on.
     pub cameras: HashSet<String>,
+    /// Connection info popover, Discord-style (the "i" by the voice bar): open/closed, the
+    /// last measured round-trip to the server in ms, and when it was measured.
+    pub conn_open: bool,
+    pub conn_ping_ms: Option<u32>,
+    /// Histórico das últimas medições (para a "Ping médio" do Discord).
+    pub conn_ping_hist: Vec<u32>,
+    pub conn_ping_at: Option<std::time::Instant>,
+    pub conn_measuring: bool,
+    pub conn_rx: Option<std::sync::mpsc::Receiver<Option<u32>>>,
+    /// Altura do card no quadro anterior (mantém a borda de baixo colada na faixa de voz).
+    pub conn_card_h: f32,
+    /// As quatro barras do sinal, animando para a altura-alvo (0..1) a cada quadro.
+    pub conn_bars: [f32; 4],
+    pub conn_bars_at: Option<std::time::Instant>,
+    /// O gráfico que rola dentro do card: as últimas medições (ms).
+    pub conn_graph: Vec<u32>,
+    /// Perda de pacotes do nosso uplink de áudio (%), do LiveKit.
+    pub conn_loss_pct: f32,
+    pub conn_packets_sent: i64,
+    pub conn_packets_lost: i64,
+    /// Última vez que a voz mandou stats de rede.
+    pub conn_rtc_at: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -877,7 +899,7 @@ impl App {
             return false;
         }
         if !self.alert_policy.admit(std::time::Instant::now(), kind, who) {
-            tracing::debug!(alert = kind.name(), who, "alert sound skipped (debounce)");
+            tracing::debug!(alert = kind.name(), %who, "alert sound skipped (debounce)");
             return false;
         }
         self.send_alert(kind, false);
@@ -1506,10 +1528,11 @@ impl App {
                 }
                 // The page is the hub's truth for what it covers: deleted meanwhile = gone here
                 // too, and an id an older hub gave to another message shows that message.
-                let out = chat_extras::merge_page(&mut log.msgs, messages, before, complete, |m| m.id, same_message);
+                let before_i64 = before.map(|id| id.into_inner());
+                let out = chat_extras::merge_page(&mut log.msgs, messages, before_i64, complete, |m| m.id.into_inner(), same_message);
                 let target = chat_extras::Target::Channel(channel);
                 for m in out.deleted {
-                    self.forget_message(target, m.id, &m.attachments);
+                    self.forget_message(target, m.id.into_inner(), &m.attachments);
                 }
                 for m in out.replaced {
                     self.forget_images(&m.attachments);
@@ -1821,9 +1844,9 @@ impl App {
                 ServerEvent::PresenceChanged { user_id, presence, status } => self.on_presence_changed(user_id, presence, status),
                 // Reactions (v0.8): channels, and my DMs (the hub sends those only to the two people).
                 ServerEvent::ReactionChanged { channel_id, message_id, emoji, user_id, added } => {
-                    self.on_reaction(chat_extras::Target::Channel(channel_id), message_id, &emoji, user_id, added)
+                    self.on_reaction(chat_extras::Target::Channel(vox_proto::ChannelId(*channel_id)), message_id.into_inner(), &emoji, user_id, added)
                 }
-                ServerEvent::DmReactionChanged { dm_id, message_id, emoji, user_id, added } => self.on_reaction(chat_extras::Target::Dm(dm_id), message_id, &emoji, user_id, added),
+                ServerEvent::DmReactionChanged { dm_id, message_id, emoji, user_id, added } => self.on_reaction(chat_extras::Target::Dm(vox_proto::DmId(*dm_id)), message_id.into_inner(), &emoji, user_id, added),
                 // Direct messages and private calls (only ever about my own conversations).
                 ev @ (ServerEvent::DmMessageCreated { .. }
                 | ServerEvent::DmMessageDeleted { .. }
@@ -1915,6 +1938,18 @@ impl App {
                 self.notice = Some(format!("{ICON_CAMERA} Sua câmera desligou: {reason}"));
             }
             VoiceEvent::ServerMuted { muted } => self.roles.session_server_muted = muted,
+            VoiceEvent::RtcStats {
+                rtt_ms,
+                loss_pct,
+                sent,
+                lost,
+            } => {
+                self.voice.conn_loss_pct = loss_pct;
+                self.voice.conn_packets_sent = sent;
+                self.voice.conn_packets_lost = lost;
+                self.voice.conn_rtc_at = Some(std::time::Instant::now());
+                let _ = rtt_ms;
+            }
             VoiceEvent::EncoderSwitched { camera, label, backend } => {
                 tracing::warn!(camera, %label, %backend, "own video switched encoder (unstable video)");
                 if camera {
@@ -2130,6 +2165,10 @@ impl eframe::App for App {
         // Self-update (KumaDrive model): poll the threads, then the banner over
         // everything and the update window on top of it.
         self.update_poll(&ctx);
+        self.auto_update_tick(&ctx);
+        self.update_badge(&ctx);
+        self.conn_tick(&ctx);
+        self.conn_panel(&ctx);
         self.update_notice(&ctx);
         self.update_window(&ctx);
         self.golive_window(&ctx);
@@ -2271,12 +2310,14 @@ mod tests {
 
     #[test]
     fn messages_stay_sorted_and_unique() {
-        let mk = |id| Message {
+        use vox_proto::MessageId;
+
+        let mk = |id: MessageId| Message {
             id,
-            channel_id: 1,
-            author: User::new(1, "a"),
+            channel_id: ChannelId(1),
+            author: User::new(UserId(1), "a"),
             content: String::new(),
-            created_at_ms: id,
+            created_at_ms: id.into_inner(),
             attachments: vec![],
             mentions: vec![],
             mention_everyone: false,
@@ -2284,10 +2325,10 @@ mod tests {
             reactions: vec![],
         };
         let mut v = Vec::new();
-        for id in [5, 3, 9, 3, 5] {
+        for id in [MessageId(5), MessageId(3), MessageId(9), MessageId(3), MessageId(5)] {
             insert_message(&mut v, mk(id));
         }
-        assert_eq!(v.iter().map(|m| m.id).collect::<Vec<_>>(), vec![3, 5, 9]);
+        assert_eq!(v.iter().map(|m| m.id).collect::<Vec<_>>(), vec![MessageId(3), MessageId(5), MessageId(9)]);
     }
 
     #[test]

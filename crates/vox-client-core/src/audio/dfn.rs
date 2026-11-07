@@ -152,6 +152,11 @@ pub struct DfnShared {
     starts: AtomicU32,
     /// Test hook: extra time the worker spends per frame (µs), to simulate a slow machine.
     slowdown_us: AtomicU32,
+    /// Per-frame budget the worker must fit in to count as "not overloaded" (ns). Tests run on
+    /// shared CI machines, where volunteer CPU makes a healthy worker look slow; the functional
+    /// tests raise it so a busy neighbour cannot trigger the legitimate fallback and change the
+    /// mode they assert on.
+    budget_ns: AtomicU32,
 }
 
 impl DfnShared {
@@ -170,6 +175,7 @@ impl DfnShared {
             frame_ns: AtomicU32::new(0),
             starts: AtomicU32::new(0),
             slowdown_us: AtomicU32::new(0),
+            budget_ns: AtomicU32::new(BUDGET_NS),
         })
     }
 
@@ -220,6 +226,13 @@ impl DfnShared {
 
     pub fn set_slowdown(&self, extra: Duration) {
         self.slowdown_us.store(extra.as_micros().min(u32::MAX as u128) as u32, Ordering::Relaxed);
+    }
+
+    /// Per-frame budget the worker must fit in to count as "not overloaded" (see [`BUDGET_NS`]).
+    /// Tests raise it so a busy machine cannot trigger the legitimate fallback and change the
+    /// mode under assertion.
+    pub fn set_budget(&self, budget: Duration) {
+        self.budget_ns.store(budget.as_nanos().min(u32::MAX as u128) as u32, Ordering::Relaxed);
     }
 
     /// Wake the worker. Allocation-free (callback side).
@@ -434,7 +447,7 @@ impl DfnClient {
     pub(crate) fn overloaded(&self) -> bool {
         self.sh.failed.load(Ordering::Acquire)
             || self.overload
-            || (self.engaged && self.seq > GRACE_FRAMES && self.sh.frame_ns.load(Ordering::Relaxed) > BUDGET_NS)
+            || (self.engaged && self.seq > GRACE_FRAMES && self.sh.frame_ns.load(Ordering::Relaxed) > self.sh.budget_ns.load(Ordering::Relaxed))
     }
 
     /// Feed one frame (i16-range samples) and get the denoised frame from `depth` frames ago

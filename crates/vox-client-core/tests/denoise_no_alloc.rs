@@ -101,6 +101,9 @@ fn ai_max_does_not_allocate_in_the_audio_path() {
     // loading behind RNNoise, warm-up, fade-in, steady state, mute flush, switches to the other
     // two levels and back.
     d.set_offline(true);
+    // Máquina compartilhada (suíte em paralelo): o orçamento padrão de 5 ms/frame faz a
+    // cadeia cair legitimamente pra IA leve e o DFN não alcança os 250 quadros.
+    d.dfn().set_budget(std::time::Duration::from_millis(400));
     for k in 20..500 {
         fill(&mut chunk, k, &mut x);
         match k {

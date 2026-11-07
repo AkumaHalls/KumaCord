@@ -83,7 +83,7 @@ pub struct VoiceConfig {
     pub noise: Option<Arc<NoiseControl>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VoiceEvent {
     Connected { room: String, identity: String, participants: Vec<String> },
     ParticipantJoined { identity: String, name: String },
@@ -113,6 +113,14 @@ pub enum VoiceEvent {
     /// The voice server stopped (or resumed) accepting our microphone: a moderator server-muted
     /// us (item 12). While muted the mic is not published at all; it comes back by itself.
     ServerMuted { muted: bool },
+    /// Rede da chamada (a cada 2 s): perda de pacotes do nosso uplink de áudio, para o card
+    /// de conexão do Discord. `rtt_ms` é `None` até haver medição própria.
+    RtcStats {
+        rtt_ms: Option<u32>,
+        loss_pct: f32,
+        sent: i64,
+        lost: i64,
+    },
     /// Our Go Live (`camera == false`) or camera restarted on another encoder because its video
     /// was unstable: keyframe requests without pause on a clean uplink that a viewer confirmed
     /// (it decoded badly while its own network lost nothing), or WebRTC dropping our frames (v0.7).
@@ -590,6 +598,57 @@ impl VoiceSession {
             viewer_tx,
             server_mute: ServerMute::default(),
         });
+        // Stats de rede a cada 2 s: o card de conexão mostra o ping real e a perda de
+        // pacotes do nosso uplink de áudio, em vez de números fixos.
+        {
+            let stats_inner = inner.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(2));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tick.tick().await;
+                    let Ok(st) = tokio::time::timeout(
+                        STATS_TIMEOUT,
+                        stats_inner.room.get_stats(),
+                    )
+                    .await
+                    else {
+                        continue;
+                    };
+                    let Some(st) = st.ok() else { continue };
+                    let mut sent: u64 = 0;
+                    let mut lost: i64 = 0;
+                    let mut fraction: f64 = 0.0;
+                    for s in st.publisher_stats.iter().chain(st.subscriber_stats.iter()) {
+                        match s {
+                            livekit::webrtc::stats::RtcStats::OutboundRtp(o)
+                                if o.stream.kind == "audio" =>
+                            {
+                                sent += o.sent.packets_sent;
+                            }
+                            livekit::webrtc::stats::RtcStats::RemoteInboundRtp(r)
+                                if r.stream.kind == "audio" =>
+                            {
+                                lost += r.received.packets_lost;
+                                fraction = fraction.max(r.remote_inbound.fraction_lost);
+                            }
+                            _ => {}
+                        }
+                    }
+                    let loss_pct = if sent > 0 {
+                        (lost as f64 / (sent as f64 + lost as f64)) * 100.0
+                    } else {
+                        fraction.min(1.0) * 100.0
+                    };
+                    let _ = stats_inner.events.send(VoiceEvent::RtcStats {
+                        rtt_ms: None,
+                        loss_pct: loss_pct as f32,
+                        sent: sent as i64,
+                        lost,
+                    });
+                }
+            });
+        }
         // From here on, dropping the in-flight join (the user cancelled) closes the room instead of
         // leaving a ghost participant behind.
         let mut guard = CloseOnDrop(Some(inner.clone()));

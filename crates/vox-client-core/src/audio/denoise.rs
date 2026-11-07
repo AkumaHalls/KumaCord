@@ -661,6 +661,7 @@ mod tests {
         let ctl = Arc::new(NoiseControl::new(NoiseLevel::AiLight));
         let mut d = Denoiser::new(ctl.clone());
         d.set_offline(true);
+        d.dfn().set_budget(std::time::Duration::from_millis(400));
         let mut sig = noisy_voice(200);
         let mut chunks = sig.chunks_mut(FRAME);
         for c in chunks.by_ref().take(20) {
@@ -704,6 +705,7 @@ mod tests {
         let ctl = Arc::new(NoiseControl::new(NoiseLevel::Standard));
         let mut d = Denoiser::new(ctl.clone());
         d.set_offline(true);
+        d.dfn().set_budget(std::time::Duration::from_millis(400));
         let sig = voice(FRAME * 140, 0);
         let mut out = sig.clone();
         let mut modes = Vec::new();
@@ -739,6 +741,7 @@ mod tests {
         let ctl = Arc::new(NoiseControl::new(NoiseLevel::AiMax));
         let mut d = Denoiser::new(ctl);
         d.set_offline(true);
+        d.dfn().set_budget(std::time::Duration::from_millis(400));
         let mut loud = noisy_voice(60);
         for c in loud.chunks_mut(FRAME) {
             d.process(c);
@@ -761,6 +764,7 @@ mod tests {
         let run = |size: usize| {
             let mut d = Denoiser::new(Arc::new(NoiseControl::new(NoiseLevel::AiMax)));
             d.set_offline(true);
+            d.dfn().set_budget(std::time::Duration::from_millis(400));
             let mut out = sig.clone();
             for c in out.chunks_mut(size) {
                 d.process(c);

@@ -12,6 +12,7 @@ mod emoji;
 mod brand;
 mod call;
 mod camera_cfg;
+mod conn_info;
 mod chat_images;
 mod clipboard;
 mod context_menu;

@@ -388,6 +388,12 @@ impl App {
             ui.spacing_mut().item_spacing.x = 6.0;
             let (dot, _) = ui.allocate_exact_size(Vec2::splat(9.0), Sense::hover());
             ui.painter().circle_filled(dot.center(), 4.0, color);
+            // The connection signal, Discord-style: the bars drop as the round-trip worsens
+            // and clicking them opens the numbers.
+            if self.conn_signal(ui) {
+                self.voice.conn_open = true;
+                self.voice.conn_ping_at = None;
+            }
             if self.voice.warning.is_some() {
                 ui.label(RichText::new(ph::WARNING).color(theme::AVISO));
             }

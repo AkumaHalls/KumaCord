@@ -797,6 +797,9 @@ impl App {
             VoiceEvent::ServerMuted { muted } => {
                 println!("[voice] {}", if muted { "server-muted by a moderator" } else { "server mute lifted" })
             }
+            VoiceEvent::RtcStats { loss_pct, sent, .. } => {
+                println!("[rtc] perda {loss_pct:.1}% dos pacotes enviados ({sent} enviados)")
+            }
             VoiceEvent::WatchStarted { identity } => println!("[golive] watching {identity}"),
             VoiceEvent::CameraStarted { identity } => println!("[camera] {identity} turned the camera on"),
             VoiceEvent::CameraStopped { identity } => println!("[camera] {identity} turned the camera off"),

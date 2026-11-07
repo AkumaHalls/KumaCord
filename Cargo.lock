@@ -5989,7 +5989,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vox-capture"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
@@ -6014,7 +6014,7 @@ dependencies = [
 
 [[package]]
 name = "vox-client-core"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -6049,7 +6049,7 @@ dependencies = [
 
 [[package]]
 name = "vox-log"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "tracing",
  "tracing-appender",
@@ -6058,15 +6058,16 @@ dependencies = [
 
 [[package]]
 name = "vox-proto"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
+ "rusqlite",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "voxhub-app"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "eframe",
@@ -6092,7 +6093,7 @@ dependencies = [
 
 [[package]]
 name = "voxhub-server"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -6125,6 +6126,7 @@ dependencies = [
  "url",
  "vox-log",
  "vox-proto",
+ "whoami",
  "windows",
 ]
 
@@ -6161,6 +6163,12 @@ checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
 dependencies = [
  "wit-bindgen",
 ]
+
+[[package]]
+name = "wasite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8dad83b4f25e74f184f64c43b150b91efe7647395b42289f38e50566d82855b"
 
 [[package]]
 name = "wasm-bindgen"
@@ -6422,6 +6430,17 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
+name = "whoami"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d4a4db5077702ca3015d3d02d74974948aba2ad9e12ab7df718ee64ccd7e97d"
+dependencies = [
+ "libredox",
+ "wasite",
+ "web-sys",
+]
 
 [[package]]
 name = "winapi"

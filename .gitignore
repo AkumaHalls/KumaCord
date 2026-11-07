@@ -20,3 +20,13 @@
 *.pfx
 *.p12
 brag-output/
+
+# Lixo de sessão de trabalho (auditorias, agentes, rascunhos): nunca sobe no push
+scratch/
+graphify-out/
+findings.json
+coverage-ledger.json
+architecture.md
+ARCHITECTURE_ANALYSIS.md
+IMPLEMENTATION_PLAN.md
+erros-teste.txt

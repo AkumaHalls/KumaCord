@@ -494,10 +494,19 @@ impl App {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
                 ui.label(RichText::new(state).font(theme::semibold(13.0)).color(color));
-                let r = ui.add(egui::Label::new(RichText::new(&name).font(theme::body(12.0)).color(theme::NEVOA)).truncate().sense(Sense::click()));
-                if r.on_hover_text("Abrir a sala").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    self.show_call();
-                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    // O sinal da conexão, como no Discord: as barras caem conforme o ping
+                    // piora; clicar abre os números.
+                    if self.conn_signal(ui) {
+                        self.voice.conn_open = true;
+                        self.voice.conn_ping_at = None;
+                    }
+                    let r = ui.add(egui::Label::new(RichText::new(&name).font(theme::body(12.0)).color(theme::NEVOA)).truncate().sense(Sense::click()));
+                    if r.on_hover_text("Abrir a sala").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        self.show_call();
+                    }
+                });
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (hover, dm) = if self.in_dm_call() { ("Desligar", true) } else { ("Sair da voz", false) };

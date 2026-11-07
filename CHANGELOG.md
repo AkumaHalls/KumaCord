@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.2.1] — 2026-11-06
+
+### Corrigido
+
+- **`InviteId` não lia coluna SQLite `INTEGER`**: todo upload de convite falhava com
+  `InvalidColumnType`. A coluna é `INTEGER PRIMARY KEY` (rowid) enquanto o id viaja como
+  sua string decimal, então o `FromSql` passou a aceitar TEXT **ou** INTEGER.
+- **`SoundId` com o mesmo problema**: o soundboard inteiro estava quebrado — upload de
+  som falhava pelo mesmo motivo. Mesma correção no `FromSql`.
+
+### Adicionado
+
+- **Atualização automática, como no Discord**: o app verifica o feed sozinho a cada 2 h
+  e, quando acha versão nova, baixa e verifica em segundo plano. A seta de atualização
+  aparece no canto superior direito só quando o instalador já está conferido (hash +
+  assinatura minisign); clicar instala. Antes a checagem só acontecia no boot e no
+  clique manual, e a instalação disparava sozinha sem esperar o usuário.
+- **Painel de conexão de voz**: clique no sinal ao lado de "Voz conectada" para ver a
+  região, ping médio, último ping, taxa de perda de pacotes do uplink (medida a cada 2 s
+  pelo LiveKit) e um gráfico de latência que rola.
+
+### Corrigido (testes)
+
+- Os quatro testes `ai_max_*` e `switching_across_all_three_levels_is_glitch_free`
+  falhavam só em execução paralela: mediam o orçamento de CPU do worker, e a disputa
+  por CPU com os outros testes fazia a cadeia cair legitimamente para "IA leve". Os
+  testes agora usam `DfnShared::set_budget`, um hook que espelha o `set_slowdown` já
+  existente, então julgam funcionalidade em vez de velocidade da máquina.
+
 ## [1.2.0] — 2026-11-04
 
 ### Mudado
