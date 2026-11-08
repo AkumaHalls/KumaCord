@@ -41,7 +41,13 @@ const MAX_DOWNLOAD: usize = 200 * 1024 * 1024;
 const DEFAULT_GRACE_HOURS: u64 = 72;
 /// De quantas em quantas horas o app verifica sozinho se há versão nova (o Discord
 /// faz isso sem você pedir: a seta aparece sozinha quando está pronta).
-const AUTO_CHECK_HOURS: u64 = 2;
+/// De quanto em quanto tempo o app olha o feed sozinho. O operador pediu 30 minutos:
+/// quando uma versão sai com defeito, ela precisa circular rápido — meia hora basta
+/// para quem está com o app aberto o dia todo, e custa uma requisição pequena.
+const AUTO_CHECK_MINUTES: u64 = 30;
+/// Por quantos segundos a seta do canto chama atenção (balanço + anel pulsando).
+/// Depois disso ela fica parada: um badge não deve custar repaint a sessão inteira.
+const BADGE_CALL_SECS: f64 = 25.0;
 
 /// O brilho da notificação: o dourado virou o blurple do Discord (a marca do espelho
 /// v1.1.1) sobre o dark novo — contraste alto, sem inventar cor solta pelo app.
@@ -151,6 +157,10 @@ pub struct UpdateUi {
     last_auto_check: Option<std::time::Instant>,
     /// A checagem em curso partiu do relógio (fundo) e não do clique do usuário.
     update_install_was_requested: bool,
+    /// Quando a seta do canto apareceu (tempo do egui, segundos): a animação de
+    /// atenção roda por [`BADGE_CALL_SECS`] a partir daqui e depois silencia —
+    /// um badge não pode custar repaint a sessão inteira.
+    badge_seen: Option<f64>,
 }
 
 impl UpdateUi {
@@ -210,10 +220,23 @@ impl App {
         self.update.manual_status.clone()
     }
 
-    /// O Sobre (ou o banner) pediu para ver a versão nova.
+    /// O Sobre (ou o banner) pediu para ver a versão nova. Com o instalador já
+    /// conferido esperando o clique, o pedido é "instalar" — o mesmo da seta.
+    /// Antes disso (só detectou a versão), abre a janela de informações.
     pub fn update_open_window(&mut self) {
-        if matches!(self.update.phase, Phase::Available(_)) {
-            self.update.window_open = true;
+        match &self.update.phase {
+            Phase::Available(_) => self.update.window_open = true,
+            Phase::Pending { .. } => self.update_apply_start(),
+            _ => {}
+        }
+    }
+
+    /// Os bytes já baixados da atualização em segundo plano (`done`, `total` quando o
+    /// servidor diz), para o Sobre mostrar o que está acontecendo em vez de ficar mudo.
+    pub fn update_progress_bytes(&self) -> Option<(u64, Option<u64>)> {
+        match &self.update.phase {
+            Phase::Downloading { done, total, .. } => Some((*done, *total)),
+            _ => None,
         }
     }
 
@@ -398,7 +421,7 @@ impl App {
         let due = self
             .update
             .last_auto_check
-            .is_none_or(|t| t.elapsed().as_secs() >= AUTO_CHECK_HOURS * 3600);
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(AUTO_CHECK_MINUTES * 60));
         if !due {
             return;
         }
@@ -407,20 +430,30 @@ impl App {
         self.update_check_start(false);
         // Se achar versão nova, baixa sozinho (o aviso continua aparecendo, mas o
         // trabalho pesado já estará feito quando o usuário clicar).
-        ctx.request_repaint_after(std::time::Duration::from_secs(3600));
+        ctx.request_repaint_after(Duration::from_secs(AUTO_CHECK_MINUTES * 60));
     }
 
-    /// O aviso/banner de versão nova (o que existe hoje).
-    /// direito, visível só quando há uma atualização verificada esperando o clique.
-    /// Clicar instala na hora.
+    /// A seta no canto superior direito, como o "update ready" do Discord: aparece só
+    /// quando há um instalador já conferido (hash + assinatura) esperando o clique, e
+    /// Instala na hora. Nos primeiros segundos ela balanca e pulsa um anel, para o olho
+    /// achar; depois fica quieta (nada de repaint a sessão inteira por causa dela).
     pub fn update_badge(&mut self, ctx: &egui::Context) {
         if !self.update_pending() {
+            self.update.badge_seen = None;
             return;
         }
         let version = self.update_available_version().unwrap_or_default();
+        let now = ctx.input(|i| i.time);
+        let first = *self.update.badge_seen.get_or_insert(now);
+        let age = (now - first).max(0.0);
+        let calling = age < BADGE_CALL_SECS;
+        // Um balanço curto e lento (cerca de 1,2 s por ciclo), de no máximo 3 px.
+        let bounce: f32 = if calling { (age * 2.6).sin() as f32 * 3.0 } else { 0.0 };
+        // Foreground, e não Tooltip: é a ordem que o resto do app usa para o que
+        // precisa aparecer por cima (o painel de conexão, os avisos, as imagens).
         let r = egui::Area::new(egui::Id::new("update_badge"))
-            .order(egui::Order::Tooltip)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0 - bounce))
             .interactable(true)
             .show(ctx, |ui| {
                 egui::Frame::new()
@@ -444,6 +477,19 @@ impl App {
                     })
                     .inner
             });
+        // O anel que pulsa em volta: some e volta, chamando atenção sem piscar texto.
+        if calling {
+            let pulse = (((age * 2.2).sin() * 0.5 + 0.5).powf(0.6)) as f32;
+            let grow = 3.0 + 7.0 * pulse;
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("update_badge_ring")));
+            painter.rect_stroke(
+                r.response.rect.expand(grow),
+                egui::CornerRadius::same((19.0 + grow).round() as u8),
+                egui::Stroke::new(2.0, theme::GIZ.linear_multiply(0.15 + 0.55 * pulse)),
+                egui::StrokeKind::Outside,
+            );
+            ctx.request_repaint_after(Duration::from_millis(60));
+        }
         if r.response.clicked() {
             self.update_apply_start();
         }
@@ -523,6 +569,13 @@ impl App {
         };
         let verifying = matches!(self.update.phase, Phase::Verifying);
         let restarting = matches!(self.update.phase, Phase::Restarting);
+        // Baixou e conferiu: o instalador espera o clique. A janela tem de oferecer o
+        // botão também aqui — sem esta fase, quem chegou pelo download automático via
+        // "Novidades" ficava com uma janela sem ação nenhuma.
+        let pending: Option<String> = match &self.update.phase {
+            Phase::Pending { manifest, .. } => Some(manifest.version.clone()),
+            _ => None,
+        };
         let blink = self.update.blink;
         let mut open = true;
         let accent = if mandatory { WARN } else { GOLD };
@@ -635,6 +688,17 @@ impl App {
                 } else if restarting {
                     ui.label(egui::RichText::new("Reiniciando para atualizar…").font(theme::semibold(13.0)).color(theme::GIZ));
                     self.update_restarting_note(ui);
+                } else if let Some(pronto) = &pending {
+                    // Já baixou e conferiu: a janela oferece o clique em vez de ficar muda.
+                    ui.label(
+                        egui::RichText::new(format!("A v{pronto} já está baixada e conferida neste computador."))
+                            .font(theme::body(12.5))
+                            .color(theme::NEVOA),
+                    );
+                    ui.add_space(8.0);
+                    if ui_kit::button_sized(ui, Kind::Primary, ui_kit::Size::Large, Some(ph::DOWNLOAD_SIMPLE), "Instalar agora").clicked() {
+                        self.update_apply_start();
+                    }
                 }
             });
         // Só fecha de verdade quando não está ocupada (e nunca quando é obrigatória).

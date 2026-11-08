@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.3.1] — 2026-11-08
+
+### Corrigido (atualização automática)
+
+A 1.3.0 publicou uma atualização que **não dava para instalar**: a setinha do canto
+não aparecia e o botão do "Sobre" não fazia nada. Quem baixou ficou preso na versão
+antiga sem nenhum aviso. Havia quatro caminhos para instalar e os quatro quebravam na
+mesma fase:
+
+- **A seta não aparecia**: o aviso usava `Order::Tooltip`, a única área do app com essa
+  ordem — agora é `Order::Foreground`, como o painel de conexão, os avisos e as imagens.
+- **O botão "Ver a nova versão" do Sobre não fazia nada**: ele só agia quando a versão
+  tinha sido *detectada*. Como o app baixa sozinho em segundo plano, a fase já tinha
+  mudado e o clique caía no vazio. Agora, com o instalador pronto, o botão instala.
+- **A janela de atualização não tinha ação quando o instalador já estava pronto**:
+  mostrava o título e as notas, mas nenhum botão. Agora oferece "Instalar agora".
+- **Nada mostrava o download**: o instalador tem 72 MB e baixar leva minutos, mas o
+  "Sobre" ficava calado sobre isso — parecia que o botão tinha morrido. Agora há barra
+  de progresso com MB e porcentagem.
+
+### Melhorado
+
+- **A setinha chama atenção**: por 25 segundos ela balança devagar e pulsa um anel em
+  volta, para o olho achar; depois fica parada e não gasta mais CPU.
+- **A verificação automática passou de 2 h para 30 min**: quando uma versão sai com
+  defeito, ela precisa circular rápido.
+
 ## [1.3.0] — 2026-11-08
 
 ### Adicionado

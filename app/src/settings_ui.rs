@@ -616,11 +616,31 @@ impl App {
                 self.update_check_start(true);
             }
             if self.update_available_version().is_some() {
-                if ui_kit::button(ui, Kind::Primary, Some(ph::SPARKLE), "Ver a nova versão").clicked() {
+                // Pronto para instalar (o instalador já baixou e conferiu) é outro
+                // convite: o botão instala, em vez de abrir uma janela que não faz nada.
+                let (label, icon) = if self.update_pending() {
+                    ("Instalar agora", ph::DOWNLOAD_SIMPLE)
+                } else {
+                    ("Ver a nova versão", ph::SPARKLE)
+                };
+                if ui_kit::button(ui, Kind::Primary, Some(icon), label).clicked() {
                     self.update_open_window();
                 }
             }
         });
+        // O que está acontecendo de fato: baixar 72 MB em segunda plano levava minutos
+        // e o Sobre ficava calado sobre isso — parecia que o botão tinha morrido.
+        if let Some((done, total)) = self.update_progress_bytes() {
+            let pct = total.map(|t| if t > 0 { done as f64 / t as f64 } else { 0.0 }).unwrap_or(0.0);
+            let text = match total {
+                Some(t) => format!("Baixando a atualização… {:.0}% ({:.1} de {:.1} MB)", pct * 100.0, done as f64 / 1e6, t as f64 / 1e6),
+                None => format!("Baixando a atualização… {:.1} MB", done as f64 / 1e6),
+            };
+            let bar = egui::ProgressBar::new(pct as f32).text(text);
+            ui.add(bar);
+        } else if busy {
+            ui.label(RichText::new("Verificando…").size(theme::size::SMALL + 0.5).color(theme::NEVOA));
+        }
         if let Some(status) = self.update_status() {
             ui.label(RichText::new(status).size(theme::size::SMALL + 0.5).color(theme::NEVOA));
         }
