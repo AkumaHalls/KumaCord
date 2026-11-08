@@ -514,6 +514,11 @@ pub struct App {
     pub intro: crate::launcher::Intro,
     /// v1.1.9: the server name whose saved password is missing (the field appears with a hint).
     pub password_hint: Option<String>,
+    /// v1.2: the sidebar row being dragged (`None`: nobody is dragging). Only channels and
+    /// categories are grabbable, and only for those who may reorder them.
+    pub sidebar_drag: Option<sidebar::SidebarDrag>,
+    /// v1.2: where the dragged row would land, while it is dragged (the insertion marker).
+    pub sidebar_drop: Option<sidebar::SidebarDrop>,
     /// The launcher's music was asked of the backend and has not been stopped yet.
     intro_music_started: bool,
 }
@@ -581,6 +586,8 @@ impl App {
             unread: HashMap::new(),
             channel_epochs: HashMap::new(),
             sidebar_rows: Vec::new(),
+            sidebar_drag: None,
+            sidebar_drop: None,
             previews: PreviewStore::default(),
             avatars: Default::default(),
             badges: Default::default(),

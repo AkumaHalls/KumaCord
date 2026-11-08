@@ -925,6 +925,27 @@ pub async fn delete_category(State(s): State<AppState>, me: Authed, Path(id): Pa
     Ok(ok())
 }
 
+/// v1.2: `POST /api/admin/categories/reorder` — the sidebar's categories in their new
+/// order. Mirror of [`reorder_channels`]: every category id exactly once, then one
+/// transaction rewrites their positions.
+pub async fn reorder_categories(State(s): State<AppState>, me: Authed, body: Result<Json<CategoryReorderRequest>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    can_manage_channels(&me)?;
+    let mut have: Vec<ChannelId> = s.categories().iter().map(|c| c.id).collect();
+    let mut want = req.ids.clone();
+    have.sort_unstable();
+    want.sort_unstable();
+    if have != want {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "ids must list every category exactly once"));
+    }
+    let ids: Vec<i64> = req.ids.iter().map(|c| c.into_inner()).collect();
+    s.db.call(move |c| db::reorder_categories(c, &ids)).await?;
+    let list = s.db.call(|c| db::list_categories(c)).await?;
+    s.set_categories(list);
+    audit(&s, Some(me.user.id), AUDIT_CHANNEL_REORDER, None, String::new()).await;
+    Ok(ok())
+}
+
 /// `POST /api/admin/channels/{id}/delete`: its messages go too; people in a voice channel are
 /// taken out of it.
 pub async fn delete_channel(State(s): State<AppState>, me: Authed, Path(id): Path<ChannelId>) -> ApiResult<OkResponse> {

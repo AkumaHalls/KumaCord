@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.3.0] — 2026-11-08
+
+### Adicionado
+
+- **Arrastar canais e categorias na barra lateral**, como no Discord: pegue um canal (de texto
+  ou de voz) e solte onde quiser — dentro do mesmo grupo para reordenar, ou em outro grupo
+  (ou fora de todos) para mudar de lugar. Uma linha fina mostra onde vai cair, e o nome do
+  canal vem junto com o ponteiro. Categorias também se arrastam, pelo cabeçalho, para trocar
+  a ordem dos grupos. Quem não pode reordenar (qualquer membro) não pega nada: as linhas
+  continuam normais.
+  - Servidor: `POST /api/admin/categories/reorder` (nova; exige a lista de todas as
+    categorias, cada id uma vez, em uma transação). O reordenamento de canais usa o
+    `/api/admin/channels/reorder` que já existia.
+  - Atenção: **o arraste de categorias precisa do hub atualizado**. Com um hub antigo o app
+    avisa que não deu; o arraste de canais funciona com qualquer hub desde a v1.
+
 ## [1.2.2] — 2026-11-08
 
 ### Corrigido

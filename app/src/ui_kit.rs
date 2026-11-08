@@ -179,7 +179,17 @@ fn count_width(ui: &Ui, unread: u32) -> f32 {
 /// A clickable sidebar row: icon, the name (truncated), and the counter with the "@" right-aligned
 /// in their own space (`notify::row_layout`, so a badge never covers the name).
 pub fn sidebar_row(ui: &mut Ui, row: Row<'_>) -> (Response, DrawnRow) {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+    sidebar_row_sense(ui, row, Sense::click())
+}
+
+/// The same row, but it can also be dragged: the sidebar's reorder by drag & drop (v1.2)
+/// grabs channels and categories with it.
+pub fn sidebar_row_drag(ui: &mut Ui, row: Row<'_>) -> (Response, DrawnRow) {
+    sidebar_row_sense(ui, row, Sense::click_and_drag())
+}
+
+fn sidebar_row_sense(ui: &mut Ui, row: Row<'_>, sense: Sense) -> (Response, DrawnRow) {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), sense);
     let count_w = (row.count > 0).then(|| count_width(ui, row.count));
     let icon_x = rect.left() + space::M;
     let layout = notify::row_layout(rect, icon_x + 18.0 + space::M, count_w, row.count > 0 && row.mentions > 0, 0.0);

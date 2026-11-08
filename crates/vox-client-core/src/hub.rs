@@ -13,7 +13,7 @@ use tokio_tungstenite::tungstenite::{self, Message};
 use tracing::{debug, info, warn};
 use url::Url;
 use vox_proto::{
-    ApiError, AuditEntry, AvatarResponse, Channel, ChannelAccessRequest, ChannelCategory, ChannelCreateRequest, ChannelId, ChannelKind, ChannelRenameRequest, ChannelReorderRequest, ClaimOwnerRequest, SetChannelCategoryRequest,
+    ApiError, AuditEntry, AvatarResponse, Channel, ChannelAccessRequest, ChannelCategory, ChannelCreateRequest, ChannelId, ChannelKind, ChannelRenameRequest, ChannelReorderRequest, CategoryReorderRequest, ClaimOwnerRequest, SetChannelCategoryRequest,
     ClaimOwnerResponse, ClientEvent, HealthResponse, LinkPreview, LoginRequest, LoginResponse, MemberInfo, Message as ChatMessage, MessageId, ModMoveRequest, ModMuteRequest,
     OkResponse, PrivateAccess, BanInfo, BanRequest, CustomRole, CustomRoleRequest, ResetPasswordResponse, Role, ServerEvent, SetBadgesRequest, SetPasswordRequest, SetPasswordResponse, SetRoleRequest, SetUserCustomRolesRequest, TransferOwnerRequest, UserId,
     VoiceJoinResponse, PROTOCOL_VERSION,
@@ -318,6 +318,12 @@ impl HubClient {
     pub async fn delete_category(&self, id: ChannelId) -> Result<()> {
         let resp = self.auth(self.http.delete(self.url(&format!("api/admin/categories/{id}"))?))?.send().await.context("delete category request")?;
         Self::parse("delete category", resp).await.map(|_: OkResponse| ())
+    }
+
+    /// v1.2: `POST /api/admin/categories/reorder` — the sidebar's categories in their new
+    /// order (every category id exactly once).
+    pub async fn reorder_categories(&self, ids: Vec<ChannelId>) -> Result<()> {
+        self.post::<_, OkResponse>("reorder categories", "api/admin/categories/reorder", &CategoryReorderRequest { ids }).await.map(|_| ())
     }
 
     /// `GET /api/channels`

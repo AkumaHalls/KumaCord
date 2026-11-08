@@ -925,6 +925,17 @@ pub fn delete_category(conn: &Connection, id: i64) -> rusqlite::Result<bool> {
     Ok(conn.execute("DELETE FROM categories WHERE id = ?1", [id])? > 0)
 }
 
+/// v1.2: `ids` in their new order (positions 0, 1, 2...). Same shape as
+/// [`reorder_channels`]: one transaction, every id rewritten, so the sidebar's order is
+/// exactly the list the drag dropped.
+pub fn reorder_categories(conn: &mut Connection, ids: &[i64]) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    for (pos, id) in ids.iter().enumerate() {
+        tx.execute("UPDATE categories SET position = ? WHERE id = ?", params![pos as i64, id])?;
+    }
+    tx.commit()
+}
+
 /// v1.1: put a channel in a category (`None`: standalone again). `false`: no such channel.
 /// The caller checked that `category` exists when `Some`.
 pub fn set_channel_category(conn: &Connection, channel: ChannelId, category: Option<i64>) -> rusqlite::Result<bool> {

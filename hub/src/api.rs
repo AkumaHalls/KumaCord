@@ -59,6 +59,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/channels/{id}/category", post(admin::set_channel_category))
         // channel categories (v1.1)
         .route("/api/admin/categories", get(admin::list_categories).post(admin::create_category))
+        // v1.2: reorder before `/{id}`, or axum would try to parse "reorder" as the id.
+        .route("/api/admin/categories/reorder", post(admin::reorder_categories))
         .route("/api/admin/categories/{id}", post(admin::update_category).delete(admin::delete_category))
         .route("/api/admin/channels/{id}/rename", post(admin::rename_channel))
         .route("/api/admin/channels/{id}/delete", post(admin::delete_channel))

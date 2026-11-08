@@ -190,6 +190,8 @@ pub enum AdminCmd {
     RenameChannel { id: ChannelId, name: String },
     DeleteChannel { id: ChannelId },
     ReorderChannels { ids: Vec<ChannelId> },
+    /// v1.2: the sidebar's categories in their new order (every category id exactly once).
+    ReorderCategories { ids: Vec<ChannelId> },
     /// v1.1: put a channel in a category (`None` = standalone again).
     SetChannelCategory { id: ChannelId, category: Option<ChannelId> },
     /// v1.1: create a channel category (Discord-style collapsible group in the sidebar).
@@ -242,6 +244,7 @@ pub async fn run_admin(hub: &HubClient, cmd: &AdminCmd) -> Result<AdminReply, St
         C::CreateCategory { name, color, position } => hub.create_category(&name, &color, position).await.map(|_| AdminReply::Done),
         C::DeleteCategory { id } => hub.delete_category(id).await.map(|_| AdminReply::Done),
         C::ReorderChannels { ids } => hub.reorder_channels(ids).await.map(|_| AdminReply::Done),
+        C::ReorderCategories { ids } => hub.reorder_categories(ids).await.map(|_| AdminReply::Done),
         C::ClaimOwner { code } => hub.claim_owner(&code).await.map(AdminReply::Claimed),
         C::TransferOwner { user } => hub.transfer_owner(user.id).await.map(|_| AdminReply::Done),
     };

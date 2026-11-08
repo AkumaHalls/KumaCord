@@ -79,6 +79,27 @@ impl Ws {
     }
 }
 
+/// A POST with a bearer token, returning only the status (the permission checks).
+async fn post_status(env: &Env, token: &str, path: &str, body: serde_json::Value) -> StatusCode {
+    env.http.post(env.url(path)).bearer_auth(token).json(&body).send().await.unwrap().status()
+}
+
+/// One category, created through the admin API (the app's "Nova categoria" form).
+async fn make_category(env: &Env, token: &str, name: &str, position: i64) -> ChannelId {
+    let made: serde_json::Value = env
+        .http
+        .post(env.url("/api/admin/categories"))
+        .bearer_auth(token)
+        .json(&json!({ "name": name, "color": "#5865F2", "position": position }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    ChannelId(made["id"].as_i64().expect("categoria criada"))
+}
+
 #[tokio::test]
 async fn ready_snapshot_has_voice_channels_with_their_categories() {
     let env = setup().await;
@@ -142,5 +163,55 @@ async fn ready_snapshot_has_voice_channels_with_their_categories() {
     assert_eq!(voice.category_id, Some(ChannelId(cat_id)), "a sala de voz vem na categoria atribuída");
     let cats = categories.expect("o hub tem categorias");
     assert!(cats.iter().any(|c| c.id == ChannelId(cat_id)), "a categoria vai no Ready: {cats:?}");
+    env.server.shutdown().await;
+}
+
+/// v1.2: the server half of the sidebar's drag & drop of categories. The order sent is the
+/// order drawn — every category id exactly once — and it comes back to everybody at once in
+/// `CategoriesChanged`.
+#[tokio::test]
+async fn reordering_categories_swaps_their_order_and_tells_everybody() {
+    let env = setup().await;
+    let dono = env.login("dono").await;
+    let pw = env.http.post(env.url("/api/account/password")).bearer_auth(&dono.token).json(&json!({ "current": null, "new": "dono-senha", "remember_device": false })).send().await.unwrap();
+    assert_eq!(pw.status(), StatusCode::OK);
+
+    let mut ws = env.ws(&dono.token).await;
+    assert!(matches!(ws.expect().await, ServerEvent::Ready { .. }), " Ready vem primeiro");
+
+    let first = make_category(&env, &dono.token, "Jogos", 0).await;
+    let second = make_category(&env, &dono.token, "Música", 1).await;
+    let third = make_category(&env, &dono.token, "Estudos", 2).await;
+    for _ in 0..3 {
+        let ServerEvent::CategoriesChanged { categories } = ws.expect().await else {
+            panic!("cada categoria criada avisa a todos");
+        };
+        assert!(!categories.is_empty(), "a lista de categorias não volta vazia");
+    }
+
+    // The new order, reversed: the drag & drop sends the whole list every time.
+    let ids = vec![third, second, first];
+    // A member may not reorder anything.
+    let bia = env.login("bia").await;
+    assert_eq!(post_status(&env, &bia.token, "/api/admin/categories/reorder", json!({"ids": ids})).await, StatusCode::FORBIDDEN);
+    // ...and the list has to be a permutation of every id, exactly once.
+    assert_eq!(post_status(&env, &dono.token, "/api/admin/categories/reorder", json!({"ids": &ids[1..]})).await, StatusCode::BAD_REQUEST);
+    assert_eq!(post_status(&env, &dono.token, "/api/admin/categories/reorder", json!({"ids": [ids[0], ids[0], ids[1], ids[2]]})).await, StatusCode::BAD_REQUEST);
+    assert_eq!(post_status(&env, &dono.token, "/api/admin/categories/reorder", json!({"ids": []})).await, StatusCode::BAD_REQUEST);
+
+    assert_eq!(post_status(&env, &dono.token, "/api/admin/categories/reorder", json!({"ids": ids})).await, StatusCode::OK);
+    let ServerEvent::CategoriesChanged { categories } = ws.expect().await else {
+        panic!("a ordem nova vai para todos de uma vez");
+    };
+    assert_eq!(categories.iter().map(|c| c.id).collect::<Vec<_>>(), ids, "a ordem que o drag mandou é a que aparece");
+    assert_eq!((categories[0].position, categories[1].position, categories[2].position), (0, 1, 2));
+
+    // And the member sees it too (the hub is the only writer, everybody reads the same list).
+    let mut ws2 = env.ws(&bia.token).await;
+    let ServerEvent::Ready { categories: ready_cats, .. } = ws2.expect().await else {
+        panic!("Ready esperado");
+    };
+    let ready_cats = ready_cats.expect("o hub tem categorias");
+    assert_eq!(ready_cats.iter().map(|c| c.id).collect::<Vec<_>>(), ids, "um membro que conecta depois ve a ordem nova");
     env.server.shutdown().await;
 }

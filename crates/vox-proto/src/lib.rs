@@ -525,6 +525,7 @@ pub const PERSONAL_PASSWORD_MAX: usize = 128;
 // - `POST /api/admin/channels/{id}/delete`
 // - `POST /api/admin/channels/reorder`          [`ChannelReorderRequest`]
 // - `POST /api/admin/channels/{id}/access`      [`ChannelAccessRequest`]  private / public (v0.9)
+// - `POST /api/admin/categories/reorder`        [`CategoryReorderRequest`]  (v1.2)
 //
 // Calls with nothing to return answer [`OkResponse`].
 //
@@ -710,6 +711,14 @@ pub struct ChannelRenameRequest {
 /// The new order: every channel id exactly once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelReorderRequest {
+    pub ids: Vec<ChannelId>,
+}
+
+/// v1.2: `POST /api/admin/categories/reorder` — the new order of the sidebar's channel
+/// categories: every category id exactly once (channels are ordered by
+/// [`ChannelReorderRequest`], categories by this).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CategoryReorderRequest {
     pub ids: Vec<ChannelId>,
 }
 
