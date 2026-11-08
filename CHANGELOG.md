@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.4.3] — 2026-11-08
+
+### Melhorado (landing page)
+
+O rebranding pediu mudanças, e a página foi reescrita com a orientação da skill de
+UI/UX (dark-mode-oled: preto de verdade, neon roxo, glow com parcimônia):
+
+- **A logo entrou**: a arte "Neon Anime KumaCord Gamer" está no alto e no favicon,
+  embedada no binário do hub (nada de pasta solta nem link externo).
+- **O tema virou templo**: preto profundo, colunas de santuário nas laterais,
+  scanlines finas, brasa subindo e os raios que já existiam — o clima de trevas que
+  você pediu.
+- **O monitor é de verdade**: três estados lidos do `/api/health` do hub — **Servidor
+  Online** (bolinha verde pulsando), **Servidor Instável** (âmbar, quando o hub
+  responde mas a voz cai) e **Servidor Offline** (cinza). Antes mostrava
+  "servidor de pé · 1.4.0", que era ruído.
+- **O texto não promete o que não é**: o servidor não "roda no PC de um de vocês" —
+  é a comunidade AkumaLabs.
+- **Saiu o "Ver no GitHub"**: o código fechou depois do rebranding.
+- **O rodapé não diz mais "código aberto (MIT)"** — a licença não é mais essa.
+
+Três testes novos garantem que nenhuma dessas promessas volte por descuido.
+
 ## [1.4.2] — 2026-11-08
 
 ### Melhorado (o aviso de atualização na tela inicial)

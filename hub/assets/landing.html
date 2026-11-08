@@ -4,177 +4,166 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>KumaCord — AkumaLabs</title>
-<meta name="description" content="Voz, tela e chat para o seu grupo. O servidor AkumaLabs, no PC de um de vocês.">
-<link rel="icon" href="/favicon.ico" type="image/x-icon">
+<meta name="description" content="Voz, tela e chat para a sua turma. A comunidade AkumaLabs.">
+<link rel="icon" href="/logo-256.png" type="image/png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
 <style>
   :root{
-    --noite:#07060d; --noite2:#0c0a16; --paredao:#120f20;
-    --taina:#1a1530; --movel:#221b3c;
-    --nevoa:#8b83a8; --giz:#e7e3f5; --branco:#fbfaff;
-    --raio:#a855f7; --raio2:#7c3aed; --eletrico:#c084fc;
-    --sangue:#ff2d55; --ouro:#fbbf24;
-    --hair:rgba(168,85,247,.22);
+    /* Templo do Akuma: preto de verdade (OLED), neon roxo/magenta, brasa vermelha.
+       Glow com parcimônia e contraste alto — a skill de UI/UX chama isso de
+       dark-mode-oled: fundo #000, acentos neon, glow mínimo. */
+    --vazio:#000000; --noite:#05030c; --paredao:#0b0716;
+    --taina:#140d26; --movel:#1c1235;
+    --nevoa:#9a8fc0; --giz:#ece7fb; --branco:#ffffff;
+    --akuma:#a855f7; --akuma2:#7c3aed; --eletrico:#d8b4fe;
+    --brasa:#ff2d55; --ouro:#fbbf24;
+    --verde:#39d98a; --ambar:#fbbf24;
+    --hair:rgba(168,85,247,.20);
   }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0}
   body{
-    background:var(--noite); color:var(--giz);
+    background:var(--vazio); color:var(--giz);
     font-family:'Atkinson Hyperlegible',system-ui,sans-serif;
     -webkit-font-smoothing:antialiased; overflow-x:hidden;
   }
   h1,h2,h3,.display{font-family:'Bricolage Grotesque','Atkinson Hyperlegible',sans-serif}
   a{color:inherit}
-  /* ---------- céu de tempestade ---------- */
+
+  /* ---------- o céu do templo: trevas, raios e brasa ---------- */
   #ceu{position:fixed; inset:0; z-index:0; pointer-events:none}
+  /* Colunas de templo: duas fileiras de sombra nas laterais, como um santuário. */
+  #colunas{position:fixed; inset:0; z-index:1; pointer-events:none; opacity:.5;
+    background:
+      linear-gradient(90deg, rgba(0,0,0,.85) 0%, transparent 12%, transparent 88%, rgba(0,0,0,.85) 100%);}
   #nevoa{position:fixed; inset:0; z-index:1; pointer-events:none;
     background:
-      radial-gradient(900px 520px at 78% -8%, rgba(124,58,237,.30), transparent 62%),
-      radial-gradient(700px 460px at 12% 108%, rgba(255,45,85,.13), transparent 60%),
-      linear-gradient(180deg, rgba(7,6,13,0) 55%, rgba(7,6,13,.92) 100%);
-  }
+      radial-gradient(1000px 560px at 76% -6%, rgba(124,58,237,.28), transparent 62%),
+      radial-gradient(760px 500px at 8% 106%, rgba(255,45,85,.14), transparent 60%),
+      radial-gradient(600px 400px at 50% 50%, rgba(168,85,247,.06), transparent 70%),
+      linear-gradient(180deg, rgba(5,3,12,0) 45%, rgba(5,3,12,.94) 100%);}
+  /* Scanlines finas: dá ao templo o ar de santuário eletrônico. */
+  #linhas{position:fixed; inset:0; z-index:1; pointer-events:none; opacity:.35;
+    background:repeating-linear-gradient(180deg, rgba(255,255,255,.028) 0 1px, transparent 1px 3px);}
   .wrap{position:relative; z-index:2; max-width:1120px; margin:0 auto; padding:0 24px}
+
   /* ---------- topo ---------- */
-  header{display:flex; align-items:center; justify-content:space-between; padding:26px 0 10px}
-  .marca{display:flex; align-items:center; gap:12px; text-decoration:none}
-  .marca .selo{
-    width:38px;height:38px;border-radius:11px; display:grid; place-items:center;
-    background:linear-gradient(150deg,var(--raio2),#3b0764);
-    box-shadow:0 0 0 1px var(--hair), 0 8px 26px rgba(124,58,237,.42);
-    animation:selo-pulsa 3.2s ease-in-out infinite;
-  }
-  @keyframes selo-pulsa{
-    0%,100%{box-shadow:0 0 0 1px var(--hair),0 8px 26px rgba(124,58,237,.42)}
-    50%{box-shadow:0 0 0 1px rgba(168,85,247,.5),0 8px 34px rgba(168,85,247,.72)}
-  }
-  .marca b{font-family:'Bricolage Grotesque',sans-serif; font-size:20px; letter-spacing:-.3px; color:var(--branco)}
-  .marca small{display:block; font-size:11px; color:var(--nevoa); letter-spacing:.22em; text-transform:uppercase; margin-top:-2px}
+  header{display:flex; align-items:center; justify-content:space-between; padding:24px 0 10px}
+  .marca{display:flex; align-items:center; gap:13px; text-decoration:none}
+  .marca img{width:42px; height:42px; border-radius:12px; display:block;
+    filter:drop-shadow(0 0 14px rgba(168,85,247,.55));}
+  .marca b{font-family:'Bricolage Grotesque',sans-serif; font-size:21px; letter-spacing:-.3px; color:var(--branco); display:block}
+  .marca small{display:block; font-size:10.5px; color:var(--akuma); letter-spacing:.26em; text-transform:uppercase; margin-top:1px}
   nav{display:flex; align-items:center; gap:22px; font-size:14px}
   nav a{color:var(--nevoa); text-decoration:none; transition:color .18s}
   nav a:hover{color:var(--branco)}
-  .status{display:inline-flex; align-items:center; gap:7px; font-size:12.5px; color:var(--nevoa);
-    padding:6px 12px; border-radius:99px; background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.06)}
-  .led{width:7px;height:7px;border-radius:99px;background:#39d98a;box-shadow:0 0 10px #39d98a}
-  .led.fora{background:#6b7280;box-shadow:none}
+  /* O monitor de status: bolinha que pulsa + texto. */
+  .status{display:inline-flex; align-items:center; gap:9px; font-size:13px; color:var(--giz);
+    padding:8px 15px; border-radius:99px; background:rgba(255,255,255,.035);
+    border:1px solid rgba(255,255,255,.08); white-space:nowrap}
+  .led{width:9px; height:9px; border-radius:99px; background:var(--verde); flex:none;
+    box-shadow:0 0 12px var(--verde); animation:pulsa 1.6s ease-in-out infinite}
+  .status.instavel .led{background:var(--ambar); box-shadow:0 0 12px var(--ambar)}
+  .status.fora .led{background:#6b7280; box-shadow:none; animation:none}
+  .status.fora{color:var(--nevoa)}
+  @keyframes pulsa{0%,100%{opacity:1; transform:scale(1)} 50%{opacity:.45; transform:scale(.78)}}
+
   /* ---------- herói ---------- */
-  .heroi{padding:70px 0 40px; text-align:center; position:relative}
-  .olho{font-size:12px; letter-spacing:.34em; text-transform:uppercase; color:var(--eletrico); margin-bottom:20px;
-    display:inline-flex; align-items:center; gap:10px}
-  .olho::before,.olho::after{content:""; width:34px; height:1px; background:linear-gradient(90deg,transparent,var(--raio))}
-  .olho::after{background:linear-gradient(90deg,var(--raio),transparent)}
-  h1{
-    margin:0 0 18px; font-weight:800; letter-spacing:-1.6px; line-height:1.02;
-    font-size:clamp(40px,8vw,78px); color:var(--branco);
-  }
+  .heroi{padding:64px 0 44px; text-align:center; position:relative}
+  .olho{font-size:11.5px; letter-spacing:.36em; text-transform:uppercase; color:var(--eletrico);
+    margin-bottom:22px; display:inline-flex; align-items:center; gap:11px}
+  .olho::before,.olho::after{content:""; width:38px; height:1px; background:linear-gradient(90deg,transparent,var(--akuma))}
+  .olho::after{background:linear-gradient(90deg,var(--akuma),transparent)}
+  h1{margin:0 0 20px; font-weight:800; letter-spacing:-1.8px; line-height:1.02;
+    font-size:clamp(42px,8.4vw,84px); color:var(--branco)}
   h1 .chama{
-    background:linear-gradient(100deg,var(--eletrico),#fff 42%,var(--raio) 70%,var(--sangue));
+    background:linear-gradient(100deg,var(--eletrico),#fff 40%,var(--akuma) 68%,var(--brasa));
     -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
-    filter:drop-shadow(0 0 26px rgba(168,85,247,.5));
-  }
-  .sub{max-width:640px; margin:0 auto 34px; font-size:17.5px; line-height:1.62; color:var(--nevoa)}
+    filter:drop-shadow(0 0 30px rgba(168,85,247,.55));}
+  .sub{max-width:660px; margin:0 auto 36px; font-size:17.5px; line-height:1.64; color:var(--nevoa)}
   .acoes{display:flex; flex-wrap:wrap; gap:14px; justify-content:center; align-items:center}
-  .btn{
-    display:inline-flex; align-items:center; gap:11px; text-decoration:none; cursor:pointer;
-    border:0; font-family:inherit; font-size:16px; font-weight:700; padding:16px 30px; border-radius:14px;
-    transition:transform .16s cubic-bezier(.2,.9,.3,1.3), box-shadow .2s, background .2s;
-  }
-  .btn-principal{
-    color:#fff; background:linear-gradient(135deg,var(--raio2),#4c1d95);
-    box-shadow:0 10px 34px rgba(124,58,237,.5), inset 0 1px 0 rgba(255,255,255,.22);
-    position:relative; overflow:hidden;
-  }
-  .btn-principal::after{
-    content:""; position:absolute; top:0; left:-120%; width:60%; height:100%;
+  .btn{display:inline-flex; align-items:center; gap:11px; text-decoration:none; cursor:pointer;
+    border:0; font-family:inherit; font-size:16px; font-weight:700; padding:17px 32px; border-radius:14px;
+    transition:transform .16s cubic-bezier(.2,.9,.3,1.3), box-shadow .2s, background .2s}
+  .btn-principal{color:#fff; background:linear-gradient(135deg,var(--akuma2),#4c1d95);
+    box-shadow:0 10px 36px rgba(124,58,237,.55), inset 0 1px 0 rgba(255,255,255,.22);
+    position:relative; overflow:hidden}
+  .btn-principal::after{content:""; position:absolute; top:0; left:-120%; width:60%; height:100%;
     background:linear-gradient(100deg,transparent,rgba(255,255,255,.4),transparent);
-    animation:brilho 4.4s ease-in-out infinite;
-  }
+    animation:brilho 4.6s ease-in-out infinite}
   @keyframes brilho{0%,55%{left:-120%} 85%,100%{left:130%}}
-  .btn-principal:hover{transform:translateY(-2px) scale(1.02); box-shadow:0 16px 44px rgba(124,58,237,.7)}
-  .btn-fantasma{
-    color:var(--giz); background:rgba(255,255,255,.045); border:1px solid rgba(255,255,255,.11);
-  }
-  .btn-fantasma:hover{background:rgba(255,255,255,.09); transform:translateY(-2px)}
-  .versao{margin-top:20px; font-size:13px; color:var(--nevoa)}
+  .btn-principal:hover{transform:translateY(-2px) scale(1.02); box-shadow:0 16px 46px rgba(124,58,237,.75)}
+  .versao{margin-top:22px; font-size:13px; color:var(--nevoa)}
   .versao b{color:var(--eletrico); font-weight:700}
+
   /* ---------- os três pilares ---------- */
-  .pilares{display:grid; grid-template-columns:repeat(3,1fr); gap:18px; padding:56px 0 20px}
-  .pilar{
-    background:linear-gradient(165deg,rgba(255,255,255,.05),rgba(255,255,255,.015));
+  .pilares{display:grid; grid-template-columns:repeat(3,1fr); gap:18px; padding:58px 0 20px}
+  .pilar{background:linear-gradient(165deg,rgba(255,255,255,.045),rgba(255,255,255,.012));
     border:1px solid rgba(255,255,255,.07); border-radius:18px; padding:26px 24px;
-    transition:border-color .25s, transform .25s, box-shadow .25s;
-  }
-  .pilar:hover{border-color:var(--hair); transform:translateY(-4px); box-shadow:0 18px 46px rgba(0,0,0,.5)}
-  .pilar .glifo{
-    width:44px;height:44px;border-radius:12px; display:grid; place-items:center; margin-bottom:16px;
-    background:rgba(124,58,237,.16); border:1px solid var(--hair); color:var(--eletrico);
-  }
+    transition:border-color .25s, transform .25s, box-shadow .25s}
+  .pilar:hover{border-color:var(--hair); transform:translateY(-4px); box-shadow:0 18px 48px rgba(0,0,0,.6)}
+  .pilar .glifo{width:44px; height:44px; border-radius:12px; display:grid; place-items:center; margin-bottom:16px;
+    background:rgba(124,58,237,.16); border:1px solid var(--hair); color:var(--eletrico)}
   .pilar h3{margin:0 0 8px; font-size:17px; color:var(--branco)}
   .pilar p{margin:0; font-size:14.5px; line-height:1.6; color:var(--nevoa)}
+
   /* ---------- como entrar ---------- */
   .passos{padding:60px 0 30px}
-  .passos h2{font-size:clamp(26px,4vw,38px); margin:0 0 8px; color:var(--branco); letter-spacing:-.8px}
+  .passos h2{font-size:clamp(26px,4vw,38px); margin:0 0 8px; color:var(--branco); letter-spacing:-.9px}
   .passos .diz{color:var(--nevoa); margin:0 0 34px; font-size:16px}
   .lista{list-style:none; margin:0; padding:0; display:grid; gap:14px; counter-reset:p}
   .lista li{counter-increment:p; display:flex; gap:16px; align-items:flex-start;
-    background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.06);
-    border-radius:14px; padding:18px 20px}
-  .lista li::before{
-    content:counter(p); flex:0 0 30px; height:30px; border-radius:9px; display:grid; place-items:center;
-    background:linear-gradient(150deg,var(--raio2),#3b0764); color:#fff; font-weight:700; font-size:14px;
-    box-shadow:0 0 0 1px var(--hair);
-  }
+    background:rgba(255,255,255,.028); border:1px solid rgba(255,255,255,.06); border-radius:14px; padding:18px 20px}
+  .lista li::before{content:counter(p); flex:0 0 30px; height:30px; border-radius:9px; display:grid; place-items:center;
+    background:linear-gradient(150deg,var(--akuma2),#3b0764); color:#fff; font-weight:700; font-size:14px;
+    box-shadow:0 0 0 1px var(--hair)}
   .lista b{display:block; color:var(--branco); margin-bottom:3px; font-size:15.5px}
   .lista span{color:var(--nevoa); font-size:14.5px; line-height:1.55}
   .lista code{background:rgba(168,85,247,.14); color:var(--eletrico); padding:2px 7px; border-radius:6px;
     font-size:13px; border:1px solid var(--hair)}
+
   /* ---------- rodapé ---------- */
-  footer{border-top:1px solid rgba(255,255,255,.07); margin-top:60px; padding:34px 0 44px;
-    display:flex; flex-wrap:wrap; gap:18px; justify-content:space-between; align-items:center; color:var(--nevoa); font-size:13.5px}
-  footer .fim{display:flex; gap:20px}
-  footer a{text-decoration:none; color:var(--nevoa)}
-  footer a:hover{color:var(--branco)}
+  footer{border-top:1px solid rgba(255,255,255,.07); margin-top:58px; padding:32px 0 42px;
+    display:flex; flex-wrap:wrap; gap:16px; justify-content:space-between; align-items:center;
+    color:var(--nevoa); font-size:13px}
+
   .revelar{opacity:0; transform:translateY(22px); transition:opacity .7s ease, transform .7s cubic-bezier(.2,.8,.3,1)}
   .revelar.dentro{opacity:1; transform:none}
-  @media (max-width:820px){
-    .pilares{grid-template-columns:1fr}
-    nav .st-esconde{display:none}
-  }
-  @media (prefers-reduced-motion:reduce){
-    *{animation:none!important; transition:none!important}
-    .revelar{opacity:1; transform:none}
-  }
+  @media (max-width:820px){ .pilares{grid-template-columns:1fr} nav .st-esconde{display:none} }
+  @media (prefers-reduced-motion:reduce){ *{animation:none!important; transition:none!important} .revelar{opacity:1; transform:none} }
 </style>
 </head>
 <body>
 
 <canvas id="ceu"></canvas>
+<div id="colunas"></div>
 <div id="nevoa"></div>
+<div id="linhas"></div>
 
 <div class="wrap">
   <header>
     <a class="marca" href="/">
-      <span class="selo">
-        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M13 2 4.5 12.5H10l-1 9.5 9.5-11H12l1-9z" fill="rgba(255,255,255,.18)"/>
-        </svg>
-      </span>
+      <img src="/logo-256.png" alt="KumaCord" width="42" height="42">
       <span><b>KumaCord</b><small>AkumaLabs</small></span>
     </a>
     <nav>
       <a class="st-esconde" href="#recursos">Recursos</a>
       <a class="st-esconde" href="#entrar">Como entrar</a>
-      <span class="status"><i class="led" id="led"></i><span id="ledTxt">servidor de pé</span></span>
+      <!-- Monitor de verdade: Online (verde, pulsando), Instável (âmbar) ou Offline (cinza). -->
+      <span class="status" id="monitor" role="status" aria-live="polite">
+        <i class="led" id="led"></i><span id="monitorTxt">Servidor Online</span>
+      </span>
     </nav>
   </header>
 
   <section class="heroi">
     <div class="olho">O templo do aprendizado</div>
-    <h1>Voz, tela e chat<br><span class="chama">para o seu grupo.</span></h1>
-    <p class="sub">O KumaCord é o lugar onde a sua turma se junta: canais de texto, salas de voz com
-      qualidade de estúdio, compartilhamento de tela e um servidor que roda no PC de um de vocês.
-      Sem conta, sem nuvem de estranho — o servidor é <b>AkumaLabs</b>.</p>
+    <h1>Voz, tela e chat<br><span class="chama">para a sua turma.</span></h1>
+    <p class="sub">O KumaCord é o lugar onde a sua galera se junta: canais de texto, salas de voz com
+      qualidade de estúdio e compartilhamento de tela. Sem conta e sem nuvem de estranho —
+      a comunidade é o <b>AkumaLabs</b>.</p>
     <div class="acoes">
       <a class="btn btn-principal" id="baixar" href="https://github.com/AkumaHalls/KumaCord/releases/latest/download/KumaCord-setup.exe">
         <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -182,12 +171,8 @@
         </svg>
         <span>Baixar para Windows</span>
       </a>
-      <a class="btn btn-fantasma" href="https://github.com/AkumaHalls/KumaCord/releases/latest">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.09.68-.22.68-.49l-.01-1.9c-2.78.62-3.37-1.2-3.37-1.2-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.4 9.4 0 0 1 12 6.81c.85 0 1.71.12 2.51.34 1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.35 4.8-4.58 5.06.36.32.68.94.68 1.9l-.01 2.82c0 .27.18.59.69.49A10.06 10.06 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg>
-        <span>Ver no GitHub</span>
-      </a>
     </div>
-    <div class="versao" id="versao">versão <b>…</b> · para Windows 10 e 11 · 73 MB</div>
+    <div class="versao" id="versao">versão <b>…</b> · para Windows 10 e 11</div>
   </section>
 
   <section class="pilares" id="recursos">
@@ -205,7 +190,7 @@
       </div>
       <h3>Tela e câmera</h3>
       <p>Compartilhe a tela inteira ou uma janela, ligue a câmera, e veja quem está falando pela luz
-        ao redor do avatar. Tops e transições sem travar a voz.</p>
+        ao redor do avatar. Tudo isso sem travar a voz.</p>
     </article>
     <article class="pilar revelar">
       <div class="glifo">
@@ -226,8 +211,8 @@
           KumaCord em <code>%LOCALAPPDATA%\Programs\KumaCord</code> e cria o atalho. Nada de conta.</span></div>
       </li>
       <li class="revelar">
-        <div><b>Entre com seu nome e a senha do servidor</b><span>Use o nome que a combou. A senha do
-          servidor AkumaLabs é a que o grupo usa — peça a alguém se não tiver.</span></div>
+        <div><b>Entre com seu nome e a senha do servidor</b><span>Use o nome que a galera combinou.
+          A senha do AkumaLabs é a que o grupo usa — peça a alguém se não tiver.</span></div>
       </li>
       <li class="revelar">
         <div><b>Entre na voz</b><span>Clique numa sala. O app se atualiza sozinho quando sai versão
@@ -237,9 +222,8 @@
   </section>
 
   <footer>
-    <span>AkumaLabs · KumaCord · código aberto (MIT)</span>
+    <span>AkumaLabs · KumaCord · voz, tela e chat para a sua turma</span>
     <span class="fim">
-      <a href="https://github.com/AkumaHalls/KumaCord">GitHub</a>
       <a href="#recursos">Recursos</a>
       <a href="#entrar">Como entrar</a>
     </span>
@@ -247,12 +231,12 @@
 </div>
 
 <script>
-/* ---------------------------------------------------------------- céu de tempestade
-   Raios procedurais: um tronco principal que desce e se ramifica, com o clarão
-   do céu dois segundos depois. Nada de imagem: é matemática, some e volta. */
+/* ---------------------------------------------------------------- o templo
+   Raios procedurais em canvas: um tronco principal desce e se ramifica, com o
+   clarão do céu dois segundos depois. Nada de imagem — é matemática. */
 (function () {
   var tela = document.getElementById('ceu'), p = tela.getContext('2d');
-  var W, H, raios = [], faiscas = [], clar = 0, rel = 0;
+  var W, H, raios = [], faiscas = [], clar = 0;
 
   function mede() {
     var d = window.devicePixelRatio || 1;
@@ -265,16 +249,15 @@
   function novoRaio() {
     var x0 = innerWidth * (0.18 + Math.random() * 0.64);
     var pts = [{ x: x0, y: -20 }], x = x0, y = -20, gros = 2.6;
-    while (y < innerHeight * (0.35 + Math.random() * 0.5)) {
+    while (y < innerHeight * (0.32 + Math.random() * 0.5)) {
       y += 12 + Math.random() * 26;
       x += (Math.random() - 0.5) * 30;
       pts.push({ x: x, y: y, gros: gros });
       gros *= 0.94;
     }
     raios.push({ pts: pts, vida: 1, ramos: ramos(pts) });
-    clar = 0.5 + Math.random() * 0.35;   // o céu acende
+    clar = 0.5 + Math.random() * 0.35;
   }
-
   function ramos(pts) {
     var out = [];
     for (var i = 2; i < pts.length - 2; i++) {
@@ -282,17 +265,13 @@
         var a = pts[i], n = 2 + (Math.random() * 3 | 0);
         for (var k = 0; k < n; k++) {
           var bx = a.x, by = a.y, seg = [];
-          for (var s = 0; s < 3; s++) {
-            bx += (Math.random() - 0.5) * 44; by += 8 + Math.random() * 20;
-            seg.push({ x: bx, y: by });
-          }
+          for (var s = 0; s < 3; s++) { bx += (Math.random() - .5) * 44; by += 8 + Math.random() * 20; seg.push({ x: bx, y: by }); }
           out.push(seg);
         }
       }
     }
     return out;
   }
-
   function traco(pts, larg, cor, alpha) {
     p.strokeStyle = cor; p.globalAlpha = alpha; p.lineWidth = larg;
     p.lineJoin = p.lineCap = 'round'; p.beginPath();
@@ -301,37 +280,30 @@
     p.stroke();
   }
 
+  var rel = 0, prox = 90;
   function quadro() {
     p.clearRect(0, 0, innerWidth, innerHeight);
     rel += 0.016;
-
-    // nevoa elétrica de fundo, subindo devagar
+    // brasa subindo devagar
     p.globalAlpha = 0.05;
     for (var i = 0; i < 26; i++) {
       var fx = (i * 137.5) % innerWidth, fy = (rel * 12 + i * 97) % innerHeight;
-      p.fillStyle = i % 3 ? '#a855f7' : '#c084fc';
+      p.fillStyle = i % 3 ? '#a855f7' : '#d8b4fe';
       p.beginPath(); p.arc(fx + Math.sin(rel + i) * 26, innerHeight - fy, 1.2 + (i % 3), 0, 6.283); p.fill();
     }
     p.globalAlpha = 1;
-
-    // os raios
     for (var r = raios.length - 1; r >= 0; r--) {
       var q = raios[r];
       q.vida -= 0.045;
       if (q.vida <= 0) { raios.splice(r, 1); continue; }
-      var some = q.vida;
-      // halo
       p.shadowColor = '#a855f7'; p.shadowBlur = 22;
-      traco(q.pts, 1.2, '#e9d5ff', some * 0.95);
+      traco(q.pts, 1.2, '#e9d5ff', q.vida * 0.95);
       p.shadowBlur = 0;
-      traco(q.pts, 3.4, '#a855f7', some * 0.5);
-      for (var b = 0; b < q.ramos.length; b++) traco(q.ramos[b], 0.9, '#c084fc', some * 0.55);
-      // faíscas nas pontas
+      traco(q.pts, 3.4, '#a855f7', q.vida * 0.5);
+      for (var b = 0; b < q.ramos.length; b++) traco(q.ramos[b], 0.9, '#d8b4fe', q.vida * 0.55);
       var cauda = q.pts[q.pts.length - 1];
-      for (var f = 0; f < 3; f++) faiscas.push({ x: cauda.x, y: cauda.y, vx: (Math.random() - .5) * 3, vy: Math.random() * 2 + .4, v: some });
+      for (var f = 0; f < 3; f++) faiscas.push({ x: cauda.x, y: cauda.y, vx: (Math.random() - .5) * 3, vy: Math.random() * 2 + .4, v: q.vida });
     }
-
-    // faíscas
     for (var s = faiscas.length - 1; s >= 0; s--) {
       var z = faiscas[s];
       z.x += z.vx; z.y += z.vy; z.vy += 0.045; z.v -= 0.03;
@@ -339,48 +311,42 @@
       p.globalAlpha = z.v; p.fillStyle = '#f5d0fe';
       p.beginPath(); p.arc(z.x, z.y, 1.4, 0, 6.283); p.fill(); p.globalAlpha = 1;
     }
-
-    // clarão do céu
-    if (clar > 0.01) {
-      p.fillStyle = '#7c3aed'; p.globalAlpha = clar * 0.10;
-      p.fillRect(0, 0, innerWidth, innerHeight); p.globalAlpha = 1;
-      clar *= 0.86;
-    }
-
-    // um raio a cada 2,6–6 s (o aleatório parece mais natural que fixo)
-    if (Math.random() < rel % 1 ? 0 : 0) {}
-    if (!novoRaio.t) novoRaio.t = 0;
-    novoRaio.t--;
-    if (novoRaio.t <= 0) { novoRaio(); novoRaio.t = 150 + (Math.random() * 220 | 0); }
+    if (clar > 0.01) { p.fillStyle = '#7c3aed'; p.globalAlpha = clar * 0.10; p.fillRect(0, 0, innerWidth, innerHeight); p.globalAlpha = 1; clar *= 0.86; }
+    prox--;
+    if (prox <= 0) { novoRaio(); prox = 150 + (Math.random() * 220 | 0); }
     requestAnimationFrame(quadro);
   }
   quadro();
 })();
 
-/* ---------------------------------------------------------------- versão e status
-   A landing não guarda versão: ela pergunta ao hub, que por sua vez espelha o
-   feed do GitHub. Assim a página nunca precisa ser editada numa release. */
+/* ---------------------------------------------------------------- Monitor e versão
+   A landing não guarda nada: ela pergunta ao hub, que espelha o feed do GitHub.
+   - `/api/health` dá o estado real do servidor: Online (verde pulsando), Instável
+     (âmbar, quando o hub responde mas a voz não) ou Offline (cinza);
+   - `/api/update` dá a versão mais recente para o botão. */
 (function () {
-  var led = document.getElementById('led'), txt = document.getElementById('ledTxt');
+  var el = document.getElementById('monitor'), txt = document.getElementById('monitorTxt'), led = document.getElementById('led');
+  function poe(estado, rotulo) {
+    el.className = 'status' + (estado === 'online' ? '' : ' ' + estado);
+    txt.textContent = rotulo;
+  }
+  poe('instavel', 'Conferindo…');
+  fetch('/api/health').then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+    .then(function (h) {
+      if (h.ok === false) { poe('fora', 'Servidor Offline'); return; }
+      // O hub está de pé. A voz (LiveKit) é o que costuma oscilar: se ela caiu, o
+      // servidor continua online para o chat, mas as chamadas não vão funcionar.
+      poe(h.livekit_ok ? 'online' : 'instavel', h.livekit_ok ? 'Servidor Online' : 'Servidor Instável');
+    })
+    .catch(function () { poe('fora', 'Servidor Offline'); });
+
   fetch('/api/update').then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
     .then(function (m) {
       var v = document.getElementById('versao');
-      v.innerHTML = 'versão <b>' + m.version + '</b> · para Windows 10 e 11 · 73 MB';
-      if (m.notes) {
-        var n = document.createElement('div');
-        n.style.cssText = 'max-width:600px;margin:14px auto 0;font-size:13px;color:#6f6890;line-height:1.5';
-        n.textContent = m.notes.split('\n')[0].replace(/^[-*#\s]+/, '');
-        v.appendChild(n);
-      }
-    }).catch(function () {
-      document.getElementById('versao').innerHTML = 'versão mais recente no GitHub · para Windows 10 e 11';
-    });
-  fetch('/api/health').then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-    .then(function (h) {
-      if (h.ok === false) throw 0;
-      txt.textContent = 'servidor de pé · ' + h.version;
-    }).catch(function () {
-      led.classList.add('fora'); txt.textContent = 'servidor fora do ar';
+      v.innerHTML = 'versão <b>' + m.version + '</b> · para Windows 10 e 11';
+    })
+    .catch(function () {
+      document.getElementById('versao').textContent = 'versão mais recente no GitHub · para Windows 10 e 11';
     });
 })();
 

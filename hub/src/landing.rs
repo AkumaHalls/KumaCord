@@ -24,6 +24,11 @@ const LANDING_HTML: &str = include_str!("../assets/landing.html");
 /// O ícone da instalação (favicon da aba).
 const FAVICON: &[u8] = include_bytes!("../assets/favicon.ico");
 
+/// A logo do KumaCord, no tamanho que a página desenha (e o dobro, para telas
+/// de densidade alta). Embedada: a página nasce junto com o hub, sem pasta solta.
+const LOGO_256: &[u8] = include_bytes!("../assets/logo-256.png");
+const LOGO_512: &[u8] = include_bytes!("../assets/logo-512.png");
+
 /// De quanto em quanto tempo o hub vai ao GitHub buscar o feed. A versão muda a cada
 /// release, não a cada minuto: 10 minutos é fresco e não gasta rate limit à toa.
 const FEED_TTL: Duration = Duration::from_secs(600);
@@ -76,6 +81,16 @@ pub async fn page() -> impl IntoResponse {
 /// `GET /favicon.ico` — o ícone da aba.
 pub async fn favicon() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "image/x-icon")], FAVICON)
+}
+
+/// `GET /logo-256.png` — a logo na marca e no alto da página.
+pub async fn logo_256() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "image/png")], LOGO_256)
+}
+
+/// `GET /logo-512.png` — a logo em dobro, para telas de densidade alta.
+pub async fn logo_512() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "image/png")], LOGO_512)
 }
 
 /// `GET /api/update` — o feed para a página, com cache.
@@ -153,6 +168,36 @@ mod tests {
         assert!(LANDING_HTML.contains("/api/update"), "a página pergunta a versão ao hub");
         assert!(LANDING_HTML.contains("KumaCord-setup.exe"), "o link é o de nome fixo");
         assert!(LANDING_HTML.contains("lang=\"pt-BR\""), "a página é em português");
+        assert!(LANDING_HTML.contains("/logo-256.png"), "a logo é servida pelo hub");
+    }
+
+    /// O rebranding: o código fechou e o servidor não roda mais no PC de ninguém.
+    /// Estes testes existem para essas promessas não voltarem por descuido.
+    #[test]
+    fn a_pagina_nao_promete_o_que_nao_e() {
+        assert!(!LANDING_HTML.contains("Ver no GitHub"), "o botão do GitHub saiu: o código é privado");
+        assert!(!LANDING_HTML.contains("github.com/AkumaHalls/KumaCord/releases/latest\""), "nenhum link para a página do repo");
+        assert!(!LANDING_HTML.contains("código aberto"), "a licença MIT não é mais o que é");
+        assert!(!LANDING_HTML.contains("MIT"), "nada de MIT no rodapé");
+        assert!(!LANDING_HTML.contains("roda no PC"), "o servidor não roda na máquina de ninguém");
+    }
+
+    /// O monitor de status: três estados de verdade, com texto em português.
+    #[test]
+    fn o_monitor_tem_os_tres_estados() {
+        assert!(LANDING_HTML.contains("/api/health"), "o monitor lê o health de verdade");
+        assert!(LANDING_HTML.contains("Servidor Online"), "o estado bom existe");
+        assert!(LANDING_HTML.contains("Servidor Instável"), "o estado médio existe");
+        assert!(LANDING_HTML.contains("Servidor Offline"), "o estado ruim existe");
+        assert!(LANDING_HTML.contains("livekit_ok"), "instável é quando a voz cai");
+    }
+
+    #[test]
+    fn a_logo_embutida_e_png_de_verdade() {
+        // PNG começa com a assinatura 89 50 4E 47.
+        assert!(LOGO_256.len() > 10_000, "a logo veio embutida");
+        assert_eq!(&LOGO_256[..4], &[0x89, 0x50, 0x4E, 0x47], "o arquivo é um PNG de verdade");
+        assert_eq!(&LOGO_512[..4], &[0x89, 0x50, 0x4E, 0x47], "o arquivo é um PNG de verdade");
     }
 
     #[test]

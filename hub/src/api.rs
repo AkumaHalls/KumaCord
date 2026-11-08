@@ -100,6 +100,8 @@ pub fn router(state: AppState) -> Router {
         // como qualquer outra rota — sem router à parte para dar merge.
         .route("/", get(crate::landing::page))
         .route("/favicon.ico", get(crate::landing::favicon))
+        .route("/logo-256.png", get(crate::landing::logo_256))
+        .route("/logo-512.png", get(crate::landing::logo_512))
         .route("/api/update", get(crate::landing::update_feed))
         .with_state(state)
 }
