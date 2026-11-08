@@ -602,16 +602,21 @@ impl App {
                 painter.galley(egui::pos2(x, cy - g_ico.size().y / 2.0), g_ico, theme::GIZ);
                 x += ico_w + gap;
                 painter.galley(egui::pos2(x, cy - g_txt.size().y / 2.0), g_txt, theme::GIZ);
-                resp.on_hover_text(&hover).clicked()
-            });
+                // O clique tem de ser lido no response DO PILL. Devolver `.clicked()`
+                // (um bool) aqui faria o `AreaResponse` responder pela área inteira, e o
+                // widget de dentro consome o clique — a área não registra nada, e o
+                // "Atualização pronta" virava um enfeite: foi a reclamação.
+                resp.on_hover_text(&hover)
+            })
+            .inner;
         // O brilho que pulsa em volta: some e volta, sem mover o pill do lugar.
         if calling {
             let pulse = self.update.badge_pulse.unwrap_or(0.0);
             let grow = 2.0 + 5.0 * pulse;
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("update_badge_ring")));
             painter.rect_stroke(
-                r.response.rect.expand(grow),
-                egui::CornerRadius::same((r.response.rect.height() / 2.0 + grow).round() as u8),
+                r.rect.expand(grow),
+                egui::CornerRadius::same((r.rect.height() / 2.0 + grow).round() as u8),
                 egui::Stroke::new(1.5, theme::GIZ.linear_multiply(0.10 + 0.55 * pulse)),
                 egui::StrokeKind::Outside,
             );
@@ -620,8 +625,9 @@ impl App {
         } else {
             self.update.badge_pulse = None;
         }
-        tracing::debug!(estado = ?state, "update: seta do canto");
-        if r.response.clicked() {
+        tracing::debug!(estado = ?state, reta = ?r.rect, "update: seta do canto");
+        if r.clicked() {
+            tracing::info!("update: clique na seta do canto");
             if ready {
                 self.update_apply_start();
             } else {
