@@ -45,7 +45,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection, OptionalExtension};
-use vox_proto::{AuditEntry, Channel, ChannelCategory, ChannelId, ChannelKind, CustomRole, Message, Role, User, UserId, badge, perm};
+use vox_proto::{AuditEntry, AttachmentId, CallId, Channel, ChannelCategory, ChannelId, ChannelKind, CustomRole, DmId, DmMessageId, InviteId, Message, MessageId, Role, SoundId, User, UserId, badge, perm};
 
 use crate::util::now_ms;
 
@@ -189,6 +189,11 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS server_meta (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS voice_revocations (
+            user_id INTEGER PRIMARY KEY REFERENCES users(id),
+            revoked_at_ms INTEGER,
+            issued_at_ms INTEGER
         );
         CREATE TABLE IF NOT EXISTS audit_log (
             id INTEGER PRIMARY KEY,
@@ -461,6 +466,50 @@ pub fn server_id(conn: &Connection) -> rusqlite::Result<String> {
     Ok(fresh)
 }
 
+/// ---------------------------------------------------------------- voice guard revocation persistence
+
+/// Save a user's revocation timestamp to the database.
+pub fn save_voice_revocation(conn: &Connection, user_id: UserId, revoked_at_ms: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO voice_revocations (user_id, revoked_at_ms) VALUES (?, ?)",
+        params![user_id.into_inner(), revoked_at_ms],
+    )?;
+    Ok(())
+}
+
+/// Save a user's token issuance timestamp to the database.
+pub fn save_voice_issued_at(conn: &Connection, user_id: UserId, issued_at_ms: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO voice_revocations (user_id, issued_at_ms) VALUES (?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET issued_at_ms = excluded.issued_at_ms",
+        params![user_id.into_inner(), issued_at_ms],
+    )?;
+    Ok(())
+}
+
+/// Load all voice revocations into the VoiceGuard state.
+pub fn load_voice_revocations(conn: &Connection) -> rusqlite::Result<Vec<(UserId, i64, Option<i64>)>> {
+    let mut stmt = conn.prepare("SELECT user_id, revoked_at_ms, issued_at_ms FROM voice_revocations")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            UserId::new(r.get::<_, i64>(0)?),
+            r.get::<_, i64>(1)?,
+            r.get::<_, Option<i64>>(2)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/// Remove a voice revocation record (e.g., when user is deleted).
+pub fn remove_voice_revocation(conn: &Connection, user_id: UserId) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM voice_revocations WHERE user_id = ?", params![user_id.into_inner()])?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------- the server's owner
 
 const OWNER_KEY: &str = "owner_user_id";
@@ -543,7 +592,7 @@ pub fn create_channel(conn: &Connection, name: &str, kind: ChannelKind) -> rusql
         conn.execute("INSERT INTO channels (id, name, kind, position) VALUES (?, ?, ?, ?)", params![id, name, k, pos])?;
         Ok(id)
     })?;
-    Ok(Channel { id, name: name.to_string(), kind, position: pos, private: None, category_id: None })
+    Ok(Channel { id: ChannelId(id), name: name.to_string(), kind, position: pos, private: None, category_id: None })
 }
 
 pub fn rename_channel(conn: &Connection, id: i64, name: &str) -> rusqlite::Result<bool> {
@@ -553,7 +602,7 @@ pub fn rename_channel(conn: &Connection, id: i64, name: &str) -> rusqlite::Resul
 /// Deletes the channel and its messages.
 pub fn delete_channel(conn: &mut Connection, id: i64) -> rusqlite::Result<bool> {
     let tx = conn.transaction()?;
-    crate::attachments::unlink_channel(&tx, id)?;
+    crate::attachments::unlink_channel(&tx, ChannelId(id))?;
     tx.execute("DELETE FROM messages WHERE channel_id = ?", [id])?;
     let n = tx.execute("DELETE FROM channels WHERE id = ? AND id > 0", [id])?;
     // The last private channel gone: older hubs may run on the file again (`access.rs`).
@@ -585,8 +634,8 @@ fn insert_message(conn: &Connection, channel_id: i64, user: &User, content: &str
         Ok(id)
     })?;
     Ok(Message {
-        id,
-        channel_id,
+        id: MessageId(id),
+        channel_id: ChannelId(channel_id),
         author: user.clone(),
         content: content.to_string(),
         created_at_ms: now,
@@ -616,10 +665,10 @@ pub fn insert_message_with(
     if let Err(e) = crate::attachments::check_pending(&tx, user.id, attachments)? {
         return Ok(Err(e));
     }
-    let extras = crate::chat::resolve_channel(&tx, user.id, channel_id, caption, draft, owner)?;
+    let extras = crate::chat::resolve_channel(&tx, user.id, ChannelId(channel_id), caption, draft, owner)?;
     let content = vox_proto::with_attachment_marker(caption, attachments.len());
     let mut msg = insert_message(&tx, channel_id, user, &content, extras)?;
-    msg.attachments = crate::attachments::link(&tx, attachments, crate::attachments::Owner::Channel(msg.id))?;
+    msg.attachments = crate::attachments::link(&tx, attachments, crate::attachments::Owner::Channel(Some(msg.id)))?;
     tx.commit()?;
     Ok(Ok(msg))
 }
@@ -635,7 +684,7 @@ pub fn list_messages(conn: &Connection, channel_id: i64, before: Option<i64>, li
     let rows = st.query_map(params![channel_id, before.unwrap_or(i64::MAX), limit], |r| {
         let mut m = Message {
             id: r.get(0)?,
-            channel_id,
+            channel_id: ChannelId(channel_id),
             content: r.get(1)?,
             created_at_ms: r.get(2)?,
             author: display_user(r.get(3)?, r.get(4)?, &r.get::<_, String>(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get::<_, i64>(9)?.max(0) as u64, owner),
@@ -858,7 +907,7 @@ pub fn create_category(conn: &Connection, name: &str, color: &str, position: i64
             "INSERT INTO categories (id, name, color, position) VALUES (?1, ?2, ?3, ?4)",
             params![id, name, color, position],
         )?;
-        Ok(ChannelCategory { id, name: name.to_owned(), color: color.to_owned(), position: position as i32 })
+        Ok(ChannelCategory { id: ChannelId(id), name: name.to_owned(), color: color.to_owned(), position: position as i32 })
     })
 }
 
@@ -925,7 +974,7 @@ pub fn get_message(conn: &Connection, id: i64) -> rusqlite::Result<Option<(i64, 
 
 /// Deletes the message and its attachment rows (the caller collects the unused files).
 pub fn delete_message(conn: &Connection, id: i64) -> rusqlite::Result<bool> {
-    crate::attachments::unlink_message(conn, id)?;
+    crate::attachments::unlink_message(conn, MessageId(id))?;
     Ok(conn.execute("DELETE FROM messages WHERE id = ?", [id])? > 0)
 }
 
@@ -955,7 +1004,7 @@ pub fn list_audit(conn: &Connection, before: Option<i64>, limit: i64, owner: &st
         let person = |i: usize| -> rusqlite::Result<Option<User>> {
             let id: Option<i64> = r.get(i)?;
             Ok(match id {
-                Some(id) => Some(display_user(id, r.get(i + 1)?, &r.get::<_, String>(i + 2)?, r.get(i + 3)?, r.get(i + 4)?, r.get(i + 5)?, r.get::<_, i64>(i + 6)?.max(0) as u64, owner)),
+                Some(id) => Some(display_user(UserId(id), r.get(i + 1)?, &r.get::<_, String>(i + 2)?, r.get(i + 3)?, r.get(i + 4)?, r.get(i + 5)?, r.get::<_, i64>(i + 6)?.max(0) as u64, owner)),
                 None => None,
             })
         };
@@ -1002,7 +1051,7 @@ mod tests {
                 assert_eq!(c.query_row("SELECT COUNT(*) FROM profiles", [], |r| r.get::<_, i64>(0))?, 0);
                 assert_eq!(user_for_session(c, "h")?.unwrap().username, "Ana", "an unprotected name keeps its session");
                 assert_eq!(list_messages(c, 1, None, 10, "dono")?.len(), 1);
-                assert_eq!(list_messages(c, 1, None, 10, "dono")?[0].author, User::new(1, "Ana"));
+                assert_eq!(list_messages(c, 1, None, 10, "dono")?[0].author, User::new(UserId(1), "Ana"));
                 assert_eq!(find_user(c, "DONO")?.unwrap().role("dono"), Role::Owner);
                 Ok(())
             })
@@ -1081,7 +1130,7 @@ mod tests {
             "INSERT INTO users (username, created_at_ms) VALUES (?1, ?2)",
             params![name, now_ms() - age_days * 24 * 3600 * 1000],
         )?;
-        Ok(c.last_insert_rowid() as UserId)
+        Ok(UserId(c.last_insert_rowid()))
     }
 
     #[test]
@@ -1153,9 +1202,9 @@ mod tests {
         db.call_now(|c| {
             let id = badge_user(c, "Rebelde", 0)?;
             assert!(ban_of(c, id)?.is_none(), "nobody starts banned");
-            ban(c, id, Some(42), " desrespeito ")?;
+            ban(c, id, Some(UserId(42)), " desrespeito ")?;
             let b = ban_of(c, id)?.unwrap();
-            assert_eq!(b.banned_by, Some(42));
+            assert_eq!(b.banned_by, Some(UserId(42)));
             assert_eq!(b.reason, " desrespeito ", "the reason is stored as given");
             // Their sessions and remembered devices die with the ban: no old token
             // brings them back.

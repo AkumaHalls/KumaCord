@@ -212,7 +212,7 @@ pub async fn enforce(s: &AppState) {
         .filter_map(|m| m.channel_id.filter(|ch| !rules.can_see(m.user.id, *ch)).map(|ch| (m.user.id, ch)))
         .collect();
     for &(user, ch) in &out {
-        tracing::info!(user, channel = ch, "lost access to a private voice channel: taken out of it");
+        tracing::info!(user = %user, channel = %ch, "lost access to a private voice channel: taken out of it");
         if s.voice_of(user).and_then(|m| m.channel_id) == Some(ch) {
             s.force_leave(user);
         }
@@ -227,9 +227,9 @@ pub async fn enforce(s: &AppState) {
     out.dedup();
     for (user, ch) in out {
         match s.livekit.remove(&crate::voice_guard::voice_room(ch), &user.to_string()).await {
-            Ok(()) => tracing::info!(user, channel = ch, "livekit: removed from a private room (no access)"),
+            Ok(()) => tracing::info!(user = %user, channel = %ch, "livekit: removed from a private room (no access)"),
             Err(LkError::NotFound) | Err(LkError::Disabled) => {}
-            Err(LkError::Other(e)) => tracing::warn!(user, channel = ch, error = %e, "livekit: removing from a private room failed"),
+            Err(LkError::Other(e)) => tracing::warn!(user = %user, channel = %ch, error = %e, "livekit: removing from a private room failed"),
         }
     }
     // Whoever lost access may hold a join token from before (v1.0.1): watch the rooms closely
@@ -399,7 +399,7 @@ mod tests {
     use super::*;
 
     fn ch(id: ChannelId, private: Option<PrivateAccess>) -> Channel {
-        Channel { id, name: format!("c{id}"), kind: ChannelKind::Voice, position: id as i32, private, category_id: None }
+        Channel { id, name: format!("c{id}"), kind: ChannelKind::Voice, position: id.into_inner() as i32, private, category_id: None }
     }
 
     fn rules(list: &[Channel], roles: &[(UserId, Role)]) -> Rules {
@@ -411,46 +411,46 @@ mod tests {
     #[test]
     fn access_by_role_by_name_and_staff_always() {
         let members = PrivateAccess { roles: vec![Role::Member], users: vec![] };
-        let named = PrivateAccess { roles: vec![], users: vec![5] };
-        let r = rules(&[ch(1, None), ch(2, Some(members)), ch(3, Some(named))], &[(1, Role::Owner), (2, Role::Admin), (3, Role::Moderator), (4, Role::Member), (5, Role::Member)]);
-        assert!((1..=5).all(|u| r.can_see(u, 1)), "public");
-        assert!(r.can_see(4, 2) && r.can_see(99, 2), "Membro by role (an unknown account is a Membro)");
-        assert!(!r.can_see(3, 2), "Moderador is not Membro");
-        assert!(r.can_see(5, 3) && !r.can_see(4, 3) && !r.can_see(3, 3));
-        assert!(r.can_see(1, 3) && r.can_see(2, 3), "Dono and Admin always");
-        assert!(r.is_private(2) && !r.is_private(1));
+        let named = PrivateAccess { roles: vec![], users: vec![UserId(5)] };
+        let r = rules(&[ch(ChannelId(1), None), ch(ChannelId(2), Some(members)), ch(ChannelId(3), Some(named))], &[(UserId(1), Role::Owner), (UserId(2), Role::Admin), (UserId(3), Role::Moderator), (UserId(4), Role::Member), (UserId(5), Role::Member)]);
+        assert!((1..=5).all(|u| r.can_see(UserId(u), ChannelId(1))), "public");
+        assert!(r.can_see(UserId(4), ChannelId(2)) && r.can_see(UserId(99), ChannelId(2)), "Membro by role (an unknown account is a Membro)");
+        assert!(!r.can_see(UserId(3), ChannelId(2)), "Moderador is not Membro");
+        assert!(r.can_see(UserId(5), ChannelId(3)) && !r.can_see(UserId(4), ChannelId(3)) && !r.can_see(UserId(3), ChannelId(3)));
+        assert!(r.can_see(UserId(1), ChannelId(3)) && r.can_see(UserId(2), ChannelId(3)), "Dono and Admin always");
+        assert!(r.is_private(ChannelId(2)) && !r.is_private(ChannelId(1)));
     }
 
     #[test]
     fn a_deleted_private_channel_stays_private() {
         let only_staff = Some(PrivateAccess::default());
-        let r = rules(&[ch(1, None), ch(2, only_staff)], &[(7, Role::Member)]);
-        assert!(!r.can_see(7, 2));
-        let after = r.with_channels(&[ch(1, None)]);
-        assert!(!after.can_see(7, 2), "events still in flight about it reach nobody without access");
-        assert!(after.can_see(7, 42), "an unknown (deleted public) channel");
+        let r = rules(&[ch(ChannelId(1), None), ch(ChannelId(2), only_staff)], &[(UserId(7), Role::Member)]);
+        assert!(!r.can_see(UserId(7), ChannelId(2)));
+        let after = r.with_channels(&[ch(ChannelId(1), None)]);
+        assert!(!after.can_see(UserId(7), ChannelId(2)), "events still in flight about it reach nobody without access");
+        assert!(after.can_see(UserId(7), ChannelId(42)), "an unknown (deleted public) channel");
         // Made public, then deleted: public.
-        let public = r.with_channels(&[ch(1, None), ch(2, None)]).with_channels(&[ch(1, None)]);
-        assert!(public.can_see(7, 2));
+        let public = r.with_channels(&[ch(ChannelId(1), None), ch(ChannelId(2), None)]).with_channels(&[ch(ChannelId(1), None)]);
+        assert!(public.can_see(UserId(7), ChannelId(2)));
     }
 
     #[test]
     fn voice_members_in_hidden_channels_are_not_in_voice() {
         use VoiceView::*;
-        let r = rules(&[ch(1, None), ch(2, Some(PrivateAccess::default()))], &[(9, Role::Admin)]);
-        let me = 7;
+        let r = rules(&[ch(ChannelId(1), None), ch(ChannelId(2), Some(PrivateAccess::default()))], &[(UserId(9), Role::Admin)]);
+        let me = UserId(7);
         // A member (8) moving around, as I (a Membro without access to 2) see it.
-        assert_eq!(voice_view(&r, me, 8, Some(1), None), Full, "joins a public room");
-        assert_eq!(voice_view(&r, me, 8, Some(2), Some(1)), Left, "public -> private: left voice");
-        assert_eq!(voice_view(&r, me, 8, Some(2), Some(2)), Nothing, "mutes inside the private room");
-        assert_eq!(voice_view(&r, me, 8, Some(2), None), Nothing, "joins the private room");
-        assert_eq!(voice_view(&r, me, 8, None, Some(2)), Nothing, "leaves the private room");
-        assert_eq!(voice_view(&r, me, 8, Some(1), Some(2)), Full, "private -> public: appears");
-        assert_eq!(voice_view(&r, me, 8, None, Some(1)), Full, "leaves a public room");
-        assert_eq!(voice_view(&r, me, 8, None, None), Full);
+        assert_eq!(voice_view(&r, me, UserId(8), Some(ChannelId(1)), None), Full, "joins a public room");
+        assert_eq!(voice_view(&r, me, UserId(8), Some(ChannelId(2)), Some(ChannelId(1))), Left, "public -> private: left voice");
+        assert_eq!(voice_view(&r, me, UserId(8), Some(ChannelId(2)), Some(ChannelId(2))), Nothing, "mutes inside the private room");
+        assert_eq!(voice_view(&r, me, UserId(8), Some(ChannelId(2)), None), Nothing, "joins the private room");
+        assert_eq!(voice_view(&r, me, UserId(8), None, Some(ChannelId(2))), Nothing, "leaves the private room");
+        assert_eq!(voice_view(&r, me, UserId(8), Some(ChannelId(1)), Some(ChannelId(2))), Full, "private -> public: appears");
+        assert_eq!(voice_view(&r, me, UserId(8), None, Some(ChannelId(1))), Full, "leaves a public room");
+        assert_eq!(voice_view(&r, me, UserId(8), None, None), Full);
         // Myself, always; an admin sees everything.
-        assert_eq!(voice_view(&r, 8, 8, Some(2), None), Full);
-        assert_eq!(voice_view(&r, 9, 8, Some(2), Some(2)), Full);
+        assert_eq!(voice_view(&r, UserId(8), UserId(8), Some(ChannelId(2)), None), Full);
+        assert_eq!(voice_view(&r, UserId(9), UserId(8), Some(ChannelId(2)), Some(ChannelId(2))), Full);
     }
 
     fn mem() -> Connection {
@@ -471,7 +471,7 @@ mod tests {
     }
 
     fn listed(c: &Connection) -> Vec<Channel> {
-        let mut list = vec![ch(1, None), ch(2, None)];
+        let mut list = vec![ch(ChannelId(1), None), ch(ChannelId(2), None)];
         fill(c, &mut list).unwrap();
         list
     }
@@ -481,9 +481,9 @@ mod tests {
         let c = mem();
         assert!(listed(&c).iter().all(|c| c.private.is_none()));
         assert_eq!(c.query_row("SELECT COUNT(*) FROM channels WHERE id = ?", [GUARD_ID], |r| r.get::<_, i64>(0)).unwrap(), 0, "no guard while nothing is private");
-        let asked = PrivateAccess { roles: vec![Role::Member, Role::Admin], users: vec![4, 99, 3, 4] };
-        let stored = store(&c, 2, Some(&asked)).unwrap();
-        assert_eq!(stored, Some(PrivateAccess { roles: vec![Role::Member], users: vec![3, 4] }), "unknown accounts and staff roles dropped");
+        let asked = PrivateAccess { roles: vec![Role::Member, Role::Admin], users: vec![UserId(4), UserId(99), UserId(3), UserId(4)] };
+        let stored = store(&c, ChannelId(2), Some(&asked)).unwrap();
+        assert_eq!(stored, Some(PrivateAccess { roles: vec![Role::Member], users: vec![UserId(3), UserId(4)] }), "unknown accounts and staff roles dropped");
         assert_eq!(listed(&c)[1].private, stored);
         // The guard: a row whose position no integer reader accepts, and the version marker.
         let pos_type: String = c.query_row("SELECT typeof(position) FROM channels WHERE id = ?", [GUARD_ID], |r| r.get(0)).unwrap();
@@ -491,13 +491,13 @@ mod tests {
         assert!(c.query_row("SELECT position FROM channels WHERE id = ?", [GUARD_ID], |r| r.get::<_, i32>(0)).is_err(), "an older hub's read fails");
         assert_eq!(min_hub_version(&c).unwrap().as_deref(), Some(PRIVATE_MIN_HUB_VERSION));
         // Public again: the lists, the guard and the marker go.
-        assert_eq!(store(&c, 2, None).unwrap(), None);
+        assert_eq!(store(&c, ChannelId(2), None).unwrap(), None);
         assert!(listed(&c)[1].private.is_none());
         assert_eq!(c.query_row("SELECT COUNT(*) FROM channel_access_users", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         assert_eq!(c.query_row("SELECT COUNT(*) FROM channels WHERE id = ?", [GUARD_ID], |r| r.get::<_, i64>(0)).unwrap(), 0);
         assert_eq!(min_hub_version(&c).unwrap(), None);
         // Deleting a private channel (from any hub) takes its list with it.
-        store(&c, 2, Some(&PrivateAccess { roles: vec![], users: vec![3] })).unwrap();
+        store(&c, ChannelId(2), Some(&PrivateAccess { roles: vec![], users: vec![UserId(3)] })).unwrap();
         c.execute("DELETE FROM channels WHERE id = 2", []).unwrap();
         assert_eq!(c.query_row("SELECT COUNT(*) FROM channel_access_users", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         sync_guard(&c).unwrap();
@@ -508,7 +508,7 @@ mod tests {
     fn versions_and_log_lines() {
         assert!(too_old("0.8.2", "0.9.0") && !too_old("0.9.0", "0.9.0") && !too_old("0.10.0", "0.9.0") && !too_old("1.0.0", "0.9.1"));
         assert_eq!(describe(None, &[]), "público");
-        let p = PrivateAccess { roles: vec![Role::Moderator, Role::Member], users: vec![3] };
+        let p = PrivateAccess { roles: vec![Role::Moderator, Role::Member], users: vec![UserId(3)] };
         assert_eq!(describe(Some(&p), &["Ana".into()]), "privado; cargos: Dono, Admin, Moderador, Membro; pessoas: Ana");
         assert_eq!(describe(Some(&PrivateAccess::default()), &[]), "privado; cargos: Dono, Admin");
     }

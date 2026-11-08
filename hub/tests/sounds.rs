@@ -200,7 +200,7 @@ impl Ws {
     }
 
     /// Wait until the hub has announced every `(user, channel)` pair (in any order).
-    async fn wait_placed(&mut self, mut want: Vec<(UserId, i64)>) {
+    async fn wait_placed(&mut self, mut want: Vec<(UserId, ChannelId)>) {
         let t = Instant::now();
         while !want.is_empty() && t.elapsed() < Duration::from_secs(5) {
             if let Some(ServerEvent::VoiceStateChanged { member }) = self.next_within(Duration::from_secs(5)).await {
@@ -214,17 +214,17 @@ impl Ws {
         self.0.send(WsMsg::Text(serde_json::to_string(ev).unwrap().into())).await.unwrap();
     }
 
-    async fn voice(&mut self, channel: Option<i64>, deafened: bool) {
+    async fn voice(&mut self, channel: Option<ChannelId>, deafened: bool) {
         self.send(&ClientEvent::VoiceState { channel_id: channel, muted: false, deafened, streaming: false, camera: false, audio_only: false }).await;
     }
 
-    async fn play(&mut self, sound_id: SoundId) {
-        self.send(&ClientEvent::PlaySound { sound_id }).await;
+    async fn play(&mut self, sound_id: &SoundId) {
+        self.send(&ClientEvent::PlaySound { sound_id: sound_id.clone() }).await;
     }
 }
 
-fn voice_ids(chs: &[Channel]) -> (i64, i64) {
-    let v: Vec<i64> = chs.iter().filter(|c| c.kind == ChannelKind::Voice).map(|c| c.id).collect();
+fn voice_ids(chs: &[Channel]) -> (ChannelId, ChannelId) {
+    let v: Vec<ChannelId> = chs.iter().filter(|c| c.kind == ChannelKind::Voice).map(|c| c.id).collect();
     (v[0], v[1])
 }
 
@@ -417,35 +417,35 @@ async fn rename_and_delete_follow_the_permission_matrix() {
 
     let s = env.upload(&ana, "original").await;
     watcher.wait_for("added", |e| matches!(e, ServerEvent::SoundsChanged { .. })).await;
-    let rename = |id: SoundId| format!("/api/sounds/{id}/rename");
-    let delete = |id: SoundId| format!("/api/sounds/{id}/delete");
+    let rename = |id: &SoundId| format!("/api/sounds/{id}/rename");
+    let delete = |id: &SoundId| format!("/api/sounds/{id}/delete");
 
     // Another member cannot, anywhere.
-    assert_eq!(env.post(&bia, &rename(s.id), json!({"name": "invadido"})).await.status(), StatusCode::FORBIDDEN);
-    assert_eq!(env.post(&bia, &delete(s.id), json!({})).await.status(), StatusCode::FORBIDDEN);
+    assert_eq!(env.post(&bia, &rename(&s.id), json!({"name": "invadido"})).await.status(), StatusCode::FORBIDDEN);
+    assert_eq!(env.post(&bia, &delete(&s.id), json!({})).await.status(), StatusCode::FORBIDDEN);
     assert_eq!(env.sounds(&ana).await[0].name, "original");
     // Unknown sound.
-    assert_eq!(env.post(&ana, &rename(999), json!({"name": "x"})).await.status(), StatusCode::NOT_FOUND);
-    assert_eq!(env.post(&ana, &delete(999), json!({})).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(env.post(&ana, &rename(&SoundId("999".into())), json!({"name": "x"})).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(env.post(&ana, &delete(&SoundId("999".into())), json!({})).await.status(), StatusCode::NOT_FOUND);
 
     // The uploader renames (name, and optionally the emoji) and it is announced.
-    let r = env.post(&ana, &rename(s.id), json!({"name": "  novo nome ", "emoji": "🥁"})).await;
+    let r = env.post(&ana, &rename(&s.id), json!({"name": "  novo nome ", "emoji": "🥁"})).await;
     assert_eq!(r.status(), StatusCode::OK);
     let renamed: Sound = r.json().await.unwrap();
     assert_eq!((renamed.name.as_str(), renamed.emoji.as_str(), renamed.hash.as_str()), ("novo nome", "🥁", s.hash.as_str()));
     let ev = watcher.wait_for("renamed", |e| matches!(e, ServerEvent::SoundsChanged { .. })).await;
     assert!(matches!(ev, ServerEvent::SoundsChanged { sounds } if sounds[0].name == "novo nome"));
     // Without an emoji field the emoji stays; an empty one clears it; bad names are 400.
-    assert_eq!(env.post(&ana, &rename(s.id), json!({"name": "so o nome"})).await.json::<Sound>().await.unwrap().emoji, "🥁");
-    assert_eq!(env.post(&ana, &rename(s.id), json!({"name": "so o nome", "emoji": ""})).await.json::<Sound>().await.unwrap().emoji, "");
-    assert_eq!(env.post(&ana, &rename(s.id), json!({"name": ""})).await.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(env.post(&ana, &rename(s.id), json!({"name": "x", "emoji": "a b"})).await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(env.post(&ana, &rename(&s.id), json!({"name": "so o nome"})).await.json::<Sound>().await.unwrap().emoji, "🥁");
+    assert_eq!(env.post(&ana, &rename(&s.id), json!({"name": "so o nome", "emoji": ""})).await.json::<Sound>().await.unwrap().emoji, "");
+    assert_eq!(env.post(&ana, &rename(&s.id), json!({"name": ""})).await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(env.post(&ana, &rename(&s.id), json!({"name": "x", "emoji": "a b"})).await.status(), StatusCode::BAD_REQUEST);
     // Her own changes are not moderation: nothing in the log.
     assert!(env.audit(&admin).await.iter().all(|e| e.action != AUDIT_SOUND_RENAME));
 
     // Moderador, Admin and Dono change anybody's.
     for (who, label) in [(&moder, "mod"), (&admin, "adm"), (&owner, "dono")] {
-        let r = env.post(who, &rename(s.id), json!({"name": label})).await;
+        let r = env.post(who, &rename(&s.id), json!({"name": label})).await;
         assert_eq!(r.status(), StatusCode::OK, "{label} renames");
     }
     let log = env.audit(&admin).await;
@@ -456,7 +456,7 @@ async fn rename_and_delete_follow_the_permission_matrix() {
     assert_eq!(renames[2].actor.as_ref().map(|a| a.id), Some(moder.user.id));
 
     // Delete: the moderator's delete is audited, with the sound's name.
-    assert_eq!(env.post(&moder, &delete(s.id), json!({})).await.status(), StatusCode::OK);
+    assert_eq!(env.post(&moder, &delete(&s.id), json!({})).await.status(), StatusCode::OK);
     assert!(env.sounds(&ana).await.is_empty());
     let ev = watcher.wait_for("deleted", |e| matches!(e, ServerEvent::SoundsChanged { sounds } if sounds.is_empty())).await;
     assert!(matches!(ev, ServerEvent::SoundsChanged { .. }));
@@ -467,10 +467,10 @@ async fn rename_and_delete_follow_the_permission_matrix() {
 
     // The uploader deletes her own (not audited); a moderator's own sound is hers to delete too.
     let mine = env.upload(&ana, "minha").await;
-    assert_eq!(env.post(&ana, &delete(mine.id), json!({})).await.status(), StatusCode::OK);
+    assert_eq!(env.post(&ana, &delete(&mine.id), json!({})).await.status(), StatusCode::OK);
     let modsound = env.upload(&moder, "do moderador").await;
-    assert_eq!(env.post(&bia, &delete(modsound.id), json!({})).await.status(), StatusCode::FORBIDDEN, "a member cannot touch a moderator's sound");
-    assert_eq!(env.post(&admin, &delete(modsound.id), json!({})).await.status(), StatusCode::OK);
+    assert_eq!(env.post(&bia, &delete(&modsound.id), json!({})).await.status(), StatusCode::FORBIDDEN, "a member cannot touch a moderator's sound");
+    assert_eq!(env.post(&admin, &delete(&modsound.id), json!({})).await.status(), StatusCode::OK);
     assert_eq!(env.audit(&admin).await.iter().filter(|e| e.action == AUDIT_SOUND_DELETE).count(), 2);
     env.server.shutdown().await;
 }
@@ -513,19 +513,19 @@ async fn a_sound_reaches_only_the_players_voice_channel() {
     // Dani is online but not in voice. Wait until the hub has everybody placed.
     wd.wait_placed(vec![(ana.user.id, room1), (bia.user.id, room1), (caio.user.id, room2)]).await;
 
-    wa.play(s.id).await;
-    let ev = wb.wait_for("played", is_played(s.id)).await;
+    wa.play(&s.id).await;
+    let ev = wb.wait_for("played", is_played(s.id.clone())).await;
     let ServerEvent::SoundPlayed { by, channel_id, .. } = ev else { unreachable!() };
     assert_eq!((by.id, channel_id), (ana.user.id, room1));
-    wa.wait_for("played for the player too", is_played(s.id)).await;
+    wa.wait_for("played for the player too", is_played(s.id.clone())).await;
     for (name, ws) in [("caio (other room)", &mut wc), ("dani (not in voice)", &mut wd)] {
         let got = ws.drain(Duration::from_millis(500)).await;
         assert!(!got.iter().any(|e| matches!(e, ServerEvent::SoundPlayed { .. })), "{name} must not get it: {got:?}");
     }
     // The other room has its own sounds.
-    wc.play(s.id).await;
-    wc.wait_for("c hears own", is_played(s.id)).await;
-    assert!(!wb.drain(Duration::from_millis(400)).await.iter().any(is_played(s.id)), "room 1 does not hear room 2");
+    wc.play(&s.id).await;
+    wc.wait_for("c hears own", is_played(s.id.clone())).await;
+    assert!(!wb.drain(Duration::from_millis(400)).await.iter().any(is_played(s.id.clone())), "room 1 does not hear room 2");
     env.server.shutdown().await;
 }
 
@@ -539,20 +539,20 @@ async fn playing_is_refused_outside_voice_for_unknown_sounds_and_when_server_mut
     let mut wa = env.ws(&ana).await;
 
     let is_err = |text: &'static str| move |e: &ServerEvent| matches!(e, ServerEvent::Error { error } if error == text);
-    wa.play(s.id).await;
+    wa.play(&s.id).await;
     wa.wait_for("not in voice", is_err(ERR_SOUND_NOT_IN_VOICE)).await;
     wa.voice(Some(room1), false).await;
-    wa.play(404).await;
+    wa.play(&SoundId("404".into())).await;
     wa.wait_for("unknown", is_err(ERR_SOUND_UNKNOWN)).await;
 
     // A server-muted member cannot talk through the soundboard.
     assert_eq!(env.post(&moder, &format!("/api/mod/users/{}/mute", ana.user.id), json!({"muted": true})).await.status(), StatusCode::OK);
     tokio::time::sleep(Duration::from_millis(2100)).await; // past the per-person gap of the refused-unknown play
-    wa.play(s.id).await;
+    wa.play(&s.id).await;
     wa.wait_for("muted", is_err(ERR_SOUND_SERVER_MUTED)).await;
     assert_eq!(env.post(&moder, &format!("/api/mod/users/{}/mute", ana.user.id), json!({"muted": false})).await.status(), StatusCode::OK);
-    wa.play(s.id).await;
-    wa.wait_for("played after the unmute", is_played(s.id)).await;
+    wa.play(&s.id).await;
+    wa.wait_for("played after the unmute", is_played(s.id.clone())).await;
     let _ = owner;
     env.server.shutdown().await;
 }
@@ -577,35 +577,35 @@ async fn play_rate_limits_per_person_and_per_room() {
         ws.voice(Some(room1), false).await;
     }
     socks[6].voice(Some(room2), false).await;
-    let mut placed: Vec<(UserId, i64)> = people.iter().take(6).map(|p| (p.user.id, room1)).collect();
+    let mut placed: Vec<(UserId, ChannelId)> = people.iter().take(6).map(|p| (p.user.id, room1)).collect();
     placed.push((people[6].user.id, room2));
     socks[0].wait_placed(placed).await;
 
     let limited = |e: &ServerEvent| matches!(e, ServerEvent::Error { error } if error == ERR_SOUND_RATE_LIMITED);
     // One person: the second play within 2 s is refused, and nobody hears it.
-    socks[0].play(s.id).await;
-    socks[0].wait_for("first", is_played(s.id)).await;
-    socks[0].play(s.id).await;
+    socks[0].play(&s.id).await;
+    socks[0].wait_for("first", is_played(s.id.clone())).await;
+    socks[0].play(&s.id).await;
     socks[0].wait_for("too fast", limited).await;
     let heard = socks[1].drain(Duration::from_millis(300)).await;
-    assert_eq!(heard.iter().filter(|e| is_played(s.id)(e)).count(), 1, "only the first reached the room");
+    assert_eq!(heard.iter().filter(|e| is_played(s.id.clone())(e)).count(), 1, "only the first reached the room");
 
     // The room: five plays in 10 s in all; the sixth person is refused even though it is their first.
     for ws in socks.iter_mut().take(5).skip(1) {
-        ws.play(s.id).await;
+        ws.play(&s.id).await;
     }
     for ws in socks.iter_mut().take(5).skip(1) {
-        ws.wait_for("allowed", is_played(s.id)).await;
+        ws.wait_for("allowed", is_played(s.id.clone())).await;
     }
-    socks[5].play(s.id).await;
+    socks[5].play(&s.id).await;
     socks[5].wait_for("room is full", limited).await;
     // Another room is counted on its own.
-    socks[6].play(s.id).await;
-    socks[6].wait_for("room 2 plays", is_played(s.id)).await;
+    socks[6].play(&s.id).await;
+    socks[6].wait_for("room 2 plays", is_played(s.id.clone())).await;
 
     // After the gap the first person plays again (the room window has not slid yet: still full).
     tokio::time::sleep(Duration::from_millis(2100)).await;
-    socks[0].play(s.id).await;
+    socks[0].play(&s.id).await;
     socks[0].wait_for("still limited by the room", limited).await;
     env.server.shutdown().await;
 }
@@ -622,10 +622,10 @@ async fn old_clients_are_not_bothered_by_the_new_events() {
         Pong { nonce: u64 },
         Error { error: String },
     }
-    let played = serde_json::to_string(&ServerEvent::SoundPlayed { sound_id: 3, by: User::new(1, "ana"), channel_id: 2 }).unwrap();
+    let played = serde_json::to_string(&ServerEvent::SoundPlayed { sound_id: SoundId("3".into()), by: User::new(UserId(1), "ana"), channel_id: ChannelId(2) }).unwrap();
     let changed = serde_json::to_string(&ServerEvent::SoundsChanged { sounds: vec![] }).unwrap();
     assert!(serde_json::from_str::<V041Event>(&played).is_err() && serde_json::from_str::<V041Event>(&changed).is_err());
-    assert_eq!(played, r#"{"type":"sound_played","sound_id":3,"by":{"id":1,"username":"ana"},"channel_id":2}"#);
-    assert_eq!(serde_json::to_string(&ClientEvent::PlaySound { sound_id: 3 }).unwrap(), r#"{"type":"play_sound","sound_id":3}"#);
+    assert_eq!(played, r#"{"type":"sound_played","sound_id":"3","by":{"id":1,"username":"ana"},"channel_id":2}"#);
+    assert_eq!(serde_json::to_string(&ClientEvent::PlaySound { sound_id: SoundId("3".into()) }).unwrap(), r#"{"type":"play_sound","sound_id":"3"}"#);
     // A hub too old for it answers a PlaySound with the generic parse error, and keeps the socket.
 }

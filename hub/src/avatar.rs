@@ -442,14 +442,14 @@ mod tests {
         let st = AvatarState::new(3, Duration::from_secs(60));
         let t0 = Instant::now();
         for i in 0..3 {
-            assert!(st.allow(1, t0 + Duration::from_secs(i)).is_ok());
+            assert!(st.allow(UserId(1), t0 + Duration::from_secs(i)).is_ok());
         }
-        let wait = st.allow(1, t0 + Duration::from_secs(10)).unwrap_err();
+        let wait = st.allow(UserId(1), t0 + Duration::from_secs(10)).unwrap_err();
         assert!(wait > Duration::from_secs(49) && wait <= Duration::from_secs(50), "{wait:?}");
-        assert!(st.allow(2, t0 + Duration::from_secs(10)).is_ok(), "somebody else is unaffected");
-        assert!(st.allow(1, t0 + Duration::from_secs(60)).is_ok(), "the oldest attempt aged out");
-        assert!(st.allow(1, t0 + Duration::from_secs(61)).is_ok());
-        assert!(st.allow(1, t0 + Duration::from_secs(62)).is_ok());
-        assert!(st.allow(1, t0 + Duration::from_secs(63)).is_err());
+        assert!(st.allow(UserId(2), t0 + Duration::from_secs(10)).is_ok(), "somebody else is unaffected");
+        assert!(st.allow(UserId(1), t0 + Duration::from_secs(60)).is_ok(), "the oldest attempt aged out");
+        assert!(st.allow(UserId(1), t0 + Duration::from_secs(61)).is_ok());
+        assert!(st.allow(UserId(1), t0 + Duration::from_secs(62)).is_ok());
+        assert!(st.allow(UserId(1), t0 + Duration::from_secs(63)).is_err());
     }
 }

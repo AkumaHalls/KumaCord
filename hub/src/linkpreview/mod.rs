@@ -408,7 +408,7 @@ mod tests {
         for i in 0..20 {
             let p = previews.clone();
             let url = LinkPreviews::parse_url(&format!("http://127.0.0.1:{port}/{}", i % 10)).unwrap();
-            tasks.push(tokio::spawn(async move { p.get(1, &url).await }));
+            tasks.push(tokio::spawn(async move { p.get(UserId(1), &url).await }));
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!previews.inflight.lock().unwrap().is_empty(), "the requests are waiting");

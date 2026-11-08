@@ -52,7 +52,7 @@ pub trait ChatLine {
 
 impl ChatLine for Message {
     fn id(&self) -> i64 {
-        self.id
+        self.id.into_inner()
     }
     fn author(&self) -> &User {
         &self.author
@@ -85,7 +85,7 @@ impl ChatLine for Message {
 
 impl ChatLine for DmMessage {
     fn id(&self) -> i64 {
-        self.id
+        self.id.into_inner()
     }
     fn author(&self) -> &User {
         &self.author
@@ -223,7 +223,7 @@ pub fn message_list<T: ChatLine>(ui: &mut egui::Ui, p: Parts<'_>, msgs: &[T], sp
                     ui.spacing_mut().item_spacing.y = 3.0;
                     if let Some(r) = m.reply() {
                         if chat_extras::quote_line(ui, r) {
-                            out.acts.push(Act::Jump { id: r.id, deleted: r.deleted });
+                            out.acts.push(Act::Jump { id: r.id.into_inner(), deleted: r.deleted });
                         }
                     }
                     if new_group {
@@ -378,7 +378,7 @@ impl App {
             requested: log.requested,
             no_more: log.no_more,
             loading_older: log.loading_older,
-            view_key: ch,
+            view_key: *ch,
         };
         let previews_on = self.settings.show_link_previews && !self.previews.unsupported();
         let parts = Parts {
@@ -392,7 +392,7 @@ impl App {
         let out = message_list(ui, parts, &log.msgs, &spec);
         if let Some(before) = out.load_older {
             log.loading_older = true;
-            self.backend.send(Cmd::LoadHistory { channel: ch, before: Some(before) });
+            self.backend.send(Cmd::LoadHistory { channel: ch, before: Some(vox_proto::MessageId(before)) });
         }
         self.list_done(ui, Target::Channel(ch), out, Origin::Chat);
     }
@@ -415,7 +415,7 @@ impl App {
             requested: log.requested,
             no_more: log.no_more,
             loading_older: log.loading_older,
-            view_key: -1_000_000 - dm,
+            view_key: -1_000_000 - *dm,
         };
         let previews_on = self.settings.show_link_previews && !self.previews.unsupported();
         let parts = Parts {
@@ -429,7 +429,7 @@ impl App {
         let out = message_list(ui, parts, &log.msgs, &spec);
         if let Some(before) = out.load_older {
             log.loading_older = true;
-            self.backend.send(Cmd::Dm(super::dms::DmCmd::History { dm, before: Some(before) }));
+            self.backend.send(Cmd::Dm(super::dms::DmCmd::History { dm, before: Some(vox_proto::DmMessageId(before)) }));
         }
         self.list_done(ui, Target::Dm(dm), out, Origin::Dm);
     }

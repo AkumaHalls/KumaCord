@@ -524,7 +524,7 @@ impl App {
                         self.profile.supported = Some(false);
                     }
                     ProfileReply::Failed(e) => {
-                        tracing::warn!(error = %e, user, "loading a profile failed");
+                        tracing::warn!(error = %e, user = %user, "loading a profile failed");
                         if !self.profile.failed.contains(&user) {
                             self.profile.failed.push(user);
                         }
@@ -1226,7 +1226,7 @@ mod tests {
     use super::*;
 
     fn user(id: i64, name: &str, display: Option<&str>) -> User {
-        User { display_name: display.map(Into::into), ..User::new(id, name) }
+        User { display_name: display.map(Into::into), ..User::new(UserId(id), name) }
     }
 
     #[test]

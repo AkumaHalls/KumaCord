@@ -210,8 +210,8 @@ async fn private_channels_on_a_v082_database_and_the_downgrade_guard() {
     for round in 0..2 {
         let server = start(new_hub(&new_dir)).await.unwrap();
         let chans: Vec<Channel> = hub.get(&dt, "/api/channels").await;
-        assert!(chans.iter().any(|c| c.id == geral), "round {round}");
-        let s = chans.iter().find(|c| c.id == segredos).unwrap_or_else(|| panic!("round {round}: the owner always sees it"));
+        assert!(chans.iter().any(|c| c.id == ChannelId(geral)), "round {round}");
+        let s = chans.iter().find(|c| c.id == ChannelId(segredos)).unwrap_or_else(|| panic!("round {round}: the owner always sees it"));
         if round == 0 {
             assert!(s.private.is_none(), "a v0.8.2 channel reads as public");
             assert!(hub.channel_ids(&bt).await.contains(&segredos));
@@ -225,7 +225,7 @@ async fn private_channels_on_a_v082_database_and_the_downgrade_guard() {
         assert!(!hub.channel_ids(&bt).await.contains(&segredos), "round {round}");
         assert_eq!(hub.get_status(&bt, &format!("/api/channels/{segredos}/messages")).await, StatusCode::NOT_FOUND);
         let msgs: Vec<Message> = hub.get(&ct, &format!("/api/channels/{segredos}/messages")).await;
-        assert!(msgs.iter().any(|m| m.id == old_msg), "round {round}: Carla reads the old history");
+        assert!(msgs.iter().any(|m| m.id == MessageId(old_msg)), "round {round}: Carla reads the old history");
         assert!(hub.channel_ids(&bt).await.contains(&geral));
         server.shutdown().await;
     }
@@ -260,7 +260,7 @@ async fn private_channels_on_a_v082_database_and_the_downgrade_guard() {
     let ids = hub.channel_ids(&bt).await;
     assert!(ids.contains(&segredos) && ids.contains(&geral) && ids.iter().all(|id| *id > 0), "{ids:?}");
     let msgs: Vec<Message> = hub.get(&bt, &format!("/api/channels/{segredos}/messages")).await;
-    assert!(msgs.iter().any(|m| m.id == old_msg));
+    assert!(msgs.iter().any(|m| m.id == MessageId(old_msg)));
     hub.say(&bt, geral, "de volta ao v0.8.2").await;
     drop(old);
 

@@ -205,6 +205,14 @@ pub async fn start_tuned(opts: Options, previews: linkpreview::PreviewConfig, tu
     let attachments = attachments::AttachmentState::new(&opts.data_dir, &cfg);
     let slots = serve::Slots::new(tuning.limits.clone());
     let state = state::Shared::new(cfg.clone(), db, server_id, channels, server_muted, previews, lk_admin, attachments, tuning, shutdown_rx.clone());
+    // Load voice guard revocations from database (persists across restarts, CU-015-VG-001)
+    if let Ok(revs) = state.db.call(|c| db::load_voice_revocations(c)).await {
+        let mut g = state.voice_guard.lock();
+        for (user, revoked_at, issued_at) in revs {
+            if revoked_at > 0 { g.revoked_at.insert(user, revoked_at); }
+            if let Some(issued) = issued_at { if issued > 0 { g.issued_at.insert(user, issued); } }
+        }
+    }
     // v1.1: the custom roles ride every `Ready` (loaded once here, swapped on every change).
     if let Ok(roles) = state.db.call(|c| db::list_custom_roles(c)).await {
         state.set_custom_roles(roles);

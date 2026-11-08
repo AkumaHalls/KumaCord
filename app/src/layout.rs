@@ -24,7 +24,7 @@
 //!   handles Esc.
 
 use serde::{Deserialize, Serialize};
-use vox_proto::ChannelId;
+use vox_proto::{ChannelId, DmId};
 
 use crate::app::{App, Center};
 
@@ -67,7 +67,7 @@ pub enum Open {
     /// A text channel's chat.
     Text(ChannelId),
     /// A DM conversation (its id).
-    Dm(i64),
+    Dm(DmId),
     /// The call stage of this voice channel (`dms::DM_CALL_CHANNEL` for a private call).
     Stage(ChannelId),
 }
@@ -79,7 +79,7 @@ pub struct Focus {
     /// The voice channel we are in or joining.
     pub call: Option<ChannelId>,
     pub text: Option<ChannelId>,
-    pub dm: Option<i64>,
+    pub dm: Option<DmId>,
 }
 
 /// What is open in the center: the stage while it is in focus and we are in (or joining) a call,
@@ -221,28 +221,28 @@ impl App {
 mod tests {
     use super::*;
 
-    fn focus(center: Center, call: Option<ChannelId>, text: Option<ChannelId>, dm: Option<i64>) -> Focus {
+    fn focus(center: Center, call: Option<ChannelId>, text: Option<ChannelId>, dm: Option<DmId>) -> Focus {
         Focus { center, call, text, dm }
     }
 
     #[test]
     fn the_stage_in_focus_takes_the_open_highlight_from_the_text_channel() {
         // text → voice → text
-        assert_eq!(open_in_center(focus(Center::Chat, None, Some(1), None)), Open::Text(1));
-        assert_eq!(open_in_center(focus(Center::Call, Some(5), Some(1), None)), Open::Stage(5));
-        assert_eq!(open_in_center(focus(Center::Chat, Some(5), Some(1), None)), Open::Text(1));
+        assert_eq!(open_in_center(focus(Center::Chat, None, Some(ChannelId(1)), None)), Open::Text(ChannelId(1)));
+        assert_eq!(open_in_center(focus(Center::Call, Some(ChannelId(5)), Some(ChannelId(1)), None)), Open::Stage(ChannelId(5)));
+        assert_eq!(open_in_center(focus(Center::Chat, Some(ChannelId(5)), Some(ChannelId(1)), None)), Open::Text(ChannelId(1)));
         // A DM follows the same rule.
-        assert_eq!(open_in_center(focus(Center::Chat, Some(5), Some(1), Some(9))), Open::Dm(9));
-        assert_eq!(open_in_center(focus(Center::Call, Some(5), Some(1), Some(9))), Open::Stage(5));
+        assert_eq!(open_in_center(focus(Center::Chat, Some(ChannelId(5)), Some(ChannelId(1)), Some(DmId(9)))), Open::Dm(DmId(9)));
+        assert_eq!(open_in_center(focus(Center::Call, Some(ChannelId(5)), Some(ChannelId(1)), Some(DmId(9)))), Open::Stage(ChannelId(5)));
         // No call: the stage cannot be open.
-        assert_eq!(open_in_center(focus(Center::Call, None, Some(1), None)), Open::Text(1));
+        assert_eq!(open_in_center(focus(Center::Call, None, Some(ChannelId(1)), None)), Open::Text(ChannelId(1)));
         assert_eq!(open_in_center(focus(Center::Chat, None, None, None)), Open::Nothing);
     }
 
     #[test]
     fn each_mode_highlights_only_what_the_center_shows() {
         // In a call (room 5), #1 picked last and docked.
-        let (room, text) = (5, 1);
+        let (room, text) = (ChannelId(5), ChannelId(1));
         for (mode, open) in [(CenterMode::Chat, Open::Text(text)), (CenterMode::Cards, Open::Stage(room)), (CenterMode::CardsWithChat, Open::Stage(room))] {
             let shown = open_in_center(focus(center_for(mode), Some(room), Some(text), None));
             assert_eq!(shown, open, "{mode:?}");
@@ -258,14 +258,14 @@ mod tests {
     fn the_docked_chat_is_on_screen_only_beside_the_cards() {
         use CenterMode::*;
         // Chat in the center: that channel, whatever is docked.
-        assert_eq!(text_on_screen(true, false, Open::Text(1), Chat, Some(2)), Some(1));
+        assert_eq!(text_on_screen(true, false, Open::Text(ChannelId(1)), Chat, Some(ChannelId(2))), Some(ChannelId(1)));
         // The stage with the chat docked: the docked one (so its messages count as read).
-        assert_eq!(text_on_screen(true, false, Open::Stage(5), CardsWithChat, Some(2)), Some(2));
+        assert_eq!(text_on_screen(true, false, Open::Stage(ChannelId(5)), CardsWithChat, Some(ChannelId(2))), Some(ChannelId(2)));
         // Cards only, the stage fullscreen, a DM, the home screen: no channel is being read.
-        assert_eq!(text_on_screen(true, false, Open::Stage(5), Cards, Some(2)), None);
-        assert_eq!(text_on_screen(true, true, Open::Stage(5), CardsWithChat, Some(2)), None);
-        assert_eq!(text_on_screen(true, false, Open::Dm(9), Chat, Some(2)), None);
-        assert_eq!(text_on_screen(false, false, Open::Text(1), Chat, Some(2)), None);
+        assert_eq!(text_on_screen(true, false, Open::Stage(ChannelId(5)), Cards, Some(ChannelId(2))), None);
+        assert_eq!(text_on_screen(true, true, Open::Stage(ChannelId(5)), CardsWithChat, Some(ChannelId(2))), None);
+        assert_eq!(text_on_screen(true, false, Open::Dm(DmId(9)), Chat, Some(ChannelId(2))), None);
+        assert_eq!(text_on_screen(false, false, Open::Text(ChannelId(1)), Chat, Some(ChannelId(2))), None);
     }
 
     #[test]

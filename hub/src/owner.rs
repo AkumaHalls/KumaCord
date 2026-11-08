@@ -255,7 +255,7 @@ async fn claim(s: &AppState, row: &UserRow, via: Via, session: Option<&str>) -> 
     if let Some(h) = session {
         s.ownership.prove(h);
     }
-    tracing::info!(user = %row.username, id, via = via.detail(), "server claimed: this user is now the owner");
+    tracing::info!(user = %row.username, id = %id, via = via.detail(), "server claimed: this user is now the owner");
     audit(s, Some(id), AUDIT_CLAIM_OWNER, None, via.detail().to_string()).await;
     s.update_user(&row.user(&s.owner()));
     crate::access::reload_roles(s).await;

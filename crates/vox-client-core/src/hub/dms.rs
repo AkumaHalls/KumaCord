@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(serve("404 Not Found", "").await.dms().await, DmsReply::Unsupported);
         assert_eq!(serve("200 OK", "[]").await.dms().await, DmsReply::Ready(vec![]));
         assert!(matches!(serve("500 Internal Server Error", "x").await.dms().await, DmsReply::Failed(_)));
-        let e = serve("403 Forbidden", r#"{"error":"blocked"}"#).await.send_dm(1, "oi").await.unwrap_err();
+        let e = serve("403 Forbidden", r#"{"error":"blocked"}"#).await.send_dm(DmId(1), "oi").await.unwrap_err();
         let st = e.downcast_ref::<HttpStatusError>().unwrap();
         assert_eq!((st.status, st.message.as_str()), (403, vox_proto::ERR_DM_BLOCKED));
     }

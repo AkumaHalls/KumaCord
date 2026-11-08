@@ -27,7 +27,7 @@ const VOICE_NAME: &str = "pv-voz";
 
 #[derive(Default)]
 pub struct State {
-    geral: i64,
+    geral: ChannelId,
     b: Option<UserId>,
     text: Option<ChannelId>,
     voice: Option<ChannelId>,

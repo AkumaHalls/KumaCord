@@ -139,8 +139,8 @@ async fn a_v041_database_migrates_and_stays_usable() {
     // A v0.4.1 hub has no soundboard: the 404 is how a new client knows to hide the feature.
     let r = http.get(format!("http://127.0.0.1:{port}/api/sounds")).bearer_auth(ana["token"].as_str().unwrap()).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
-    say(port, ana["token"].as_str().unwrap(), geral, "oi do v0.4.1").await;
-    say(port, bruno["token"].as_str().unwrap(), geral, "olá").await;
+    say(port, ana["token"].as_str().unwrap(), geral.into_inner(), "oi do v0.4.1").await;
+    say(port, bruno["token"].as_str().unwrap(), geral.into_inner(), "olá").await;
     drop(old); // killed like a crash: the last writes may only be in the WAL
     copy_db(&old_dir, &new_dir);
 
@@ -168,7 +168,7 @@ async fn a_v041_database_migrates_and_stays_usable() {
                 .await
                 .unwrap();
             let owner: LoginResponse = r.json().await.unwrap();
-            assert_eq!(owner.user.id, ana["user"]["id"].as_i64().unwrap(), "same user, same id");
+            assert_eq!(owner.user.id, UserId(ana["user"]["id"].as_i64().unwrap()), "same user, same id");
             let r = http
                 .post(format!("{base}/api/account/password"))
                 .bearer_auth(&owner.token)
@@ -236,7 +236,7 @@ async fn a_v041_database_migrates_and_stays_usable() {
         .await
         .unwrap();
     assert_eq!(msgs.len(), 2);
-    say(port, carla["token"].as_str().unwrap(), geral, "de volta ao v0.4.1").await;
+    say(port, carla["token"].as_str().unwrap(), geral.into_inner(), "de volta ao v0.4.1").await;
     drop(old);
 }
 
@@ -303,7 +303,7 @@ async fn a_v041_database_with_no_owner_is_claimed_by_the_server_pc() {
         .await
         .unwrap();
     let geral = chs.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
-    say(port, dono["token"].as_str().unwrap(), geral, "oi do v0.4.1").await;
+    say(port, dono["token"].as_str().unwrap(), geral.into_inner(), "oi do v0.4.1").await;
     drop(old);
     copy_db(&old_dir, &new_dir);
 

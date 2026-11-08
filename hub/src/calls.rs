@@ -29,6 +29,7 @@ use crate::livekit_admin::LkError;
 use crate::livekit_token;
 use crate::state::AppState;
 use crate::util::now_ms;
+use crate::voice_guard::VoiceGuard;
 
 type ApiResult<T> = Result<Json<T>, ApiErr>;
 
@@ -133,18 +134,18 @@ pub fn room_of(s: &AppState, user: UserId) -> Option<String> {
 
 // ---------------------------------------------------------------- tokens
 
-fn join_response(s: &AppState, me: &User, conv: &ConvRow, headers: &HeaderMap) -> VoiceJoinResponse {
+async fn join_response(s: &AppState, me: &User, conv: &ConvRow, headers: &HeaderMap) -> VoiceJoinResponse {
     let room = dm_room(conv.lo, conv.hi);
     let lk = &s.cfg.livekit;
     // A server mute holds in private calls too: no microphone in the token.
     let muted = s.is_server_muted(me.id);
     let token = livekit_token::join_token_with(&lk.api_key, &lk.api_secret, &room, &me.id.to_string(), &me.username, now_ms() / 1000, muted);
-    s.voice_guard.issued(me.id);
+    VoiceGuard::issued(&s, me.id).await;
     VoiceJoinResponse { livekit_url: dms::livekit_url(s, headers), livekit_token: token, room }
 }
 
-fn answer(s: &AppState, me: &User, live: &Live, headers: &HeaderMap) -> Json<DmCallResponse> {
-    Json(DmCallResponse { call: live.call.clone(), join: join_response(s, me, &live.conv, headers) })
+async fn answer(s: &AppState, me: &User, live: &Live, headers: &HeaderMap) -> Json<DmCallResponse> {
+    Json(DmCallResponse { call: live.call.clone(), join: join_response(s, me, &live.conv, headers).await })
 }
 
 fn conflict(msg: &str) -> ApiErr {
@@ -173,7 +174,7 @@ async fn close(s: &AppState, live: Live, how: Close) {
         (_, Some(at)) => (DmMessageKind::CallEnded, at.elapsed().as_secs().clamp(1, u32::MAX as u64) as u32),
         (_, None) => (DmMessageKind::CallMissed, 0),
     };
-    tracing::info!(call = call.id, dm = call.dm_id, caller = %call.caller.username, callee = %call.callee.username, ?how, ?kind, secs, "dm call closed");
+    tracing::info!(call = %call.id, dm = %call.dm_id, caller = %call.caller.username, callee = %call.callee.username, ?how, ?kind, secs, "dm call closed");
     if let Err(e) = dms::add_line(s, &live.conv, call.caller.id, kind, String::new(), secs).await {
         tracing::error!("writing the call line failed: {}", e.1);
     }
@@ -302,9 +303,9 @@ pub async fn call(State(s): State<AppState>, AuthUser(me): AuthUser, Path(id): P
     let existing = s.calls.lock().of_dm(id).cloned();
     if let Some(live) = existing {
         if live.answered.is_none() && live.call.callee.id == me.id {
-            return accept_live(&s, &me, live.call.id, &headers);
+            return accept_live(&s, &me, live.call.id, &headers).await;
         }
-        return Ok(answer(&s, &me, &live, &headers));
+        return Ok(answer(&s, &me, &live, &headers).await);
     }
     // A call elsewhere: mine ends (I am calling someone else now); theirs means busy.
     end_for(&s, me.id, CallEndReason::Hangup).await;
@@ -332,7 +333,7 @@ pub async fn call(State(s): State<AppState>, AuthUser(me): AuthUser, Path(id): P
             }
             Err(first)
         } else {
-            g.next_id += 1;
+            g.next_id = CallId(g.next_id.into_inner() + 1);
             let call = DmCall { id: g.next_id, dm_id: id, caller: me_now, callee: peer, state: CallState::Ringing, started_at_ms: now_ms() };
             let live = Live { call, conv: conv.clone(), answered: None, busy_noted: Vec::new() };
             g.calls.insert(live.call.id, live.clone());
@@ -343,21 +344,21 @@ pub async fn call(State(s): State<AppState>, AuthUser(me): AuthUser, Path(id): P
         Ok(l) => l,
         Err(first) => {
             // They are in another call: they see a missed call from me later (once per call).
-            tracing::info!(caller = %me.username, dm = id, first, "dm call: the other person is busy");
+            tracing::info!(caller = %me.username, dm = %id, first, "dm call: the other person is busy");
             if first {
                 let _ = dms::add_line(&s, &conv, me.id, DmMessageKind::CallMissed, String::new(), 0).await;
             }
             return Err(conflict(ERR_CALL_BUSY));
         }
     };
-    tracing::info!(call = live.call.id, dm = id, caller = %me.username, callee = %live.call.callee.username, "dm call ringing");
+    tracing::info!(call = %live.call.id, dm = %id, caller = %me.username, callee = %live.call.callee.username, "dm call ringing");
     dms::tell_both(&s, &conv, &ServerEvent::CallInvite { call: live.call.clone() });
     arm_ring_timeout(&s, live.call.id);
-    Ok(answer(&s, &me, &live, &headers))
+    Ok(answer(&s, &me, &live, &headers).await)
 }
 
 /// The callee answers call `id`.
-fn accept_live(s: &AppState, me: &User, id: CallId, headers: &HeaderMap) -> ApiResult<DmCallResponse> {
+async fn accept_live(s: &AppState, me: &User, id: CallId, headers: &HeaderMap) -> ApiResult<DmCallResponse> {
     let live = {
         let mut g = s.calls.lock();
         let Some(live) = g.calls.get_mut(&id) else { return Err(conflict("no call")) };
@@ -367,9 +368,9 @@ fn accept_live(s: &AppState, me: &User, id: CallId, headers: &HeaderMap) -> ApiR
         }
         live.clone()
     };
-    tracing::info!(call = id, dm = live.call.dm_id, callee = %me.username, "dm call answered");
+    tracing::info!(call = %id, dm = %live.call.dm_id, callee = %me.username, "dm call answered");
     dms::tell_both(s, &live.conv, &ServerEvent::CallAccepted { call: live.call.clone() });
-    Ok(answer(s, me, &live, headers))
+    Ok(answer(s, me, &live, headers).await)
 }
 
 /// `POST /api/dms/{id}/call/accept`
@@ -380,9 +381,9 @@ pub async fn accept(State(s): State<AppState>, AuthUser(me): AuthUser, Path(id):
         if live.call.callee.id != me.id {
             return Err(conflict("only the person being called can answer"));
         }
-        return accept_live(&s, &me, live.call.id, &headers);
+        return accept_live(&s, &me, live.call.id, &headers).await;
     }
-    Ok(answer(&s, &me, &live, &headers))
+    Ok(answer(&s, &me, &live, &headers).await)
 }
 
 /// `POST /api/dms/{id}/call/decline`
@@ -428,10 +429,10 @@ mod tests {
         let mut g = Inner::default();
         let t = Instant::now();
         for _ in 0..CALL_RATE_LIMIT {
-            assert!(g.allow_start(1, t));
+            assert!(g.allow_start(UserId(1), t));
         }
-        assert!(!g.allow_start(1, t));
-        assert!(g.allow_start(2, t), "somebody else is not affected");
-        assert!(g.allow_start(1, t + Duration::from_secs(CALL_RATE_WINDOW_SECS)));
+        assert!(!g.allow_start(UserId(1), t));
+        assert!(g.allow_start(UserId(2), t), "somebody else is not affected");
+        assert!(g.allow_start(UserId(1), t + Duration::from_secs(CALL_RATE_WINDOW_SECS)));
     }
 }

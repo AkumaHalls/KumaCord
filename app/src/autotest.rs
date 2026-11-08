@@ -13,7 +13,7 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use vox_proto::ChannelKind;
+use vox_proto::{ChannelId, ChannelKind, UserId};
 
 use crate::app::{App, Center, Pick, Screen, Share};
 use crate::backend::Cmd;
@@ -645,11 +645,11 @@ impl Auto {
         tracing::info!(target: "autotest", "AUTOTEST {what}: egui textures={tex} picker_idle={} dialog_open={}", app.golive.picker.is_idle(), app.golive.open);
     }
 
-    fn first_text(app: &App) -> Option<i64> {
+    fn first_text(app: &App) -> Option<ChannelId> {
         app.channels.iter().find(|c| c.kind == ChannelKind::Text).map(|c| c.id)
     }
 
-    fn first_voice(app: &App) -> Option<i64> {
+    fn first_voice(app: &App) -> Option<ChannelId> {
         app.channels.iter().find(|c| c.kind == ChannelKind::Voice).map(|c| c.id)
     }
 
@@ -1471,7 +1471,7 @@ impl Auto {
 
     /// The hub's `camera` flag of voice member `id` and what the sidebar / tile icon rule makes of
     /// it (`None`: not in a voice channel we can see).
-    fn hub_camera(app: &App, id: i64) -> Option<(bool, bool)> {
+    fn hub_camera(app: &App, id: UserId) -> Option<(bool, bool)> {
         app.voice_members.get(&id).map(|m| (m.camera, app.camera_flag_of(m)))
     }
 
@@ -1662,7 +1662,7 @@ impl Auto {
                         return self.fail(&format!("camera frames not flowing (+{d})"));
                     }
                     // The hub reports A's camera (flag) and the icon shows (sidebar / tile rule).
-                    let a = self.cam_of.as_deref().and_then(|i| i.parse::<i64>().ok()).unwrap_or(-1);
+                    let a = self.cam_of.as_deref().and_then(|i| i.parse::<UserId>().ok()).unwrap_or_default();
                     let flag = Self::hub_camera(app, a);
                     tracing::info!(target: "autotest", "AUTOTEST B A's camera flag from the hub (flag, icon): {flag:?}");
                     if flag != Some((true, true)) {
@@ -1784,7 +1784,7 @@ impl Auto {
                 None => {}
             },
             16 => {
-                let a = self.cam_of.as_deref().and_then(|i| i.parse::<i64>().ok()).unwrap_or(-1);
+                let a = self.cam_of.as_deref().and_then(|i| i.parse::<UserId>().ok()).unwrap_or_default();
                 if app.voice.cameras.is_empty() && Self::hub_camera(app, a).is_some_and(|(flag, _)| !flag) {
                     self.goto(17, "A's camera is off (room and hub agree)");
                 } else if self.waited(90) {
@@ -1799,7 +1799,7 @@ impl Auto {
                 if placed.is_some() || st.is_some() || app.call.pins.iter().any(|p| matches!(p, TileKey::Member(_))) {
                     return self.fail("the camera tile was not cleared");
                 }
-                let a = self.cam_of.as_deref().and_then(|i| i.parse::<i64>().ok()).unwrap_or(-1);
+                let a = self.cam_of.as_deref().and_then(|i| i.parse::<UserId>().ok()).unwrap_or_default();
                 let flag = Self::hub_camera(app, a);
                 tracing::info!(target: "autotest", "AUTOTEST B A's camera flag after off (flag, icon): {flag:?}");
                 if flag != Some((false, false)) {
@@ -2318,7 +2318,7 @@ impl Auto {
                 }
                 let my_name = app.me.as_ref().map(|u| u.username.clone()).unwrap_or_default();
                 for id in &self.mb_ids {
-                    let viewers = id.parse::<i64>().map(|i| app.viewers_of(i)).unwrap_or_default();
+                    let viewers = id.parse::<UserId>().map(|i| app.viewers_of(i)).unwrap_or_default();
                     log(&format!("viewers of {id} as the hub says: {viewers:?}"));
                     if app.viewers_supported && !viewers.contains(&my_name) {
                         return self.fail(&format!("I am not in {id}'s viewer list"));
@@ -2533,7 +2533,7 @@ impl Auto {
                 let (a1, a2) = (self.mb_ids[0].clone(), self.mb_ids[1].clone());
                 let labels: Vec<&str> = app.stream_info.iter().map(|s| s.0.as_str()).collect();
                 log(&format!("after unwatching A1: watching {:?}, focus {:?}, A1 state {:?}, placed {:?}, streams {labels:?}", app.voice.watching, app.focused_stream(), Self::tile_state(&a1), self.mb_placed(app)));
-                if app.voice.watching != vec![a2.clone()] || app.focused_stream().is_some() || app.is_pinned(TileKey::Stream(a1.parse().unwrap_or(-1))) {
+                if app.voice.watching != vec![a2.clone()] || app.focused_stream().is_some() || app.is_pinned(TileKey::Stream(a1.parse().unwrap_or_default())) {
                     return self.fail("unwatching A1 did not leave exactly A2 (and the focus on A1 should go)");
                 }
                 if Self::tile_state(&a1).is_some() || app.video.placed.contains_key(&a1) || labels.iter().any(|l| l.ends_with(&format!(":{a1}")) && l.starts_with("watch-")) {
@@ -2556,7 +2556,7 @@ impl Auto {
                 self.goto(22, "waiting for A1 to end its live (it saw me leave its viewer list)");
             }
             22 => {
-                let a1 = self.mb_ids[0].parse::<i64>().unwrap_or(-1);
+                let a1 = self.mb_ids[0].parse::<UserId>().unwrap_or_default();
                 if !app.voice_members.get(&a1).is_some_and(|m| m.streaming) {
                     log(&format!("A1 ended its live; watching {:?}, toast {:?}", app.voice.watching, app.call.toast.as_ref().map(|t| &t.0)));
                     if app.voice.watching != vec![self.mb_ids[1].clone()] {
@@ -2571,7 +2571,7 @@ impl Auto {
             23 => {
                 if app.voice.watching.is_empty() {
                     let toast = app.call.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
-                    let a2 = self.mb_ids[1].parse::<i64>().map(|i| app.name_of(i)).unwrap_or_default();
+                    let a2 = self.mb_ids[1].parse::<UserId>().map(|i| app.name_of(i)).unwrap_or_default();
                     log(&format!("A2 ended its live: toast {toast:?}"));
                     if !toast.contains("foi encerrada") || !toast.contains(&a2) {
                         return self.fail("no 'transmissão encerrada' message for A2");
@@ -2932,7 +2932,7 @@ impl Auto {
                 }
                 // Am I in A's viewer list (item 7)?
                 let my_name = app.me.as_ref().map(|u| u.username.clone()).unwrap_or_default();
-                let viewers = id.parse::<i64>().map(|i| app.viewers_of(i)).unwrap_or_default();
+                let viewers = id.parse::<UserId>().map(|i| app.viewers_of(i)).unwrap_or_default();
                 self.ao_log(&format!("viewers of {id} as the hub says: {viewers:?}"));
                 if app.viewers_supported && !viewers.contains(&my_name) {
                     return self.fail("I am not in the streamer's viewer list");
@@ -3032,7 +3032,7 @@ impl Auto {
             20 => {
                 // Per-stream volume and mute (item 2) apply to the music too.
                 let id = self.ao.streamer.clone();
-                if let Ok(uid) = id.parse::<i64>() {
+                if let Ok(uid) = id.parse::<UserId>() {
                     let name = app.name_of(uid);
                     let mut pref = app.settings.user_audio(&name);
                     pref.stream_muted = true;
@@ -3076,7 +3076,7 @@ impl Auto {
                 self.goto(24, "listening again; deafened (A's signal to end its live)");
             }
             24 => {
-                let id = self.ao.streamer.parse::<i64>().unwrap_or(-1);
+                let id = self.ao.streamer.parse::<UserId>().unwrap_or_default();
                 if !app.voice_members.get(&id).is_some_and(|m| m.streaming) {
                     let toast = app.call.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
                     self.ao_log(&format!("A ended its live: watching {:?}, toast {toast:?}", app.voice.watching));
@@ -3169,7 +3169,7 @@ impl Auto {
             }
             // The live ends: streaming and the flag are cleared together.
             5 => {
-                let id = self.ao.streamer.parse::<i64>().unwrap_or(-1);
+                let id = self.ao.streamer.parse::<UserId>().unwrap_or_default();
                 match app.voice_members.get(&id) {
                     Some(m) if m.streaming => {
                         if self.waited(300) {

@@ -137,14 +137,27 @@ pub fn load_or_create(dir: &Path) -> Result<Config> {
 
 /// A file this hub owns that carries secrets (the config with the server password and the LiveKit
 /// keys, the generated livekit.yaml) is created readable only by the service account on unix.
+/// On Windows, uses icacls to set ACL to current user only.
 #[cfg(unix)]
-fn restrict_mode(path: &Path) {
+pub fn restrict_mode(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
 }
 
-#[cfg(not(unix))]
-fn restrict_mode(_path: &Path) {}
+#[cfg(windows)]
+pub fn restrict_mode(path: &Path) {
+    use std::process::Command;
+    // icacls: /inheritance:r (remove inherited), /grant:r "USERNAME:(R,W)" (grant read/write to current user only)
+    let username = whoami::username();
+    if !username.is_empty() {
+        let _ = Command::new("icacls")
+            .args([path.to_string_lossy().as_ref(), "/inheritance:r", "/grant:r", &format!("{username}:(R,W)")])
+            .output();
+    }
+}
+
+#[cfg(all(not(unix), not(windows)))]
+pub fn restrict_mode(_path: &Path) {}
 
 fn default_file(key: &str, secret: &str, password: &str) -> String {
     format!(

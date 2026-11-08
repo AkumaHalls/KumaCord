@@ -112,7 +112,7 @@ async fn ready_snapshot_has_voice_channels_with_their_categories() {
 
     let voices: Vec<_> = channels.iter().filter(|c| c.kind == ChannelKind::Voice).collect();
     assert!(!voices.is_empty(), "o Ready tem de trazer os canais de voz: {channels:?}");
-    let known: Vec<i64> = categories.as_ref().map(|cs| cs.iter().map(|c| c.id).collect()).unwrap_or_default();
+    let known: Vec<ChannelId> = categories.as_ref().map(|cs| cs.iter().map(|c| c.id).collect()).unwrap_or_default();
     for v in &voices {
         if let Some(id) = v.category_id {
             assert!(known.contains(&id), "canal de voz {v:?} numa categoria que o Ready não manda: {categories:?}");
@@ -139,8 +139,8 @@ async fn ready_snapshot_has_voice_channels_with_their_categories() {
         panic!("Ready esperado");
     };
     let voice = channels.iter().find(|c| c.id == voice_id).expect("a sala de voz volta no Ready");
-    assert_eq!(voice.category_id, Some(cat_id), "a sala de voz vem na categoria atribuída");
+    assert_eq!(voice.category_id, Some(ChannelId(cat_id)), "a sala de voz vem na categoria atribuída");
     let cats = categories.expect("o hub tem categorias");
-    assert!(cats.iter().any(|c| c.id == cat_id), "a categoria vai no Ready: {cats:?}");
+    assert!(cats.iter().any(|c| c.id == ChannelId(cat_id)), "a categoria vai no Ready: {cats:?}");
     env.server.shutdown().await;
 }

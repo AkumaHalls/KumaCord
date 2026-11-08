@@ -592,11 +592,11 @@ impl App {
         match ev {
             ServerEvent::MessageDeleted { channel_id, message_id } => {
                 let gone = self.logs.get_mut(&channel_id).and_then(|log| log.msgs.iter().position(|m| m.id == message_id).map(|i| log.msgs.remove(i)));
-                tracing::info!(channel = channel_id, message = message_id, had_it = gone.is_some(), "message deleted");
+                tracing::info!(channel = %channel_id, message = %message_id, had_it = gone.is_some(), "message deleted");
                 // Its images, chips, unread count and a reply being written to it go; replies to
                 // it now quote "mensagem apagada" (v0.8).
                 let atts = gone.map(|m| m.attachments).unwrap_or_default();
-                self.forget_message(crate::chat_images::Target::Channel(channel_id), message_id, &atts);
+                self.forget_message(crate::chat_images::Target::Channel(channel_id), message_id.into_inner(), &atts);
             }
             ServerEvent::ChannelsChanged { mut channels } => {
                 channels.sort_by_key(|c| (c.position, c.id));
@@ -1924,7 +1924,7 @@ impl App {
             }
             if private_ok {
                 let mut draft = std::mem::take(&mut self.roles.new_access);
-                access_fields(ui, &mut draft, &self.roles.members, self.roles.members_loaded, ("access", -1));
+                access_fields(ui, &mut draft, &self.roles.members, self.roles.members_loaded, ("access", ChannelId(-1)));
                 self.roles.new_access = draft;
             }
             ui.add_space(space::S);
@@ -2136,10 +2136,10 @@ mod tests {
     #[test]
     fn private_channel_fields_round_trip() {
         assert_eq!(AccessDraft::default().to_access(), None, "public");
-        let p = PrivateAccess { roles: vec![Role::Member], users: vec![9, 4] };
+        let p = PrivateAccess { roles: vec![Role::Member], users: vec![UserId(9), UserId(4)] };
         let d = AccessDraft::of(Some(&p));
         assert!(d.private && d.member && !d.moderator);
-        assert_eq!(d.to_access(), Some(PrivateAccess { roles: vec![Role::Member], users: vec![4, 9] }));
+        assert_eq!(d.to_access(), Some(PrivateAccess { roles: vec![Role::Member], users: vec![UserId(4), UserId(9)] }));
         let only_staff = AccessDraft { private: true, ..Default::default() };
         assert_eq!(only_staff.to_access(), Some(PrivateAccess::default()), "private with nobody: Dono and Admin only");
         assert_eq!(audit_action_pt(vox_proto::AUDIT_CHANNEL_ACCESS), "mudou o acesso do canal");
@@ -2150,10 +2150,10 @@ mod tests {
     #[test]
     fn the_people_picker_offers_members_and_moderators_only() {
         let info = |id, name: &str, role| MemberInfo { user: User { id, username: name.into(), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None }, has_password: false, server_muted: false, created_at_ms: 0, granted: 0, banned: None };
-        let ms = vec![info(1, "dono", Role::Owner), info(2, "adm", Role::Admin), info(3, "ana", Role::Member), info(4, "anabela", Role::Moderator), info(5, "bia", Role::Member)];
+        let ms = vec![info(UserId(1), "dono", Role::Owner), info(UserId(2), "adm", Role::Admin), info(UserId(3), "ana", Role::Member), info(UserId(4), "anabela", Role::Moderator), info(UserId(5), "bia", Role::Member)];
         let names = |v: Vec<&MemberInfo>| v.iter().map(|m| m.user.username.clone()).collect::<Vec<_>>();
         assert_eq!(names(pick_candidates(&ms, &[], "an")), ["ana", "anabela"]);
-        assert_eq!(names(pick_candidates(&ms, &[3], "AN")), ["anabela"], "already chosen");
+        assert_eq!(names(pick_candidates(&ms, &[UserId(3)], "AN")), ["anabela"], "already chosen");
         assert!(pick_candidates(&ms, &[], "d").is_empty(), "Dono and Admin always have access: not offered");
         assert!(pick_candidates(&ms, &[], " ").is_empty());
     }

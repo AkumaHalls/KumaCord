@@ -205,7 +205,7 @@ async fn huge_mention_lists_are_refused_before_any_work() {
     let (ana, bia) = (env.who("Ana").await, env.who("Bia").await);
     let ch = env.geral(&ana).await;
 
-    let too_many: Vec<UserId> = (0..MENTIONS_WIRE_MAX as i64 + 1).map(|i| 1000 + i).collect();
+    let too_many: Vec<UserId> = (0..MENTIONS_WIRE_MAX as i64 + 1).map(|i| UserId(1000 + i)).collect();
     let r = env.post(&ana, &format!("/api/channels/{ch}/messages"), json!({"content": "oi @Bia", "mentions": too_many})).await;
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     assert_eq!(r.json::<ApiError>().await.unwrap().error, ERR_TOO_MANY_MENTIONS);
@@ -229,7 +229,7 @@ async fn huge_mention_lists_are_refused_before_any_work() {
 
     // Exactly the limit: repeats count once, unknown ids are dropped, Bia is mentioned.
     let mut ids: Vec<UserId> = vec![bia.user.id; 10];
-    ids.extend((0..MENTIONS_WIRE_MAX as i64 - 10).map(|i| 5000 + i));
+    ids.extend((0..MENTIONS_WIRE_MAX as i64 - 10).map(|i| UserId(5000 + i)));
     let m = env.say(&ana, ch, json!({"content": "oi @Bia", "mentions": ids})).await;
     assert_eq!(m.mentions, vec![bia.user.id]);
 }
@@ -320,7 +320,7 @@ async fn reactions_live_capped_and_gone_with_the_message() {
     for bad in ["", "ok", "👍👍", "<script>", "👍 🎉"] {
         assert_eq!(env.react(&bia, m.id, bad, true).await, StatusCode::BAD_REQUEST, "{bad:?}");
     }
-    assert_eq!(env.react(&bia, 999_999, "👍", true).await, StatusCode::NOT_FOUND);
+    assert_eq!(env.react(&bia, MessageId(999_999), "👍", true).await, StatusCode::NOT_FOUND);
 
     // At most REACTIONS_MAX_PER_MESSAGE distinct emoji (one already there still works).
     let m2 = env.say(&ana, ch, json!({"content": "muitas"})).await;
@@ -366,7 +366,8 @@ async fn dm_replies_and_reactions_stay_between_the_two() {
 
     let reply: DmMessage = env.post(&bia, &format!("/api/dms/{}/messages", dm.id), json!({"content": "oi!", "reply_to": first.id})).await.json().await.unwrap();
     let q = reply.reply.clone().unwrap();
-    assert_eq!((q.id, q.excerpt.as_str(), q.author.unwrap().id), (first.id, "oi Bia", ana.user.id));
+    // A DM quote carries the DM line's id in the wire shape (a `MessageId`), as the hub builds it.
+    assert_eq!((q.id, q.excerpt.as_str(), q.author.unwrap().id), (MessageId(first.id.into_inner()), "oi Bia", ana.user.id));
 
     // A reaction reaches the two of them only.
     let r = env.post(&ana, &format!("/api/dms/{}/messages/{}/reactions", dm.id, reply.id), json!({"emoji": "❤", "add": true})).await;
@@ -385,7 +386,7 @@ async fn dm_replies_and_reactions_stay_between_the_two() {
     let lines: Vec<DmMessage> = env.get(&bia, &format!("/api/dms/{}/messages", dm.id)).await;
     let got = lines.iter().find(|l| l.id == reply.id).unwrap();
     assert_eq!(got.reactions, vec![Reaction { emoji: "❤".into(), users: vec![ana.user.id] }]);
-    assert_eq!(got.reply.as_ref().unwrap().id, first.id);
+    assert_eq!(got.reply.as_ref().unwrap().id, MessageId(first.id.into_inner()));
     // The list's last message carries them too.
     let list: Vec<DmConversation> = env.get(&bia, "/api/dms").await;
     assert_eq!(list[0].last_message.as_ref().unwrap().reactions.len(), 1);
@@ -400,7 +401,7 @@ async fn dm_replies_and_reactions_stay_between_the_two() {
     assert_eq!(env.post(&bia, &format!("/api/dms/{}/messages/{}/reactions", dm.id, first.id), json!({"emoji": "👍", "add": true})).await.status(), StatusCode::OK);
     assert_eq!(env.post(&ana, &format!("/api/dms/{}/messages/{}/delete", dm.id, first.id), json!({})).await.status(), StatusCode::OK);
     let lines: Vec<DmMessage> = env.get(&bia, &format!("/api/dms/{}/messages", dm.id)).await;
-    assert_eq!(lines.iter().find(|l| l.id == reply.id).unwrap().reply, Some(ReplyRef::gone(first.id)));
+    assert_eq!(lines.iter().find(|l| l.id == reply.id).unwrap().reply, Some(ReplyRef::gone(MessageId(first.id.into_inner()))));
     let r = env.post(&bia, &format!("/api/dms/{}/messages/{}/reactions", dm.id, first.id), json!({"emoji": "👍", "add": false})).await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
     // A reply to a line of another conversation is a plain line.

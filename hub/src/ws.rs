@@ -64,9 +64,13 @@ pub async fn handler(
 
 async fn run(mut socket: WebSocket, s: AppState, row: UserRow, session_hash: String, peer: SocketAddr) {
     let owner = s.owner();
-    let user = row.user(&owner);
-    // Profiles: the presence and status the person left (a status that ran out is gone).
+    let mut user = row.user(&owner);
     let id = user.id;
+    // Custom role ids, exactly like the login fills them: `i_allow` on the client reads
+    // `me.role_ids`, so a Ready without them leaves every custom permission invisible
+    // until the next UserUpdated.
+    user.role_ids = s.db.call(move |c| db::custom_role_ids(c, id)).await.unwrap_or_default();
+    // Profiles: the presence and status the person left (a status that ran out is gone).
     let presence = match s.db.call(move |c| crate::profile::load_entry(c, id, crate::util::now_ms())).await {
         Ok(p) => p,
         Err(e) => {
@@ -309,7 +313,7 @@ async fn handle(s: &AppState, user: &User, ev: ClientEvent) -> Option<ServerEven
             // The author as everybody sees them now (a role may have changed since connecting).
             let (u, text, owner) = (s.current_user(user), content.to_string(), s.owner());
             let draft = crate::chat::Draft { mentions, reply_to, reply_mention, access: Some(s.access.rules()) };
-            match s.db.call(move |c| db::insert_message_with(c, channel_id, &u, &text, &[], &draft, &owner)).await {
+            match s.db.call(move |c| db::insert_message_with(c, *channel_id, &u, &text, &[], &draft, &owner)).await {
                 Ok(Ok(message)) => {
                     s.send_channel(channel_id, &ServerEvent::MessageCreated { message });
                     None

@@ -80,7 +80,7 @@ impl Env {
         self.http.delete(self.url("/api/me/avatar")).bearer_auth(&who.token).send().await.unwrap()
     }
 
-    async fn get_avatar(&self, who: &Who, id: i64, query: &str) -> reqwest::Response {
+    async fn get_avatar(&self, who: &Who, id: UserId, query: &str) -> reqwest::Response {
         self.http.get(self.url(&format!("/api/users/{id}/avatar{query}"))).bearer_auth(&who.token).send().await.unwrap()
     }
 
@@ -95,7 +95,7 @@ impl Env {
 
     async fn first_text_channel(&self, who: &Who) -> i64 {
         let chs: Vec<Channel> = self.http.get(self.url("/api/channels")).bearer_auth(&who.token).send().await.unwrap().json().await.unwrap();
-        chs.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id
+        chs.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id.into_inner()
     }
 }
 
@@ -138,7 +138,7 @@ impl Ws {
         true
     }
 
-    async fn updated(&mut self, id: i64, want: Option<&str>) -> User {
+    async fn updated(&mut self, id: UserId, want: Option<&str>) -> User {
         let ev = self
             .wait_for("user_updated", |e| matches!(e, ServerEvent::UserUpdated { user } if user.id == id && user.avatar.as_deref() == want))
             .await;
@@ -250,7 +250,7 @@ async fn upload_resizes_serves_and_broadcasts() {
     assert_eq!(env.get_avatar(&bia, ana.user.id, "?size=100").await.status(), StatusCode::BAD_REQUEST);
     assert_eq!(env.get_avatar(&bia, ana.user.id, "?size=64&v=deadbeef0000").await.status(), StatusCode::NOT_FOUND);
     assert_eq!(env.get_avatar(&ana, bia.user.id, "?size=64").await.status(), StatusCode::NOT_FOUND, "bia has no picture");
-    assert_eq!(env.get_avatar(&ana, 9999, "").await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(env.get_avatar(&ana, UserId(9999), "").await.status(), StatusCode::NOT_FOUND);
     let anon = env.http.get(env.url(&format!("/api/users/{}/avatar", ana.user.id))).send().await.unwrap();
     assert_eq!(anon.status(), StatusCode::UNAUTHORIZED);
 
@@ -264,7 +264,7 @@ async fn upload_resizes_serves_and_broadcasts() {
     let ServerEvent::Ready { online, .. } = bia_ws2.wait_for("ready", |e| matches!(e, ServerEvent::Ready { .. })).await else { unreachable!() };
     assert_eq!(online.iter().find(|u| u.id == ana.user.id).and_then(|u| u.avatar.clone()).as_deref(), Some(v1.as_str()));
     let ch = env.first_text_channel(&ana).await;
-    ana_ws.0.send_text(&ClientEvent::SendMessage { channel_id: ch, content: "oi".into(), mentions: vec![], reply_to: None, reply_mention: false }).await;
+    ana_ws.0.send_text(&ClientEvent::SendMessage { channel_id: ChannelId(ch), content: "oi".into(), mentions: vec![], reply_to: None, reply_mention: false }).await;
     let ServerEvent::MessageCreated { message } = bia_ws.wait_for("message", |e| matches!(e, ServerEvent::MessageCreated { .. })).await else { unreachable!() };
     assert_eq!(message.author.avatar.as_deref(), Some(v1.as_str()), "live messages carry the picture");
     let hist: Vec<Message> = env.http.get(env.url(&format!("/api/channels/{ch}/messages"))).bearer_auth(&bia.token).send().await.unwrap().json().await.unwrap();
@@ -369,7 +369,7 @@ async fn removal_by_the_person_and_by_a_moderator() {
 
     // A Membro cannot remove somebody else's picture; neither can a moderator remove a peer's
     // or a higher role's.
-    let path = |id: i64| format!("/api/mod/users/{id}/remove-avatar");
+    let path = |id: UserId| format!("/api/mod/users/{id}/remove-avatar");
     let v = env.upload_ok(&mem, png(200, 200, 5)).await;
     watcher.updated(mem.user.id, Some(&v)).await;
     env.upload_ok(&admin, png(200, 200, 6)).await;
@@ -377,7 +377,7 @@ async fn removal_by_the_person_and_by_a_moderator() {
     assert_eq!(env.get_avatar(&mem2, mem.user.id, "").await.status(), StatusCode::OK, "and nothing changed");
     assert_eq!(env.post(&moder, &path(admin.user.id), json!({})).await, StatusCode::FORBIDDEN, "not above an Admin");
     assert_eq!(env.post(&moder, &path(moder.user.id), json!({})).await, StatusCode::BAD_REQUEST, "not on yourself: use Remover");
-    assert_eq!(env.post(&moder, &path(9999), json!({})).await, StatusCode::NOT_FOUND);
+    assert_eq!(env.post(&moder, &path(UserId(9999)), json!({})).await, StatusCode::NOT_FOUND);
     assert_eq!(env.post(&moder, &path(mem2.user.id), json!({})).await, StatusCode::NOT_FOUND, "no picture to remove");
 
     // The moderator removes the Membro's: broadcast, gone, audited.
@@ -553,8 +553,8 @@ async fn a_v041_database_gets_pictures_and_still_runs_the_old_hub() {
         .await
         .unwrap();
     let geral = chs.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
-    old_say(port, ana["token"].as_str().unwrap(), geral, "oi do v0.4.1").await;
-    old_say(port, bruno["token"].as_str().unwrap(), geral, "olá").await;
+    old_say(port, ana["token"].as_str().unwrap(), geral.into_inner(), "oi do v0.4.1").await;
+    old_say(port, bruno["token"].as_str().unwrap(), geral.into_inner(), "olá").await;
     drop(old); // killed like a crash
     std::fs::create_dir_all(&new_dir).unwrap();
     for name in ["voxhub.db", "voxhub.db-wal", "voxhub.db-shm"] {
@@ -575,7 +575,7 @@ async fn a_v041_database_gets_pictures_and_still_runs_the_old_hub() {
             http.post(format!("{base}/api/login")).json(&req).send()
         };
         let a: LoginResponse = login("Ana").await.unwrap().json().await.unwrap();
-        assert_eq!(a.user.id, ana["user"]["id"].as_i64().unwrap(), "same user, same id");
+        assert_eq!(a.user.id.into_inner(), ana["user"]["id"].as_i64().unwrap(), "same user, same id");
         if round == 0 {
             assert_eq!(a.user.avatar, None, "no pictures in an old database");
             let r = http.put(format!("{base}/api/me/avatar")).bearer_auth(&a.token).body(png(500, 300, 3)).send().await.unwrap();
@@ -605,7 +605,7 @@ async fn a_v041_database_gets_pictures_and_still_runs_the_old_hub() {
         .await
         .unwrap();
     assert_eq!(msgs.len(), 2);
-    old_say(port, carla["token"].as_str().unwrap(), geral, "de volta ao v0.4.1").await;
+    old_say(port, carla["token"].as_str().unwrap(), geral.into_inner(), "de volta ao v0.4.1").await;
     drop(old);
 }
 

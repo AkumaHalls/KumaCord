@@ -25,6 +25,7 @@
 
 use std::time::{Duration, Instant};
 
+use vox_proto::ChannelId;
 use super::Auto;
 use crate::app::notify::{Target, WinNotify};
 use crate::app::App;
@@ -37,7 +38,7 @@ pub const REST_STEP: u32 = 16;
 
 #[derive(Default)]
 pub struct State {
-    ch: i64,
+    ch: Option<ChannelId>,
     done: u32,
     dm_sent: bool,
     pending: Option<(Instant, String)>,
@@ -103,7 +104,8 @@ impl Auto {
 
     fn nt_ready(&mut self, app: &mut App, n: u32) {
         let content = self.nt_tag(&format!("ntready {n}"));
-        app.backend.send(Cmd::SendMessage { channel: self.nt.ch, content, extras: Default::default() });
+        let ch = self.nt.ch.expect("channel not set");
+        app.backend.send(Cmd::SendMessage { channel: ch, content, extras: Default::default() });
         log(&format!("told A I am ready for phase {n}"));
     }
 
@@ -115,7 +117,7 @@ impl Auto {
         self.nt.dm_alerts = app.dms.dm_alerts;
     }
 
-    fn nt_unread(app: &App, ch: i64) -> u32 {
+    fn nt_unread(app: &App, ch: ChannelId) -> u32 {
         app.unread.get(&ch).copied().unwrap_or(0)
     }
 
@@ -140,7 +142,7 @@ impl Auto {
                     Ok(false) => return None,
                     Ok(true) => {}
                 }
-                self.nt.ch = Self::first_text(app)?;
+                self.nt.ch = Self::first_text(app);
                 self.goto(2, "everybody is online; waiting for B");
             }
             2 => {
@@ -189,7 +191,7 @@ impl Auto {
                         let _ = dm;
                     }
                     // Back to the channel so the next phases are about the channel.
-                    app.select_text(self.nt.ch);
+                    app.select_text(self.nt.ch.expect("channel not set"));
                     self.goto(2, "wrote the DM");
                 } else if self.waited(20) {
                     return self.fail("the DM with B did not open");
@@ -211,13 +213,13 @@ impl Auto {
                 app.settings.notify.windows = WinNotify::All;
             }
             1 if self.logged_in(app) => {
-                self.nt.ch = Self::first_text(app)?;
+                self.nt.ch = Self::first_text(app);
                 self.goto(2, "connected; behind another window, watching");
             }
             1 if self.waited(30) => return self.fail("could not log in"),
             2 => {
                 if Self::saw_message(app, &self.nt_tag("ntdone")) {
-                    let unread = Self::nt_unread(app, self.nt.ch);
+                    let unread = Self::nt_unread(app, self.nt.ch.expect("channel not set"));
                     let s = &app.notify.stats;
                     log(&format!("channel unread={unread} balloons={} sounds={:?}; DM list {} entries, DM unread {}, DM logs {}", s.balloons, s.sounds, app.dms.convs.len(), app.dms.total_unread(), app.dms.logs.len()));
                     // Four of A's lines (nt1, nt2, nt3, nt6) plus B's markers reach a bystander.
@@ -259,8 +261,8 @@ impl Auto {
                     Ok(false) => return None,
                     Ok(true) => {}
                 }
-                self.nt.ch = Self::first_text(app)?;
-                app.select_text(self.nt.ch);
+                self.nt.ch = Self::first_text(app);
+                app.select_text(self.nt.ch.expect("channel not set"));
                 app.notify.focus_override = Some(true);
                 self.nt_snap(app);
                 self.nt_ready(app, 1);
@@ -269,8 +271,9 @@ impl Auto {
             2 => {
                 if Self::saw_message(app, &self.nt_tag("nt1")) {
                     let s = &app.notify.stats;
-                    if Self::nt_unread(app, self.nt.ch) != 0 || s.sounds.len() != self.nt.sounds || s.balloons != self.nt.balloons || s.flashes != self.nt.flashes {
-                        return self.fail(&format!("the open channel in front was not silent: unread {}, {s:?}", Self::nt_unread(app, self.nt.ch)));
+                    let ch = self.nt.ch.expect("channel not set");
+                    if Self::nt_unread(app, ch) != 0 || s.sounds.len() != self.nt.sounds || s.balloons != self.nt.balloons || s.flashes != self.nt.flashes {
+                        return self.fail(&format!("the open channel in front was not silent: unread {}, {s:?}", Self::nt_unread(app, ch)));
                     }
                     log("phase 1 ok: the conversation I am reading is silent");
                     self.goto(3, "phase 1 done");
@@ -287,7 +290,8 @@ impl Auto {
             4 => {
                 if Self::saw_message(app, &self.nt_tag("nt2")) {
                     let s = app.notify.stats.clone();
-                    let unread = Self::nt_unread(app, self.nt.ch);
+                    let ch = self.nt.ch.expect("channel not set");
+                    let unread = Self::nt_unread(app, ch);
                     if unread != 1 || s.sounds.len() != self.nt.sounds + 1 || s.sounds.last() != Some(&"channel_message") {
                         return self.fail(&format!("phase 2: unread {unread}, sounds {:?}", s.sounds));
                     }
@@ -309,8 +313,9 @@ impl Auto {
             6 => {
                 if Self::saw_message(app, &self.nt_tag("nt3")) {
                     let s = app.notify.stats.clone();
-                    let unread = Self::nt_unread(app, self.nt.ch);
-                    let want_title = format!("{a_name} em #{}", app.channels.iter().find(|c| c.id == self.nt.ch).map(|c| c.name.as_str()).unwrap_or("?"));
+                    let ch = self.nt.ch.expect("channel not set");
+                    let unread = Self::nt_unread(app, ch);
+                    let want_title = format!("{a_name} em #{}", app.channels.iter().find(|c| c.id == ch).map(|c| c.name.as_str()).unwrap_or("?"));
                     if unread != 2 || s.sounds.len() != self.nt.sounds + 1 {
                         return self.fail(&format!("phase 3: unread {unread}, sounds {:?}", s.sounds));
                     }
@@ -360,7 +365,8 @@ impl Auto {
             }
             10 => {
                 let a = Self::nt_online(app, &a_name)?;
-                if Self::nt_unread(app, self.nt.ch) == 0 {
+                let ch = self.nt.ch.expect("channel not set");
+                if Self::nt_unread(app, ch) == 0 {
                     if app.dms.conv_with(a.id).map(|c| c.unread) != Some(1) || app.notify.stats.badge != 1 {
                         return self.fail("phase 5: the DM must still be unread until opened");
                     }
@@ -373,10 +379,11 @@ impl Auto {
             }
             11 => {
                 let a = Self::nt_online(app, &a_name)?;
+                let ch = self.nt.ch.expect("channel not set");
                 if app.dms.conv_with(a.id).map(|c| c.unread) == Some(0) && app.notify.stats.badge == 0 {
                     log("phase 5 ok: opening the DM read it, the badge is gone");
                     // Phase 6: back to the channel, behind another window, A blocked.
-                    app.select_text(self.nt.ch);
+                    app.select_text(ch);
                     app.notify.focus_override = Some(false);
                     app.settings.notify.windows = WinNotify::All;
                     app.block_user(&a, true);
@@ -395,7 +402,8 @@ impl Auto {
                         return None;
                     }
                     let s = app.notify.stats.clone();
-                    let unread = Self::nt_unread(app, self.nt.ch);
+                    let ch = self.nt.ch.expect("channel not set");
+                    let unread = Self::nt_unread(app, ch);
                     if unread != 0 || s.sounds.len() != self.nt.sounds || s.balloons != self.nt.balloons || s.flashes != self.nt.flashes || s.badge != 0 {
                         return self.fail(&format!("phase 6: a blocked person's line must be silent: unread {unread}, {s:?}"));
                     }
@@ -424,7 +432,7 @@ impl Auto {
                 app.notify.focus_override = None;
                 app.settings.notify.windows = WinNotify::All;
                 app.settings.notify.tray_on_close = true;
-                app.select_text(self.nt.ch);
+                app.select_text(self.nt.ch.expect("channel not set"));
                 let dm = app.dms.convs.first().map(|c| c.id);
                 if let Some(dm) = dm {
                     app.select_dm(dm); // so the clicked notification has somewhere to move us from
@@ -451,7 +459,8 @@ impl Auto {
                     let cpu = (cpu_time() - c0) as f64 / 1e7;
                     log(&format!("hidden for {secs:.1} s: {cpu:.3} s of CPU = {:.2} % of one core (the message that ended the rest included)", 100.0 * cpu / secs));
                     let s = app.notify.stats.clone();
-                    let unread = Self::nt_unread(app, self.nt.ch);
+                    let ch = self.nt.ch.expect("channel not set");
+                    let unread = Self::nt_unread(app, ch);
                     if s.balloons != self.nt.balloons + 1 || s.sounds.len() != self.nt.sounds + 1 || unread == 0 {
                         return self.fail(&format!("phase 7: the hidden app did not notify: unread {unread}, {s:?}"));
                     }
@@ -488,9 +497,10 @@ impl Auto {
             }
             19 => {
                 let (visible, _) = window_state(app);
-                let opened = app.selected == Some(self.nt.ch) && app.dms.selected.is_none();
+                let ch = self.nt.ch.expect("channel not set");
+                let opened = app.selected == Some(ch) && app.dms.selected.is_none();
                 if visible && !app.notify.hidden && opened {
-                    log(&format!("phase 7: the clicked notification restored the window on {:?}", Target::Channel(self.nt.ch)));
+                    log(&format!("phase 7: the clicked notification restored the window on {:?}", Target::Channel(ch)));
                     self.nt_ready(app, 8);
                     self.goto(21, "told A; then \"Sair\"");
                 } else if self.waited(8) {

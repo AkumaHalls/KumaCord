@@ -23,7 +23,7 @@
 
 use std::time::{Duration, Instant};
 
-use vox_proto::{ChannelKind, Message, PrivateAccess};
+use vox_proto::{ChannelId, ChannelKind, DmId, Message, PrivateAccess, UserId};
 
 use super::Auto;
 use crate::app::chat_extras::Target;
@@ -52,12 +52,12 @@ const NAV_PW: &str = "nav-dono-123";
 
 #[derive(Default)]
 pub struct State {
-    geral: i64,
-    jogatina: i64,
-    memes: i64,
-    voice: i64,
-    peer: i64,
-    dm: i64,
+    geral: ChannelId,
+    jogatina: ChannelId,
+    memes: ChannelId,
+    voice: ChannelId,
+    peer: UserId,
+    dm: DmId,
     created: bool,
     sent: u32,
     /// When the current step started lingering (a `Cell`: read in match guards).
@@ -68,11 +68,11 @@ fn log(what: &str) {
     tracing::info!(target: "autotest", "AUTOTEST nav: {what}");
 }
 
-fn channel_id(app: &App, name: &str, kind: ChannelKind) -> Option<i64> {
+fn channel_id(app: &App, name: &str, kind: ChannelKind) -> Option<ChannelId> {
     app.channels.iter().find(|c| c.name == name && c.kind == kind).map(|c| c.id)
 }
 
-fn message<'a>(app: &'a App, ch: i64, text: &str) -> Option<&'a Message> {
+fn message<'a>(app: &'a App, ch: ChannelId, text: &str) -> Option<&'a Message> {
     // (B's mention starts with "@dono ".)
     app.logs.get(&ch).and_then(|l| l.msgs.iter().find(|m| m.content.ends_with(text)))
 }
@@ -95,7 +95,7 @@ impl Auto {
     }
 
     /// The label of a channel's sidebar row.
-    fn nav_label(app: &App, id: i64) -> String {
+    fn nav_label(app: &App, id: ChannelId) -> String {
         app.channels.iter().find(|c| c.id == id).map(|c| channel_label(c, "")).unwrap_or_default()
     }
 
@@ -152,7 +152,7 @@ impl Auto {
                     (Some(j), Some(m), Some(_)) => {
                         (self.nav.jogatina, self.nav.memes) = (j, m);
                         self.nav.sent = 0;
-                        app.select_text(geral);
+                        app.select_text(self.nav.geral);
                         app.notify.focus_override = Some(true);
                         self.nav_next(2, "channels ready; saying hello in #geral");
                     }
@@ -352,8 +352,8 @@ impl Auto {
                 log("text → voice → text: only what the center shows is highlighted");
                 // Reactions on B's reply, and its hover bar.
                 let Some(reply) = message(app, self.nav.geral, B_REPLY).map(|m| m.id) else { return self.fail("B's reply is gone") };
-                app.react(Target::Channel(self.nav.geral), reply, "👍", true);
-                app.chatx.force_hover = Some(reply);
+                app.react(Target::Channel(self.nav.geral), *reply, "👍", true);
+                app.chatx.force_hover = Some(*reply);
                 self.nav_next(17, "reacting to B's reply");
             }
             17 => {
@@ -441,7 +441,7 @@ impl Auto {
     // ------------------------------------------------------------ B
 
     pub(super) fn run_nav_b(&mut self, app: &mut App) -> Option<i32> {
-        let cue = |app: &App, memes: i64, text: &str| app.logs.get(&memes).is_some_and(|l| l.msgs.iter().any(|m| m.content == text));
+        let cue = |app: &App, memes: ChannelId, text: &str| app.logs.get(&memes).is_some_and(|l| l.msgs.iter().any(|m| m.content == text));
         match self.step {
             0 => self.connect(app),
             1 => {
@@ -470,8 +470,8 @@ impl Auto {
                     return None;
                 }
                 let target = Target::Channel(self.nav.geral);
-                app.react(target, hello, "🔥", true);
-                app.start_reply(target, hello);
+                app.react(target, *hello, "🔥", true);
+                app.start_reply(target, *hello);
                 if let Some(r) = app.chatx.replying.get_mut(&target) {
                     r.ping = false;
                 }
@@ -492,7 +492,7 @@ impl Auto {
             4 if self.nav_lingered(1.2) => {
                 // A's reaction comes back on my reply; I add mine (two people on 👍).
                 if let Some(r) = message(app, self.nav.geral, B_REPLY).map(|m| m.id) {
-                    app.react(Target::Channel(self.nav.geral), r, "👍", true);
+                    app.react(Target::Channel(self.nav.geral), *r, "👍", true);
                 }
                 self.nav_cue(app, "navready");
                 self.nav_next(5, "ready; answering cues");
@@ -507,7 +507,7 @@ impl Auto {
                     app.backend.send(crate::backend::Cmd::SendMessage { channel: self.nav.geral, content: B_PONG2.into(), extras: Default::default() });
                 }
                 // A's DM: answer it once.
-                if self.nav.dm == 0 {
+                if self.nav.dm == DmId::default() {
                     if let Some(c) = app.dms.convs.iter().find(|c| c.peer.id == self.nav.peer).map(|c| c.id) {
                         self.nav.dm = c;
                         app.select_dm(c);

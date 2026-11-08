@@ -99,7 +99,7 @@ impl Env {
 
     async fn first_text_channel(&self, who: &Who) -> i64 {
         let chs: Vec<Channel> = self.http.get(self.url("/api/channels")).bearer_auth(&who.token).send().await.unwrap().json().await.unwrap();
-        chs.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id
+        chs.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id.into_inner()
     }
 
     async fn staff(&self) -> (Who, Who, Who) {
@@ -169,13 +169,13 @@ impl Ws {
     }
 
     async fn presence_of(&mut self, id: i64, want: Presence) -> Option<CustomStatus> {
-        let ev = self.wait_for("presence_changed", |e| matches!(e, ServerEvent::PresenceChanged { user_id, presence, .. } if *user_id == id && *presence == want)).await;
+        let ev = self.wait_for("presence_changed", |e| matches!(e, ServerEvent::PresenceChanged { user_id, presence, .. } if *user_id == UserId(id) && *presence == want)).await;
         let ServerEvent::PresenceChanged { status, .. } = ev else { unreachable!() };
         status
     }
 
     async fn say(&mut self, channel_id: i64, text: &str) {
-        let ev = ClientEvent::SendMessage { channel_id, content: text.into(), mentions: vec![], reply_to: None, reply_mention: false };
+        let ev = ClientEvent::SendMessage { channel_id: ChannelId(channel_id), content: text.into(), mentions: vec![], reply_to: None, reply_mention: false };
         self.0.send(WsMsg::Text(serde_json::to_string(&ev).unwrap().into())).await.unwrap();
     }
 }
@@ -187,9 +187,9 @@ async fn error_of(r: reqwest::Response) -> (StatusCode, String) {
 
 fn is_about(ev: &ServerEvent, id: i64) -> bool {
     match ev {
-        ServerEvent::PresenceChanged { user_id, .. } => *user_id == id,
-        ServerEvent::UserOnline { user } | ServerEvent::UserUpdated { user } => user.id == id,
-        ServerEvent::UserOffline { user_id } => *user_id == id,
+        ServerEvent::PresenceChanged { user_id, .. } => *user_id == UserId(id),
+        ServerEvent::UserOnline { user } | ServerEvent::UserUpdated { user } => user.id == UserId(id),
+        ServerEvent::UserOffline { user_id } => *user_id == UserId(id),
         _ => false,
     }
 }
@@ -204,7 +204,7 @@ async fn profile_fields_are_stored_validated_and_served() {
     assert_eq!(ana.user.display_name, None);
 
     // A new person: nothing set, "member since" is the first login.
-    let p = env.profile_of(&bia, ana.user.id).await;
+    let p = env.profile_of(&bia, ana.user.id.into_inner()).await;
     assert_eq!((p.user.username.as_str(), p.bio.as_str(), p.accent.clone(), p.status.clone(), p.online), ("ana", "", None, None, false));
     assert!(p.member_since_ms > 1_600_000_000_000, "{}", p.member_since_ms);
 
@@ -216,7 +216,7 @@ async fn profile_fields_are_stored_validated_and_served() {
     assert_eq!(mine.user.shown_name(), "Ana Maria");
     assert_eq!(mine.user.username, "ana", "the login identity never changes");
     // Everybody reads the same, and so does a fresh login.
-    assert_eq!(env.profile_of(&bia, ana.user.id).await, mine);
+    assert_eq!(env.profile_of(&bia, ana.user.id.into_inner()).await, mine);
     assert_eq!(env.who("ana").await.user.display_name.as_deref(), Some("Ana Maria"));
 
     // A partial update leaves the rest alone; "" clears.
@@ -248,7 +248,7 @@ async fn profile_fields_are_stored_validated_and_served() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: {msg}");
         assert!(!msg.is_empty(), "{what}");
     }
-    let p = env.profile_of(&bia, ana.user.id).await;
+    let p = env.profile_of(&bia, ana.user.id.into_inner()).await;
     assert_eq!((p.user.display_name.as_deref(), p.bio.as_str()), (Some("Ana"), "fica"), "refused updates changed nothing");
     // Exactly at the limits is fine.
     let ok = env.edit(&ana, json!({"display_name": "n".repeat(DISPLAY_NAME_MAX), "bio": "x".repeat(BIO_MAX)})).await;
@@ -310,7 +310,7 @@ async fn custom_status_validation_and_clearing() {
     assert_eq!((st.emoji.as_str(), st.text.as_str()), ("🎮", "jogando"));
     let left = st.expires_at_ms.unwrap() - voxhub_now();
     assert!((3_500_000..=3_600_500).contains(&left), "{left}");
-    let p = env.profile_of(&bia, ana.user.id).await;
+    let p = env.profile_of(&bia, ana.user.id.into_inner()).await;
     assert_eq!(p.status, Some(st));
 
     let bad: Vec<(&str, Value)> = vec![
@@ -326,7 +326,7 @@ async fn custom_status_validation_and_clearing() {
         let (status, msg) = error_of(env.put(&ana, "/api/me/status", body).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: {msg}");
     }
-    assert!(env.profile_of(&bia, ana.user.id).await.status.is_some(), "refused statuses changed nothing");
+    assert!(env.profile_of(&bia, ana.user.id.into_inner()).await.status.is_some(), "refused statuses changed nothing");
     // Only an emoji, or only text, is fine; the longest allowed too.
     for body in [json!({"emoji": "👨\u{200D}👩\u{200D}👧\u{200D}👦"}), json!({"text": "t".repeat(STATUS_TEXT_MAX)})] {
         assert_eq!(env.put(&ana, "/api/me/status", body).await.status(), StatusCode::OK);
@@ -334,11 +334,11 @@ async fn custom_status_validation_and_clearing() {
     // Empty means cleared, and so does DELETE.
     let r = env.put(&ana, "/api/me/status", json!({"emoji": "", "text": ""})).await;
     assert_eq!(r.json::<StatusResponse>().await.unwrap().status, None);
-    assert_eq!(env.profile_of(&bia, ana.user.id).await.status, None);
+    assert_eq!(env.profile_of(&bia, ana.user.id.into_inner()).await.status, None);
     env.put(&ana, "/api/me/status", json!({"text": "de novo"})).await;
     let r = env.http.delete(env.url("/api/me/status")).bearer_auth(&ana.token).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::OK);
-    assert_eq!(env.profile_of(&bia, ana.user.id).await.status, None);
+    assert_eq!(env.profile_of(&bia, ana.user.id.into_inner()).await.status, None);
     env.server.shutdown().await;
 }
 
@@ -356,11 +356,11 @@ async fn presence_and_status_are_broadcast_and_part_of_the_snapshot() {
     assert!(bia_ws.quiet_for(Duration::from_millis(200), |e| matches!(e, ServerEvent::PresenceChanged { .. })).await);
 
     assert_eq!(env.presence(&ana, "dnd", false).await, Presence::Dnd);
-    assert_eq!(bia_ws.presence_of(ana.user.id, Presence::Dnd).await, None);
+    assert_eq!(bia_ws.presence_of(ana.user.id.into_inner(), Presence::Dnd).await, None);
     assert_eq!(env.put(&ana, "/api/me/status", json!({"emoji": "🎮", "text": "no jogo"})).await.status(), StatusCode::OK);
-    let st = bia_ws.presence_of(ana.user.id, Presence::Dnd).await.expect("the status rides on the event");
+    let st = bia_ws.presence_of(ana.user.id.into_inner(), Presence::Dnd).await.expect("the status rides on the event");
     assert_eq!(st.text, "no jogo");
-    let p = env.profile_of(&bia, ana.user.id).await;
+    let p = env.profile_of(&bia, ana.user.id.into_inner()).await;
     assert_eq!((p.online, p.presence), (true, Presence::Dnd));
 
     // Somebody who connects afterwards learns it right after Ready; people it is no news about are not listed.
@@ -378,16 +378,16 @@ async fn presence_and_status_are_broadcast_and_part_of_the_snapshot() {
 
     // Away by hand, and back: the status stays.
     assert_eq!(env.presence(&ana, "away", false).await, Presence::Away);
-    assert!(bia_ws.presence_of(ana.user.id, Presence::Away).await.is_some());
+    assert!(bia_ws.presence_of(ana.user.id.into_inner(), Presence::Away).await.is_some());
     assert_eq!(env.presence(&ana, "online", false).await, Presence::Online);
-    assert!(bia_ws.presence_of(ana.user.id, Presence::Online).await.is_some());
+    assert!(bia_ws.presence_of(ana.user.id.into_inner(), Presence::Online).await.is_some());
     // The chosen presence outlives the connection: a new session starts as it was left.
     env.presence(&ana, "dnd", false).await;
     drop(_ana_ws);
     tokio::time::sleep(Duration::from_millis(200)).await;
     let (_again, _) = env.ws_ready(&ana).await;
-    assert!(bia_ws.presence_of(ana.user.id, Presence::Dnd).await.is_some());
-    assert_eq!(env.profile_of(&bia, ana.user.id).await.presence, Presence::Dnd);
+    assert!(bia_ws.presence_of(ana.user.id.into_inner(), Presence::Dnd).await.is_some());
+    assert_eq!(env.profile_of(&bia, ana.user.id.into_inner()).await.presence, Presence::Dnd);
     env.server.shutdown().await;
 }
 
@@ -398,23 +398,23 @@ async fn idle_detection_only_moves_between_online_and_away() {
     let (mut bia_ws, _) = env.ws_ready(&bia).await;
     let (_ana_ws, _) = env.ws_ready(&ana).await;
     assert_eq!(env.presence(&ana, "away", true).await, Presence::Away, "idle: away");
-    bia_ws.presence_of(ana.user.id, Presence::Away).await;
+    bia_ws.presence_of(ana.user.id.into_inner(), Presence::Away).await;
     assert_eq!(env.presence(&ana, "away", true).await, Presence::Away, "the same again is not news");
     assert_eq!(env.presence(&ana, "online", true).await, Presence::Online, "active again");
-    bia_ws.presence_of(ana.user.id, Presence::Online).await;
+    bia_ws.presence_of(ana.user.id.into_inner(), Presence::Online).await;
     // A chosen presence is never overridden by the automatic one, in either direction.
     env.presence(&ana, "dnd", false).await;
-    bia_ws.presence_of(ana.user.id, Presence::Dnd).await;
+    bia_ws.presence_of(ana.user.id.into_inner(), Presence::Dnd).await;
     assert_eq!(env.presence(&ana, "away", true).await, Presence::Dnd);
     assert_eq!(env.presence(&ana, "online", true).await, Presence::Dnd);
     assert!(bia_ws.quiet_for(Duration::from_millis(300), |e| matches!(e, ServerEvent::PresenceChanged { .. })).await);
     // A manual choice after an automatic away takes over for good.
     env.presence(&ana, "online", false).await;
-    bia_ws.presence_of(ana.user.id, Presence::Online).await;
+    bia_ws.presence_of(ana.user.id.into_inner(), Presence::Online).await;
     env.presence(&ana, "away", true).await;
-    bia_ws.presence_of(ana.user.id, Presence::Away).await;
+    bia_ws.presence_of(ana.user.id.into_inner(), Presence::Away).await;
     env.presence(&ana, "dnd", false).await;
-    bia_ws.presence_of(ana.user.id, Presence::Dnd).await;
+    bia_ws.presence_of(ana.user.id.into_inner(), Presence::Dnd).await;
     assert_eq!(env.presence(&ana, "online", true).await, Presence::Dnd, "idle detection cannot undo a manual choice");
     // An automatic away is not remembered across sessions.
     env.presence(&ana, "online", false).await;
@@ -422,7 +422,7 @@ async fn idle_detection_only_moves_between_online_and_away() {
     drop(_ana_ws);
     tokio::time::sleep(Duration::from_millis(200)).await;
     let _ = env.ws_ready(&ana).await;
-    assert_eq!(env.profile_of(&bia, ana.user.id).await.presence, Presence::Online);
+    assert_eq!(env.profile_of(&bia, ana.user.id.into_inner()).await.presence, Presence::Online);
     env.server.shutdown().await;
 }
 
@@ -441,18 +441,18 @@ async fn an_invisible_person_is_offline_to_everybody_else_and_works_normally() {
     assert_eq!(env.presence(&ana, "invisible", false).await, Presence::Invisible);
     bia_ws.wait_for("ana offline", |e| matches!(e, ServerEvent::UserOffline { user_id } if *user_id == ana.user.id)).await;
     // ...and nothing else about Ana is said to anyone but Ana's own connections.
-    ana_ws.presence_of(ana.user.id, Presence::Invisible).await;
-    ana2_ws.presence_of(ana.user.id, Presence::Invisible).await;
-    assert!(bia_ws.quiet_for(Duration::from_millis(300), |e| is_about(e, ana.user.id)).await);
+    ana_ws.presence_of(ana.user.id.into_inner(), Presence::Invisible).await;
+    ana2_ws.presence_of(ana.user.id.into_inner(), Presence::Invisible).await;
+    assert!(bia_ws.quiet_for(Duration::from_millis(300), |e| is_about(e, ana.user.id.into_inner())).await);
 
     // The profile says offline to others (and hides the status), and the truth to Ana.
     env.put(&ana, "/api/me/status", json!({"emoji": "🎮", "text": "escondida"})).await;
-    let seen = env.profile_of(&bia, ana.user.id).await;
+    let seen = env.profile_of(&bia, ana.user.id.into_inner()).await;
     assert_eq!((seen.online, seen.presence, seen.status.clone()), (false, Presence::Online, None));
-    let own = env.profile_of(&ana, ana.user.id).await;
+    let own = env.profile_of(&ana, ana.user.id.into_inner()).await;
     assert_eq!((own.online, own.presence), (true, Presence::Invisible));
     assert_eq!(own.status.map(|s| s.text), Some("escondida".to_string()));
-    assert!(bia_ws.quiet_for(Duration::from_millis(300), |e| is_about(e, ana.user.id)).await, "a status change while invisible is private");
+    assert!(bia_ws.quiet_for(Duration::from_millis(300), |e| is_about(e, ana.user.id.into_inner())).await, "a status change while invisible is private");
 
     // New snapshots leave her out and do not mention her.
     let carla = env.who("carla").await;
@@ -460,7 +460,7 @@ async fn an_invisible_person_is_offline_to_everybody_else_and_works_normally() {
     let evs = carla_ws.drain(Duration::from_millis(500)).await;
     let Some(ServerEvent::Ready { online, .. }) = evs.iter().find(|e| matches!(e, ServerEvent::Ready { .. })) else { panic!("no ready") };
     assert!(online.iter().all(|u| u.id != ana.user.id), "{online:?}");
-    assert!(evs.iter().all(|e| !is_about(e, ana.user.id)), "{evs:?}");
+    assert!(evs.iter().all(|e| !is_about(e, ana.user.id.into_inner())), "{evs:?}");
 
     // She still works normally: she chats, and people see the message (with her name).
     let ch = env.first_text_channel(&ana).await;
@@ -478,25 +478,25 @@ async fn an_invisible_person_is_offline_to_everybody_else_and_works_normally() {
     // Disconnecting while invisible is silent: she was already gone.
     drop(ana_ws);
     drop(ana2_ws);
-    assert!(bia_ws.quiet_for(Duration::from_millis(600), |e| is_about(e, ana.user.id)).await);
+    assert!(bia_ws.quiet_for(Duration::from_millis(600), |e| is_about(e, ana.user.id.into_inner())).await);
     // Coming back invisible (the choice is stored) announces nothing.
     let (_back, online) = env.ws_ready(&ana).await;
     assert!(online.iter().all(|u| u.id != ana.user.id));
-    assert!(bia_ws.quiet_for(Duration::from_millis(400), |e| is_about(e, ana.user.id)).await);
+    assert!(bia_ws.quiet_for(Duration::from_millis(400), |e| is_about(e, ana.user.id.into_inner())).await);
 
     // Becoming visible again is a normal arrival, with her status.
     assert_eq!(env.presence(&ana, "online", false).await, Presence::Online);
     bia_ws.wait_for("ana online", |e| matches!(e, ServerEvent::UserOnline { user } if user.id == ana.user.id)).await;
-    let st = bia_ws.presence_of(ana.user.id, Presence::Online).await;
+    let st = bia_ws.presence_of(ana.user.id.into_inner(), Presence::Online).await;
     assert_eq!(st.map(|s| s.text), Some("escondida".to_string()));
-    let seen = env.profile_of(&bia, ana.user.id).await;
+    let seen = env.profile_of(&bia, ana.user.id.into_inner()).await;
     assert_eq!((seen.online, seen.presence), (true, Presence::Online));
     // Invisible is not something idle detection can set or undo.
     env.presence(&ana, "invisible", false).await;
     bia_ws.wait_for("ana offline", |e| matches!(e, ServerEvent::UserOffline { user_id } if *user_id == ana.user.id)).await;
     assert_eq!(env.presence(&ana, "online", true).await, Presence::Invisible);
     assert_eq!(env.presence(&ana, "away", true).await, Presence::Invisible);
-    assert!(bia_ws.quiet_for(Duration::from_millis(300), |e| is_about(e, ana.user.id)).await);
+    assert!(bia_ws.quiet_for(Duration::from_millis(300), |e| is_about(e, ana.user.id.into_inner())).await);
     env.server.shutdown().await;
 }
 
@@ -526,18 +526,18 @@ async fn a_status_clears_itself_and_everybody_hears_it() {
     let (mut bia_ws, _) = env.ws_ready(&bia).await;
     let (_ana_ws, _) = env.ws_ready(&ana).await;
     env.put(&ana, "/api/me/status", json!({"emoji": "⏳", "text": "volto já", "expires_in_secs": 1})).await;
-    assert!(bia_ws.presence_of(ana.user.id, Presence::Online).await.is_some());
+    assert!(bia_ws.presence_of(ana.user.id.into_inner(), Presence::Online).await.is_some());
     let t = Instant::now();
     // The next PresenceChanged about Ana is the status going away.
-    let st = bia_ws.presence_of(ana.user.id, Presence::Online).await;
+    let st = bia_ws.presence_of(ana.user.id.into_inner(), Presence::Online).await;
     assert_eq!(st, None, "the status cleared itself");
     assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
-    assert_eq!(env.profile_of(&bia, ana.user.id).await.status, None);
+    assert_eq!(env.profile_of(&bia, ana.user.id.into_inner()).await.status, None);
     // Offline people's expired statuses are not served either.
     env.put(&bia, "/api/me/status", json!({"text": "efêmero", "expires_in_secs": 1})).await;
     drop(bia_ws);
     tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert_eq!(env.profile_of(&ana, bia.user.id).await.status, None);
+    assert_eq!(env.profile_of(&ana, bia.user.id.into_inner()).await.status, None);
     env.server.shutdown().await;
 }
 
@@ -573,30 +573,30 @@ async fn moderators_clear_a_profile_and_it_is_audited() {
     let (_mem_ws, _) = env.ws_ready(&mem).await;
     env.edit(&mem, json!({"display_name": "Nome Abusivo", "bio": "texto abusivo aqui", "accent": "#ff0000"})).await;
     env.put(&mem, "/api/me/status", json!({"emoji": "💢", "text": "status abusivo"})).await;
-    watcher.presence_of(mem.user.id, Presence::Online).await;
+    watcher.presence_of(mem.user.id.into_inner(), Presence::Online).await;
     let path = |id: i64| format!("/api/mod/users/{id}/clear-profile");
 
     // Who may: not a Membro, not a moderator over a peer or above, not on yourself, nothing to clear.
-    assert_eq!(env.post(&other, &path(mem.user.id), json!({"bio": true})).await, StatusCode::FORBIDDEN);
-    assert_eq!(env.post(&moder, &path(admin.user.id), json!({"bio": true})).await, StatusCode::FORBIDDEN);
-    assert_eq!(env.post(&moder, &path(moder.user.id), json!({"bio": true})).await, StatusCode::BAD_REQUEST);
+    assert_eq!(env.post(&other, &path(mem.user.id.into_inner()), json!({"bio": true})).await, StatusCode::FORBIDDEN);
+    assert_eq!(env.post(&moder, &path(admin.user.id.into_inner()), json!({"bio": true})).await, StatusCode::FORBIDDEN);
+    assert_eq!(env.post(&moder, &path(moder.user.id.into_inner()), json!({"bio": true})).await, StatusCode::BAD_REQUEST);
     assert_eq!(env.post(&moder, &path(9999), json!({"bio": true})).await, StatusCode::NOT_FOUND);
-    assert_eq!(env.post(&moder, &path(mem.user.id), json!({})).await, StatusCode::BAD_REQUEST);
-    assert_eq!(env.profile_of(&other, mem.user.id).await.bio, "texto abusivo aqui", "nothing changed yet");
+    assert_eq!(env.post(&moder, &path(mem.user.id.into_inner()), json!({})).await, StatusCode::BAD_REQUEST);
+    assert_eq!(env.profile_of(&other, mem.user.id.into_inner()).await.bio, "texto abusivo aqui", "nothing changed yet");
 
     // The bio and the status go; the display name and the colour stay; the status removal is broadcast.
-    assert_eq!(env.post(&moder, &path(mem.user.id), json!({"bio": true, "status": true})).await, StatusCode::OK);
-    let p = env.profile_of(&other, mem.user.id).await;
+    assert_eq!(env.post(&moder, &path(mem.user.id.into_inner()), json!({"bio": true, "status": true})).await, StatusCode::OK);
+    let p = env.profile_of(&other, mem.user.id.into_inner()).await;
     assert_eq!((p.bio.as_str(), p.status.clone(), p.user.display_name.as_deref(), p.accent.as_deref()), ("", None, Some("Nome Abusivo"), Some("#ff0000")));
-    assert_eq!(watcher.presence_of(mem.user.id, Presence::Online).await, None);
+    assert_eq!(watcher.presence_of(mem.user.id.into_inner(), Presence::Online).await, None);
     // The display name is clearable too, and broadcast as a user update.
-    assert_eq!(env.post(&admin, &path(mem.user.id), json!({"display_name": true})).await, StatusCode::OK);
+    assert_eq!(env.post(&admin, &path(mem.user.id.into_inner()), json!({"display_name": true})).await, StatusCode::OK);
     watcher.wait_for("user_updated", |e| matches!(e, ServerEvent::UserUpdated { user } if user.id == mem.user.id && user.display_name.is_none())).await;
-    assert_eq!(env.profile_of(&other, mem.user.id).await.user.display_name, None);
+    assert_eq!(env.profile_of(&other, mem.user.id.into_inner()).await.user.display_name, None);
     // The owner clears an admin's.
     env.edit(&admin, json!({"bio": "bio do admin"})).await;
-    assert_eq!(env.post(&owner, &path(admin.user.id), json!({"bio": true})).await, StatusCode::OK);
-    assert_eq!(env.profile_of(&owner, admin.user.id).await.bio, "");
+    assert_eq!(env.post(&owner, &path(admin.user.id.into_inner()), json!({"bio": true})).await, StatusCode::OK);
+    assert_eq!(env.profile_of(&owner, admin.user.id.into_inner()).await.bio, "");
 
     // The person can write again afterwards; the log says who removed what.
     assert_eq!(env.edit(&mem, json!({"bio": "novo"})).await.status(), StatusCode::OK);

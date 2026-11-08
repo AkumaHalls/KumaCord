@@ -14,21 +14,17 @@ use serde::{Deserialize, Serialize};
 mod attachment;
 mod chat;
 mod dm;
+mod ids;
 mod invite;
 mod profile;
 mod sound;
 pub use attachment::*;
 pub use chat::*;
 pub use dm::*;
+pub use ids::*;
 pub use invite::*;
 pub use profile::*;
 pub use sound::*;
-
-pub type UserId = i64;
-pub type ChannelId = i64;
-pub type MessageId = i64;
-pub type DmId = i64;
-pub type DmMessageId = i64;
 
 /// Bump when a breaking change is made to any type in this crate.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -1211,16 +1207,16 @@ mod tests {
     }
 
     fn user(id: i64) -> User {
-        User::new(id, format!("u{id}"))
+        User::new(UserId(id), format!("u{id}"))
     }
 
     #[test]
     fn json_from_an_old_hub_has_no_watching_and_still_parses() {
-        let old = v020::VoiceMember { user: user(2), channel_id: Some(5), muted: false, deafened: true, streaming: true };
+        let old = v020::VoiceMember { user: user(2), channel_id: Some(ChannelId(5)), muted: false, deafened: true, streaming: true };
         let json = serde_json::to_string(&old).unwrap();
         let new: VoiceMember = serde_json::from_str(&json).unwrap();
         assert!(new.watching.is_empty());
-        assert_eq!((new.user, new.channel_id, new.deafened, new.streaming), (user(2), Some(5), true, true));
+        assert_eq!((new.user, new.channel_id, new.deafened, new.streaming), (user(2), Some(ChannelId(5)), true, true));
         // The whole event too.
         let ev = serde_json::to_string(&v020::ServerEvent::VoiceStateChanged { member: old }).unwrap();
         assert!(matches!(serde_json::from_str::<ServerEvent>(&ev), Ok(ServerEvent::VoiceStateChanged { .. })));
@@ -1228,11 +1224,11 @@ mod tests {
 
     #[test]
     fn json_from_a_new_hub_is_ignored_by_the_old_shape() {
-        let m = VoiceMember { user: user(3), channel_id: Some(5), muted: true, deafened: false, streaming: false, watching: vec![2, 9], camera: false, server_muted: false, audio_only: false };
+        let m = VoiceMember { user: user(3), channel_id: Some(ChannelId(5)), muted: true, deafened: false, streaming: false, watching: vec![UserId(2), UserId(9)], camera: false, server_muted: false, audio_only: false };
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("\"watching\":[2,9]"));
         let old: v020::VoiceMember = serde_json::from_str(&json).unwrap();
-        assert_eq!((old.user, old.channel_id, old.muted), (user(3), Some(5), true));
+        assert_eq!((old.user, old.channel_id, old.muted), (user(3), Some(ChannelId(5)), true));
         // Inside the events an old client parses.
         let ev = ServerEvent::VoiceStateChanged { member: m.clone() };
         let json = serde_json::to_string(&ev).unwrap();
@@ -1250,10 +1246,10 @@ mod tests {
 
     #[test]
     fn watch_state_wire_shape_and_old_hub_reaction() {
-        let ev = ClientEvent::WatchState { watching: vec![4, 7] };
+        let ev = ClientEvent::WatchState { watching: vec![UserId(4), UserId(7)] };
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(json, r#"{"type":"watch_state","watching":[4,7]}"#);
-        assert!(matches!(serde_json::from_str::<ClientEvent>(&json), Ok(ClientEvent::WatchState { watching }) if watching == [4, 7]));
+        assert!(matches!(serde_json::from_str::<ClientEvent>(&json), Ok(ClientEvent::WatchState { watching }) if watching == [UserId(4), UserId(7)]));
         // The old hub's enum has no such variant: it fails to parse (and answers `Error`).
         assert!(serde_json::from_str::<v020::ClientEvent>(&json).is_err());
         // Old client events are still understood.
@@ -1287,32 +1283,32 @@ mod tests {
 
     #[test]
     fn camera_off_serialises_exactly_as_v030() {
-        let m = VoiceMember { user: user(3), channel_id: Some(5), muted: true, deafened: false, streaming: true, watching: vec![2], camera: false, server_muted: false, audio_only: false };
+        let m = VoiceMember { user: user(3), channel_id: Some(ChannelId(5)), muted: true, deafened: false, streaming: true, watching: vec![UserId(2)], camera: false, server_muted: false, audio_only: false };
         let json = serde_json::to_string(&m).unwrap();
         assert!(!json.contains("camera"));
-        let old = v030::VoiceMember { user: user(3), channel_id: Some(5), muted: true, deafened: false, streaming: true, watching: vec![2] };
+        let old = v030::VoiceMember { user: user(3), channel_id: Some(ChannelId(5)), muted: true, deafened: false, streaming: true, watching: vec![UserId(2)] };
         assert_eq!(json, serde_json::to_string(&old).unwrap());
     }
 
     #[test]
     fn camera_on_is_ignored_by_the_v030_and_v020_shapes() {
-        let m = VoiceMember { user: user(4), channel_id: Some(5), muted: false, deafened: true, streaming: false, watching: vec![], camera: true, server_muted: false, audio_only: false };
+        let m = VoiceMember { user: user(4), channel_id: Some(ChannelId(5)), muted: false, deafened: true, streaming: false, watching: vec![], camera: true, server_muted: false, audio_only: false };
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("\"camera\":true"));
         let o3: v030::VoiceMember = serde_json::from_str(&json).unwrap();
-        assert_eq!((o3.user, o3.channel_id, o3.deafened), (user(4), Some(5), true));
+        assert_eq!((o3.user, o3.channel_id, o3.deafened), (user(4), Some(ChannelId(5)), true));
         let o2: v020::VoiceMember = serde_json::from_str(&json).unwrap();
-        assert_eq!((o2.user, o2.channel_id, o2.deafened), (user(4), Some(5), true));
+        assert_eq!((o2.user, o2.channel_id, o2.deafened), (user(4), Some(ChannelId(5)), true));
         let ev = serde_json::to_string(&ServerEvent::VoiceStateChanged { member: m }).unwrap();
         assert!(matches!(serde_json::from_str::<v020::ServerEvent>(&ev), Ok(v020::ServerEvent::VoiceStateChanged { .. })));
     }
 
     #[test]
     fn json_without_camera_parses_with_camera_off() {
-        let old = v030::VoiceMember { user: user(2), channel_id: Some(5), muted: false, deafened: false, streaming: true, watching: vec![9] };
+        let old = v030::VoiceMember { user: user(2), channel_id: Some(ChannelId(5)), muted: false, deafened: false, streaming: true, watching: vec![UserId(9)] };
         let new: VoiceMember = serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
         assert!(!new.camera);
-        assert_eq!(new.watching, vec![9]);
+        assert_eq!(new.watching, vec![UserId(9)]);
         let old = v020::VoiceMember { user: user(2), channel_id: None, muted: false, deafened: false, streaming: false };
         assert!(!serde_json::from_str::<VoiceMember>(&serde_json::to_string(&old).unwrap()).unwrap().camera);
     }
@@ -1320,17 +1316,17 @@ mod tests {
     #[test]
     fn voice_state_camera_is_compatible_both_ways() {
         // An old client's VoiceState (no camera) parses on a new hub with camera off.
-        let old = serde_json::to_string(&v030::ClientEvent::VoiceState { channel_id: Some(5), muted: true, deafened: false, streaming: false }).unwrap();
+        let old = serde_json::to_string(&v030::ClientEvent::VoiceState { channel_id: Some(ChannelId(5)), muted: true, deafened: false, streaming: false }).unwrap();
         assert!(matches!(
             serde_json::from_str::<ClientEvent>(&old),
-            Ok(ClientEvent::VoiceState { channel_id: Some(5), muted: true, camera: false, .. })
+            Ok(ClientEvent::VoiceState { channel_id: Some(ChannelId(5)), muted: true, camera: false, .. })
         ));
         // A new client's VoiceState (with camera) is still understood by an old hub's shape.
-        let new = serde_json::to_string(&ClientEvent::VoiceState { channel_id: Some(5), muted: false, deafened: false, streaming: true, camera: true, audio_only: false }).unwrap();
+        let new = serde_json::to_string(&ClientEvent::VoiceState { channel_id: Some(ChannelId(5)), muted: false, deafened: false, streaming: true, camera: true, audio_only: false }).unwrap();
         assert!(new.contains("\"camera\":true"));
         assert!(matches!(
             serde_json::from_str::<v020::ClientEvent>(&new),
-            Ok(v020::ClientEvent::VoiceState { channel_id: Some(5), streaming: true, .. })
+            Ok(v020::ClientEvent::VoiceState { channel_id: Some(ChannelId(5)), streaming: true, .. })
         ));
     }
 
@@ -1396,16 +1392,16 @@ mod tests {
     }
 
     fn role_user(id: i64, role: Role) -> User {
-        User { id, username: format!("u{id}"), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None }
+        User { id: UserId(id), username: format!("u{id}"), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None }
     }
 
     #[test]
     fn a_member_serialises_exactly_as_v041() {
-        let u = User::new(7, "Ana");
-        let old = v041::User { id: 7, username: "Ana".into() };
+        let u = User::new(UserId(7), "Ana");
+        let old = v041::User { id: UserId(7), username: "Ana".into() };
         assert_eq!(serde_json::to_string(&u).unwrap(), serde_json::to_string(&old).unwrap());
-        let m = VoiceMember { user: u, channel_id: Some(2), muted: true, deafened: false, streaming: false, watching: vec![], camera: true, server_muted: false, audio_only: false };
-        let old = v041::VoiceMember { user: old, channel_id: Some(2), muted: true, deafened: false, streaming: false, watching: vec![], camera: true };
+        let m = VoiceMember { user: u, channel_id: Some(ChannelId(2)), muted: true, deafened: false, streaming: false, watching: vec![], camera: true, server_muted: false, audio_only: false };
+        let old = v041::VoiceMember { user: old, channel_id: Some(ChannelId(2)), muted: true, deafened: false, streaming: false, watching: vec![], camera: true };
         assert_eq!(serde_json::to_string(&m).unwrap(), serde_json::to_string(&old).unwrap());
         // A plain login request too.
         let req = LoginRequest { username: "Ana".into(), server_password: "x".into(), protocol_version: PROTOCOL_VERSION, ..Default::default() };
@@ -1416,12 +1412,12 @@ mod tests {
     #[test]
     fn v041_json_parses_as_members_without_account() {
         let old = v041::ServerEvent::Ready {
-            user: v041::User { id: 1, username: "a".into() },
+            user: v041::User { id: UserId(1), username: "a".into() },
             channels: vec![],
-            online: vec![v041::User { id: 1, username: "a".into() }],
+            online: vec![v041::User { id: UserId(1), username: "a".into() }],
             voice: vec![v041::VoiceMember {
-                user: v041::User { id: 1, username: "a".into() },
-                channel_id: Some(3),
+                user: v041::User { id: UserId(1), username: "a".into() },
+                channel_id: Some(ChannelId(3)),
                 muted: false,
                 deafened: false,
                 streaming: true,
@@ -1434,7 +1430,7 @@ mod tests {
         assert_eq!(user.role, Role::Member);
         assert_eq!(account, None, "an old hub sends no account: the client hides the role UI");
         assert!(!voice[0].server_muted);
-        let resp = v041::LoginResponse { token: "t".into(), user: v041::User { id: 1, username: "a".into() }, server_name: "s".into() };
+        let resp = v041::LoginResponse { token: "t".into(), user: v041::User { id: UserId(1), username: "a".into() }, server_name: "s".into() };
         let new: LoginResponse = serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
         assert_eq!((new.user.role, new.device_token), (Role::Member, None));
         // An old client's login (no personal password) reads with nothing new set.
@@ -1448,8 +1444,8 @@ mod tests {
         let admin = role_user(2, Role::Admin);
         let json = serde_json::to_string(&admin).unwrap();
         assert!(json.contains("\"role\":\"admin\""));
-        assert_eq!(serde_json::from_str::<v041::User>(&json).unwrap(), v041::User { id: 2, username: "u2".into() });
-        let m = VoiceMember { user: admin.clone(), channel_id: Some(3), muted: false, deafened: false, streaming: false, watching: vec![], camera: false, server_muted: true, audio_only: false };
+        assert_eq!(serde_json::from_str::<v041::User>(&json).unwrap(), v041::User { id: UserId(2), username: "u2".into() });
+        let m = VoiceMember { user: admin.clone(), channel_id: Some(ChannelId(3)), muted: false, deafened: false, streaming: false, watching: vec![], camera: false, server_muted: true, audio_only: false };
         let json = serde_json::to_string(&ServerEvent::VoiceStateChanged { member: m.clone() }).unwrap();
         assert!(json.contains("\"server_muted\":true"));
         assert!(matches!(serde_json::from_str::<v041::ServerEvent>(&json), Ok(v041::ServerEvent::VoiceStateChanged { .. })));
@@ -1465,17 +1461,17 @@ mod tests {
             categories: None,
         };
         assert!(matches!(serde_json::from_str::<v041::ServerEvent>(&serde_json::to_string(&ready).unwrap()), Ok(v041::ServerEvent::Ready { .. })));
-        let msg = Message { id: 1, channel_id: 1, author: admin.clone(), content: "oi".into(), created_at_ms: 5, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] };
+        let msg = Message { id: MessageId(1), channel_id: ChannelId(1), author: admin.clone(), content: "oi".into(), created_at_ms: 5, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] };
         let json = serde_json::to_string(&ServerEvent::MessageCreated { message: msg }).unwrap();
         assert!(matches!(serde_json::from_str::<v041::ServerEvent>(&json), Ok(v041::ServerEvent::MessageCreated { .. })));
         let resp = LoginResponse { token: "t".into(), user: admin, server_name: "s".into(), device_token: Some("d".into()) };
         assert!(serde_json::from_str::<v041::LoginResponse>(&serde_json::to_string(&resp).unwrap()).is_ok());
         // The new events are unknown to an old client: it fails to parse them and skips them.
         for ev in [
-            ServerEvent::MessageDeleted { channel_id: 1, message_id: 2 },
+            ServerEvent::MessageDeleted { channel_id: ChannelId(1), message_id: MessageId(2) },
             ServerEvent::ChannelsChanged { channels: vec![] },
             ServerEvent::UserUpdated { user: role_user(3, Role::Moderator) },
-            ServerEvent::Moderated { action: ModAction::Move { channel_id: 4 }, by: role_user(1, Role::Owner) },
+            ServerEvent::Moderated { action: ModAction::Move { channel_id: ChannelId(4) }, by: role_user(1, Role::Owner) },
         ] {
             let json = serde_json::to_string(&ev).unwrap();
             assert!(serde_json::from_str::<v041::ServerEvent>(&json).is_err(), "{json}");
@@ -1488,9 +1484,9 @@ mod tests {
         assert_eq!(serde_json::to_string(&Role::Moderator).unwrap(), "\"moderator\"");
         assert_eq!(serde_json::from_str::<Role>("\"owner\"").unwrap(), Role::Owner);
         assert_eq!(serde_json::from_str::<Role>("\"superstar\"").unwrap(), Role::Member, "unknown roles read as member");
-        assert_eq!(serde_json::to_string(&ModAction::Move { channel_id: 4 }).unwrap(), r#"{"kind":"move","channel_id":4}"#);
+        assert_eq!(serde_json::to_string(&ModAction::Move { channel_id: ChannelId(4) }).unwrap(), r#"{"kind":"move","channel_id":4}"#);
         assert_eq!(serde_json::to_string(&ModAction::ServerMute).unwrap(), r#"{"kind":"server_mute"}"#);
-        let ev = ServerEvent::MessageDeleted { channel_id: 1, message_id: 2 };
+        let ev = ServerEvent::MessageDeleted { channel_id: ChannelId(1), message_id: MessageId(2) };
         assert_eq!(serde_json::to_string(&ev).unwrap(), r#"{"type":"message_deleted","channel_id":1,"message_id":2}"#);
     }
 
@@ -1533,19 +1529,19 @@ mod tests {
 
     #[test]
     fn a_user_without_a_picture_serialises_exactly_as_before() {
-        let u = User::new(7, "Ana");
+        let u = User::new(UserId(7), "Ana");
         assert_eq!(serde_json::to_string(&u).unwrap(), r#"{"id":7,"username":"Ana"}"#);
-        let old = v041::User { id: 7, username: "Ana".into() };
+        let old = v041::User { id: UserId(7), username: "Ana".into() };
         assert_eq!(serde_json::to_string(&u).unwrap(), serde_json::to_string(&old).unwrap());
         let staff = role_user(2, Role::Admin);
-        let old = v050roles::User { id: 2, username: "u2".into(), role: Role::Admin };
+        let old = v050roles::User { id: UserId(2), username: "u2".into(), role: Role::Admin };
         assert_eq!(serde_json::to_string(&staff).unwrap(), serde_json::to_string(&old).unwrap());
     }
 
     #[test]
     fn badges_travel_the_wire_and_default_to_none() {
         // A badged user carries the field; a badge-less one stays byte-identical to before.
-        let mut u = User::new(7, "Ana");
+        let mut u = User::new(UserId(7), "Ana");
         u.flags = badge::STAFF | badge::TENURE_12M;
         let json = serde_json::to_string(&u).unwrap();
         assert!(json.contains(r#""flags":"#), "the flags field must appear: {json}");
@@ -1577,10 +1573,10 @@ mod tests {
         let u: User = serde_json::from_str(r#"{"id":7,"username":"Ana","role":"moderator"}"#).unwrap();
         assert_eq!((u.role, u.avatar), (Role::Moderator, None));
         // Events and messages of the previous shapes.
-        let old = v041::ServerEvent::UserOnline { user: v041::User { id: 1, username: "a".into() } };
+        let old = v041::ServerEvent::UserOnline { user: v041::User { id: UserId(1), username: "a".into() } };
         let ev: ServerEvent = serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
         assert!(matches!(ev, ServerEvent::UserOnline { user } if user.avatar.is_none()));
-        let msg = v041::Message { id: 1, channel_id: 2, author: v041::User { id: 1, username: "a".into() }, content: "oi".into(), created_at_ms: 3 };
+        let msg = v041::Message { id: MessageId(1), channel_id: ChannelId(2), author: v041::User { id: UserId(1), username: "a".into() }, content: "oi".into(), created_at_ms: 3 };
         let m: Message = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
         assert_eq!(m.author.avatar, None);
     }
@@ -1591,16 +1587,16 @@ mod tests {
         u.avatar = Some("0123abcd".into());
         let json = serde_json::to_string(&u).unwrap();
         assert!(json.contains(r#""avatar":"0123abcd""#));
-        assert_eq!(serde_json::from_str::<v041::User>(&json).unwrap(), v041::User { id: 3, username: "u3".into() });
+        assert_eq!(serde_json::from_str::<v041::User>(&json).unwrap(), v041::User { id: UserId(3), username: "u3".into() });
         assert_eq!(serde_json::from_str::<v050roles::User>(&json).unwrap().role, Role::Moderator);
         assert_eq!(serde_json::from_str::<User>(&json).unwrap(), u);
         // Inside the events an old client understands.
         let online = serde_json::to_string(&ServerEvent::UserOnline { user: u.clone() }).unwrap();
         assert!(matches!(serde_json::from_str::<v041::ServerEvent>(&online), Ok(v041::ServerEvent::UserOnline { .. })));
-        let m = VoiceMember { user: u.clone(), channel_id: Some(3), muted: false, deafened: false, streaming: false, watching: vec![], camera: false, server_muted: false, audio_only: false };
+        let m = VoiceMember { user: u.clone(), channel_id: Some(ChannelId(3)), muted: false, deafened: false, streaming: false, watching: vec![], camera: false, server_muted: false, audio_only: false };
         let json = serde_json::to_string(&ServerEvent::VoiceStateChanged { member: m }).unwrap();
         assert!(matches!(serde_json::from_str::<v041::ServerEvent>(&json), Ok(v041::ServerEvent::VoiceStateChanged { .. })));
-        let msg = Message { id: 1, channel_id: 2, author: u.clone(), content: "oi".into(), created_at_ms: 3, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] };
+        let msg = Message { id: MessageId(1), channel_id: ChannelId(2), author: u.clone(), content: "oi".into(), created_at_ms: 3, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] };
         let json = serde_json::to_string(&ServerEvent::MessageCreated { message: msg }).unwrap();
         assert!(matches!(serde_json::from_str::<v041::ServerEvent>(&json), Ok(v041::ServerEvent::MessageCreated { .. })));
         // `UserUpdated` (the broadcast of a change) is unknown to a v0.4.1 client, which skips it.
@@ -1637,7 +1633,7 @@ mod tests {
     #[test]
     fn owner_requests_wire_shape() {
         assert_eq!(serde_json::to_string(&ClaimOwnerRequest { code: "K7QM-2XD9".into() }).unwrap(), r#"{"code":"K7QM-2XD9"}"#);
-        assert_eq!(serde_json::to_string(&TransferOwnerRequest { user_id: 4 }).unwrap(), r#"{"user_id":4}"#);
+        assert_eq!(serde_json::to_string(&TransferOwnerRequest { user_id: UserId(4) }).unwrap(), r#"{"user_id":4}"#);
         assert_eq!((AUDIT_CLAIM_OWNER, AUDIT_TRANSFER_OWNER, AUDIT_RESET_OWNER), ("claim_owner", "transfer_owner", "reset_owner"));
     }
 
@@ -1696,8 +1692,8 @@ mod tests {
     fn audio_only_off_serialises_exactly_as_v050() {
         // A member without the flag is byte-identical to what a v0.5.0 hub sent (streaming or not).
         for streaming in [false, true] {
-            let m = VoiceMember { user: user(3), channel_id: Some(5), muted: true, deafened: false, streaming, watching: vec![2], camera: true, server_muted: true, audio_only: false };
-            let old = v050::VoiceMember { user: user(3), channel_id: Some(5), muted: true, deafened: false, streaming, watching: vec![2], camera: true, server_muted: true };
+            let m = VoiceMember { user: user(3), channel_id: Some(ChannelId(5)), muted: true, deafened: false, streaming, watching: vec![UserId(2)], camera: true, server_muted: true, audio_only: false };
+            let old = v050::VoiceMember { user: user(3), channel_id: Some(ChannelId(5)), muted: true, deafened: false, streaming, watching: vec![UserId(2)], camera: true, server_muted: true };
             let json = serde_json::to_string(&m).unwrap();
             assert!(!json.contains("audio_only"), "{json}");
             assert_eq!(json, serde_json::to_string(&old).unwrap());
@@ -1713,11 +1709,11 @@ mod tests {
 
     #[test]
     fn audio_only_on_is_ignored_by_the_v050_shapes() {
-        let m = VoiceMember { user: user(4), channel_id: Some(5), muted: false, deafened: false, streaming: true, watching: vec![], camera: false, server_muted: false, audio_only: true };
+        let m = VoiceMember { user: user(4), channel_id: Some(ChannelId(5)), muted: false, deafened: false, streaming: true, watching: vec![], camera: false, server_muted: false, audio_only: true };
         let member_json = serde_json::to_string(&m).unwrap();
         assert!(member_json.contains("\"audio_only\":true"));
         let old: v050::VoiceMember = serde_json::from_str(&member_json).unwrap();
-        assert_eq!((old.user, old.channel_id, old.streaming), (user(4), Some(5), true));
+        assert_eq!((old.user, old.channel_id, old.streaming), (user(4), Some(ChannelId(5)), true));
         let ev = serde_json::to_string(&ServerEvent::VoiceStateChanged { member: m.clone() }).unwrap();
         assert!(matches!(serde_json::from_str::<v050::ServerEvent>(&ev), Ok(v050::ServerEvent::VoiceStateChanged { .. })));
         let ready = serde_json::to_string(&ServerEvent::Ready { user: user(4), channels: vec![], online: vec![user(4)], voice: vec![m], account: None, chat: None, server_id: None, custom_roles: None, categories: None }).unwrap();
@@ -1726,27 +1722,27 @@ mod tests {
 
     #[test]
     fn v050_member_json_parses_with_audio_only_off() {
-        let old = v050::VoiceMember { user: user(2), channel_id: Some(5), muted: false, deafened: false, streaming: true, watching: vec![9], camera: true, server_muted: false };
+        let old = v050::VoiceMember { user: user(2), channel_id: Some(ChannelId(5)), muted: false, deafened: false, streaming: true, watching: vec![UserId(9)], camera: true, server_muted: false };
         let new: VoiceMember = serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
         assert!(!new.audio_only);
         assert!(new.streaming && new.camera);
-        assert_eq!(new.watching, vec![9]);
+        assert_eq!(new.watching, vec![UserId(9)]);
     }
 
     #[test]
     fn voice_state_audio_only_is_compatible_both_ways() {
         // A v0.5.0 client's VoiceState (no audio_only) parses on a new hub with it off.
-        let old = serde_json::to_string(&v050::ClientEvent::VoiceState { channel_id: Some(5), muted: true, deafened: false, streaming: true, camera: true }).unwrap();
+        let old = serde_json::to_string(&v050::ClientEvent::VoiceState { channel_id: Some(ChannelId(5)), muted: true, deafened: false, streaming: true, camera: true }).unwrap();
         assert!(matches!(
             serde_json::from_str::<ClientEvent>(&old),
-            Ok(ClientEvent::VoiceState { channel_id: Some(5), muted: true, streaming: true, camera: true, audio_only: false, .. })
+            Ok(ClientEvent::VoiceState { channel_id: Some(ChannelId(5)), muted: true, streaming: true, camera: true, audio_only: false, .. })
         ));
         // A new client's VoiceState (audio-only live) is still understood by a v0.5.0 hub's shape.
-        let new = serde_json::to_string(&ClientEvent::VoiceState { channel_id: Some(5), muted: false, deafened: false, streaming: true, camera: false, audio_only: true }).unwrap();
+        let new = serde_json::to_string(&ClientEvent::VoiceState { channel_id: Some(ChannelId(5)), muted: false, deafened: false, streaming: true, camera: false, audio_only: true }).unwrap();
         assert!(new.contains("\"audio_only\":true"));
         assert!(matches!(
             serde_json::from_str::<v050::ClientEvent>(&new),
-            Ok(v050::ClientEvent::VoiceState { channel_id: Some(5), streaming: true, .. })
+            Ok(v050::ClientEvent::VoiceState { channel_id: Some(ChannelId(5)), streaming: true, .. })
         ));
         assert!(matches!(
             serde_json::from_str::<ClientEvent>(&new),
@@ -1801,12 +1797,12 @@ mod tests {
     }
 
     fn channel(id: i64, private: Option<PrivateAccess>) -> Channel {
-        Channel { id, name: format!("c{id}"), kind: ChannelKind::Text, position: id as i32, private, category_id: None }
+        Channel { id: ChannelId(id), name: format!("c{id}"), kind: ChannelKind::Text, position: id as i32, private, category_id: None }
     }
 
     #[test]
     fn a_public_channel_serialises_exactly_as_v082() {
-        let old = v082::Channel { id: 3, name: "c3".into(), kind: ChannelKind::Text, position: 3 };
+        let old = v082::Channel { id: ChannelId(3), name: "c3".into(), kind: ChannelKind::Text, position: 3 };
         assert_eq!(serde_json::to_string(&channel(3, None)).unwrap(), serde_json::to_string(&old).unwrap());
         // v0.8 JSON reads as public.
         let new: Channel = serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
@@ -1818,11 +1814,11 @@ mod tests {
 
     #[test]
     fn a_private_channel_is_read_by_the_v082_shapes() {
-        let p = PrivateAccess { roles: vec![Role::Member], users: vec![7, 9] };
+        let p = PrivateAccess { roles: vec![Role::Member], users: vec![UserId(7), UserId(9)] };
         let ch = channel(4, Some(p.clone()));
         let json = serde_json::to_string(&ch).unwrap();
         assert!(json.contains(r#""private":{"roles":["member"],"users":[7,9]}"#), "{json}");
-        assert_eq!(serde_json::from_str::<v082::Channel>(&json).unwrap(), v082::Channel { id: 4, name: "c4".into(), kind: ChannelKind::Text, position: 4 });
+        assert_eq!(serde_json::from_str::<v082::Channel>(&json).unwrap(), v082::Channel { id: ChannelId(4), name: "c4".into(), kind: ChannelKind::Text, position: 4 });
         assert_eq!(serde_json::from_str::<Channel>(&json).unwrap(), ch);
         // An empty list (only Admin and Dono) still says "private".
         let only_staff = serde_json::to_string(&channel(5, Some(PrivateAccess::default()))).unwrap();
@@ -1862,16 +1858,16 @@ mod tests {
     #[test]
     fn private_access_rules() {
         use Role::*;
-        let p = PrivateAccess { roles: vec![Member], users: vec![7] };
-        assert!(p.allows(1, Member) && p.allows(7, Moderator), "by role, or by name");
-        assert!(!p.allows(2, Moderator), "Membro does not include Moderador");
-        assert!(p.allows(3, Admin) && p.allows(4, Owner), "Admin and Dono always");
+        let p = PrivateAccess { roles: vec![Member], users: vec![UserId(7)] };
+        assert!(p.allows(UserId(1), Member) && p.allows(UserId(7), Moderator), "by role, or by name");
+        assert!(!p.allows(UserId(2), Moderator), "Membro does not include Moderador");
+        assert!(p.allows(UserId(3), Admin) && p.allows(UserId(4), Owner), "Admin and Dono always");
         let none = PrivateAccess::default();
-        assert!(!none.allows(1, Member) && !none.allows(1, Moderator) && none.allows(1, Admin));
-        assert!(channel(1, None).allows(99, Member), "public: everybody");
-        assert!(!channel(1, Some(none)).allows(99, Member));
-        let messy = PrivateAccess { roles: vec![Member, Owner, Admin, Member, Moderator], users: vec![9, 3, 9] };
-        assert_eq!(messy.normalized(), PrivateAccess { roles: vec![Moderator, Member], users: vec![3, 9] });
+        assert!(!none.allows(UserId(1), Member) && !none.allows(UserId(1), Moderator) && none.allows(UserId(1), Admin));
+        assert!(channel(1, None).allows(UserId(99), Member), "public: everybody");
+        assert!(!channel(1, Some(none)).allows(UserId(99), Member));
+        let messy = PrivateAccess { roles: vec![Member, Owner, Admin, Member, Moderator], users: vec![UserId(9), UserId(3), UserId(9)] };
+        assert_eq!(messy.normalized(), PrivateAccess { roles: vec![Moderator, Member], users: vec![UserId(3), UserId(9)] });
     }
 }
 

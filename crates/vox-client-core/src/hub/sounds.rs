@@ -158,19 +158,19 @@ mod tests {
         let err = full.upload_sound("a", "", vec![1]).await.unwrap_err();
         let st = err.downcast_ref::<HttpStatusError>().expect("typed error");
         assert_eq!((st.status, st.message.as_str()), (409, "the soundboard is full"));
-        let err = client(http("403 Forbidden", "application/json", br#"{"error":"nope"}"#)).await.delete_sound(3).await.unwrap_err();
+        let err = client(http("403 Forbidden", "application/json", br#"{"error":"nope"}"#)).await.delete_sound(SoundId("3".into())).await.unwrap_err();
         assert_eq!(err.downcast_ref::<HttpStatusError>().unwrap().status, 403);
         let ok = client(http("200 OK", "application/json", br#"{"ok":true}"#)).await;
-        ok.delete_sound(3).await.unwrap();
+        ok.delete_sound(SoundId("3".into())).await.unwrap();
     }
 
     #[tokio::test]
     async fn downloads_are_size_capped() {
         let small = client(http("200 OK", "audio/wav", &[1, 2, 3])).await;
-        assert_eq!(small.sound_audio(1, "h").await.unwrap(), vec![1, 2, 3]);
+        assert_eq!(small.sound_audio(SoundId("1".into()), "h").await.unwrap(), vec![1, 2, 3]);
         let huge = client(http("200 OK", "audio/wav", &vec![0u8; MAX_SOUND_DOWNLOAD_BYTES + 1])).await;
-        assert!(huge.sound_audio(1, "h").await.is_err());
+        assert!(huge.sound_audio(SoundId("1".into()), "h").await.is_err());
         let missing = client(http("404 Not Found", "application/json", br#"{"error":"sound not found"}"#)).await;
-        assert_eq!(missing.sound_audio(1, "h").await.unwrap_err().downcast_ref::<HttpStatusError>().unwrap().status, 404);
+        assert_eq!(missing.sound_audio(SoundId("1".into()), "h").await.unwrap_err().downcast_ref::<HttpStatusError>().unwrap().status, 404);
     }
 }

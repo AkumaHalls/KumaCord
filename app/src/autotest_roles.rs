@@ -78,7 +78,7 @@ impl Auto {
                     if !app.roles.supported {
                         return self.fail("the hub does not know roles");
                     }
-                    let me = app.me.clone().unwrap_or_else(|| vox_proto::User::new(0, ""));
+                    let me = app.me.clone().unwrap_or_else(|| vox_proto::User::new(vox_proto::UserId(0), ""));
                     log(&format!("logged in as {} ({:?}), account {:?}", me.username, me.role, app.roles.account));
                     if me.role != Role::Owner {
                         return self.fail("this name is not the hub's owner");
@@ -138,7 +138,7 @@ impl Auto {
                     let Some(to) = app.channels.iter().find(|c| c.kind == vox_proto::ChannelKind::Voice && c.id != from).map(|c| c.id) else {
                         return self.fail("needs two voice channels");
                     };
-                    self.item12 = State { target: Some(b.user.id), from: Some(from), to: Some(to), mic_checked: false };
+                    self.item12 = State { target: Some(b.user.id), from: Some(from.into_inner()), to: Some(to.into_inner()), mic_checked: false };
                     if !app.moderation_available(&b.user) {
                         return self.fail("no moderation menu for a member");
                     }
@@ -152,7 +152,7 @@ impl Auto {
                 let id = self.item12.target.unwrap_or_default();
                 let flagged = app.voice_members.get(&id).is_some_and(|m| m.server_muted);
                 if flagged && Self::saw_message(app, &self.tag("muted-ok")) {
-                    app.admin(AdminCmd::Move { user: id, channel: self.item12.to.unwrap_or_default() });
+                    app.admin(AdminCmd::Move { user: id, channel: vox_proto::ChannelId(self.item12.to.unwrap_or_default()) });
                     self.goto(7, "B confirmed the mute; moving B");
                 } else if self.waited(40) {
                     return self.fail(&format!("B's mute not confirmed (flag seen: {flagged})"));
@@ -160,7 +160,7 @@ impl Auto {
             }
             7 => {
                 let id = self.item12.target.unwrap_or_default();
-                let there = app.voice_members.get(&id).is_some_and(|m| m.channel_id == self.item12.to && m.server_muted);
+                let there = app.voice_members.get(&id).is_some_and(|m| m.channel_id == Some(vox_proto::ChannelId(self.item12.to.unwrap_or_default())) && m.server_muted);
                 if there && Self::saw_message(app, &self.tag("moved-ok")) {
                     app.admin(AdminCmd::Mute { user: id, muted: false });
                     self.goto(8, "B confirmed the move; unmuting B");
@@ -238,7 +238,7 @@ impl Auto {
                         return self.fail("B became the owner: on a hub with no `owner`, A (mod-a) must log in from 127.0.0.1 first");
                     }
                     let Some(vc) = Self::first_voice(app) else { return self.fail("no voice channel") };
-                    self.item12.from = Some(vc);
+                    self.item12.from = Some(*vc);
                     app.join_voice(vc);
                     self.goto(2, "joining voice");
                 }
@@ -290,7 +290,7 @@ impl Auto {
                 }
             }
             4 => {
-                let moved = app.voice.channel.is_some_and(|c| Some(c) != self.item12.from) && app.voice.joining.is_none();
+                let moved = app.voice.channel.is_some_and(|c| Some(c) != self.item12.from.map(vox_proto::ChannelId)) && app.voice.joining.is_none();
                 if moved && app.roles.moderated.iter().any(|a| matches!(a, ModAction::Move { .. })) {
                     // The hub re-announces me in the new channel a moment after the room is joined.
                     if !app.i_am_server_muted() {

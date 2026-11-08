@@ -283,7 +283,7 @@ mod tests {
 
     fn row() -> UserRow {
         UserRow {
-            id: 1,
+            id: vox_proto::UserId(1),
             username: "Ana".into(),
             stored_role: Role::Member,
             password_hash: None,

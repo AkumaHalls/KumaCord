@@ -40,9 +40,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 
-use crate::UserId;
-
-pub type InviteId = i64;
+use crate::{UserId, InviteId};
 
 /// Random bytes in an invite token.
 pub const INVITE_TOKEN_LEN: usize = 16;
@@ -715,7 +713,7 @@ mod tests {
 
     #[test]
     fn invite_states() {
-        let mut i = Invite { id: 1, created_by: 1, created_by_name: "dono".into(), created_at_ms: 0, expires_at_ms: Some(100), max_uses: Some(2), uses: 0, revoked: false };
+        let mut i = Invite { id: InviteId(1.to_string()), created_by: UserId(1), created_by_name: "dono".into(), created_at_ms: 0, expires_at_ms: Some(100), max_uses: Some(2), uses: 0, revoked: false };
         assert_eq!(i.state(50), InviteState::Active);
         assert_eq!(i.state(100), InviteState::Expired);
         i.uses = 2;

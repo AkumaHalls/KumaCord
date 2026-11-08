@@ -234,7 +234,7 @@ impl App {
     pub fn on_sound_event(&mut self, ev: SoundEv) {
         match ev {
             SoundEv::List { supported, mut sounds } => {
-                sounds.sort_by_key(|s| (s.name.to_lowercase(), s.id));
+                sounds.sort_by_key(|s| (s.name.to_lowercase(), s.id.clone()));
                 tracing::info!(supported, sounds = sounds.len(), "soundboard list");
                 self.sb.supported = supported;
                 self.sb.sounds = sounds;
@@ -243,9 +243,10 @@ impl App {
                 }
             }
             SoundEv::Played { sound_id, by, heard } => {
-                tracing::info!(sound_id, by = %by.username, ?heard, "sound played in my room");
+                tracing::info!(sound_id = %sound_id, by = %by.username, ?heard, "sound played in my room");
+                let sound_id_clone = sound_id.clone();
                 self.sb.played.push((sound_id, by.id, heard));
-                let found = self.sb.find(sound_id).map(|s| (s.emoji.clone(), s.name.clone()));
+                let found = self.sb.find(sound_id_clone).map(|s| (s.emoji.clone(), s.name.clone()));
                 let (emoji, name) = match (found, self.repaint.ctx()) {
                     (Some((e, n)), Some(ctx)) => (shown_emoji(&ctx, &e), n),
                     (Some((e, n)), None) => (if e.is_empty() { DEFAULT_EMOJI.to_string() } else { e }, n),
@@ -429,7 +430,7 @@ impl App {
                             ui.horizontal(|ui| {
                                 for &i in row {
                                     let s = &self.sb.sounds[i];
-                                    let muted_here = self.sound_is_muted(s.id);
+                                    let muted_here = self.sound_is_muted(s.id.clone());
                                     let can_edit = self.can_edit_sound(s);
                                     let emoji = shown_emoji(&ctx, &s.emoji);
                                     let (tile, listen) = sound_tile(ui, tile_w, &emoji, &s.name, muted_here);
@@ -441,20 +442,20 @@ impl App {
                                         if muted_here { "\n(silenciado só para você)" } else { "" }
                                     ));
                                     if listen {
-                                        preview = Some(s.id);
+                                        preview = Some(s.id.clone());
                                     } else if tile.clicked() {
-                                        play = Some(s.id);
+                                        play = Some(s.id.clone());
                                     }
                                     tile.context_menu(|ui| {
                                         ui.set_min_width(220.0);
                                         ui.label(RichText::new(&s.name).font(theme::semibold(size::BUTTON)).color(theme::GIZ));
                                         if ui_kit::menu_row(ui, ph::HEADPHONES, "Ouvir só aqui", false).clicked() {
-                                            preview = Some(s.id);
+                                            preview = Some(s.id.clone());
                                             ui.close();
                                         }
                                         let (icon, text) = if muted_here { (ph::SPEAKER_HIGH, "Reativar este som") } else { (ph::SPEAKER_SLASH, "Silenciar este som (só para mim)") };
                                         if ui_kit::menu_row(ui, icon, text, false).clicked() {
-                                            mute_toggle = Some((s.id, !muted_here));
+                                            mute_toggle = Some((s.id.clone(), !muted_here));
                                             ui.close();
                                         }
                                         if can_edit {
@@ -464,7 +465,7 @@ impl App {
                                                 ui.close();
                                             }
                                             if ui_kit::menu_row(ui, ph::TRASH, "Apagar", true).clicked() {
-                                                delete = Some((s.id, s.name.clone()));
+                                                delete = Some((s.id.clone(), s.name.clone()));
                                                 ui.close();
                                             }
                                         }
@@ -677,7 +678,7 @@ impl App {
         });
         if save {
             self.sb.busy = true;
-            self.backend.send(Cmd::Sound(SoundCmd::Rename { id: form.id, name: form.name.trim().to_string(), emoji: form.emoji.trim().to_string() }));
+            self.backend.send(Cmd::Sound(SoundCmd::Rename { id: form.id.clone(), name: form.name.trim().to_string(), emoji: form.emoji.trim().to_string() }));
         }
         if open && !cancel {
             self.sb.edit = Some(form);

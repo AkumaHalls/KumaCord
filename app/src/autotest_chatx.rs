@@ -19,6 +19,7 @@
 //! Every step waits a second first (the hub's message rate limit). Silent: `VOX_NO_PLAYBACK=1`;
 //! the notifications are only recorded.
 
+use vox_proto::{ChannelId, DmId, DmMessageId, MessageId, UserId};
 use super::Auto;
 use crate::app::chat_extras::{quote_parts, Chip, Target};
 use crate::app::App;
@@ -26,14 +27,14 @@ use crate::backend::Cmd;
 
 #[derive(Default)]
 pub struct State {
-    ch: i64,
-    peer: i64,
+    ch: Option<ChannelId>,
+    peer: Option<UserId>,
     sounds: usize,
     balloons: u32,
-    cx1: i64,
-    cx3: i64,
-    dm: i64,
-    dm1: i64,
+    cx1: Option<MessageId>,
+    cx3: Option<MessageId>,
+    dm: Option<DmId>,
+    dm1: Option<DmMessageId>,
 }
 
 fn log(what: &str) {
@@ -55,16 +56,16 @@ impl Auto {
         }
     }
 
-    fn cx_msg(app: &App, ch: i64, prefix: &str) -> Option<vox_proto::Message> {
+    fn cx_msg(app: &App, ch: ChannelId, prefix: &str) -> Option<vox_proto::Message> {
         app.logs.get(&ch)?.msgs.iter().find(|m| m.content.starts_with(prefix)).cloned()
     }
 
-    fn cx_dm_line(app: &App, dm: i64, prefix: &str) -> Option<vox_proto::DmMessage> {
+    fn cx_dm_line(app: &App, dm: DmId, prefix: &str) -> Option<vox_proto::DmMessage> {
         app.dms.logs.get(&dm)?.msgs.iter().find(|m| m.content.starts_with(prefix)).cloned()
     }
 
     /// Logged in, the hub has the v0.8 chat, the other one online: (channel, peer id).
-    fn cx_ready(&mut self, app: &mut App) -> Option<Result<(i64, i64), i32>> {
+    fn cx_ready(&mut self, app: &mut App) -> Option<Result<(ChannelId, UserId), i32>> {
         if !self.logged_in(app) {
             return self.waited(30).then(|| Err(self.fail("could not log in").unwrap_or(1)));
         }
@@ -80,7 +81,7 @@ impl Auto {
         }
     }
 
-    fn cx_react_of(list: &[vox_proto::Reaction], emoji: &str, user: i64) -> bool {
+    fn cx_react_of(list: &[vox_proto::Reaction], emoji: &str, user: UserId) -> bool {
         list.iter().any(|r| r.emoji == emoji && r.users.contains(&user))
     }
 
@@ -92,7 +93,7 @@ impl Auto {
             return None;
         }
         let me = app.my_id().unwrap_or_default();
-        let ch = self.cx.ch;
+        let ch = self.cx.ch.expect("channel not set");
         let target = Target::Channel(ch);
         match self.step {
             0 => {
@@ -102,7 +103,7 @@ impl Auto {
             1 => match self.cx_ready(app)? {
                 Err(code) => return Some(code),
                 Ok((ch, peer)) => {
-                    (self.cx.ch, self.cx.peer) = (ch, peer);
+                    (self.cx.ch, self.cx.peer) = (Some(ch), Some(peer));
                     app.select_text(ch);
                     self.goto(2, "ready; waiting for B");
                 }
@@ -117,7 +118,7 @@ impl Auto {
                 let Some((at, list)) = app.mention_list(target, &app.input, cursor) else {
                     return self.fail("typing @cxB opened no member list");
                 };
-                let Some(i) = list.iter().position(|c| c.id == Some(self.cx.peer)) else {
+                let Some(i) = list.iter().position(|c| c.id == self.cx.peer) else {
                     return self.fail(&format!("B is not in the member list: {list:?}"));
                 };
                 if app.mention_list(target, "@to", 3).is_some_and(|(_, l)| l.iter().any(|c| c.id.is_none())) {
@@ -151,18 +152,18 @@ impl Auto {
                     return self.fail(&format!("the reply did not notify me as a mention: @{mentions}, sounds {:?}", app.notify.stats.sounds));
                 }
                 // A click on the quote finds the original.
-                app.jump_to(target, q.id, q.deleted);
-                if app.chatx.jump.map(|j| j.id) != Some(cx1.id) || app.chatx.jumps_found != 1 {
+                app.jump_to(target, *q.id, q.deleted);
+                if app.chatx.jump.map(|j| j.id) != Some(*cx1.id) || app.chatx.jumps_found != 1 {
                     return self.fail("the quote's jump did not find cx1");
                 }
-                (self.cx.cx1, self.cx.cx3) = (cx1.id, cx3.id);
-                app.react(target, cx3.id, "👍", true);
+                (self.cx.cx1, self.cx.cx3) = (Some(cx1.id), Some(cx3.id));
+                app.react(target, *cx3.id, "👍", true);
                 log(&format!("B's reply quotes cx1 ({:?}) and mentions me (@{mentions}); reacting 👍", quote_parts(&q)));
                 self.goto(4, "reacted 👍 on cx3");
             }
             4 => {
                 if Self::saw_message(app, &self.cx_tag("cxok1")) {
-                    app.react(target, self.cx.cx3, "👍", false);
+                    app.react(target, *self.cx.cx3.expect("cx3 not set"), "👍", false);
                     self.goto(5, "B saw it; took 👍 off");
                 } else if self.waited(30) {
                     return self.fail("B never saw my reaction");
@@ -170,17 +171,18 @@ impl Auto {
             }
             5 => {
                 let cx1 = Self::cx_msg(app, ch, &self.cx_tag("cx1"))?;
-                if Self::saw_message(app, &self.cx_tag("cxok2")) && Self::cx_react_of(&cx1.reactions, "🎉", self.cx.peer) {
+                if Self::saw_message(app, &self.cx_tag("cxok2")) && Self::cx_react_of(&cx1.reactions, "🎉", self.cx.peer.expect("peer not set")) {
                     log(&format!("B saw the removal; B's 🎉 on cx1 arrived live: {:?}", cx1.reactions));
-                    app.open_dm(self.cx.peer);
+                    app.open_dm(self.cx.peer.expect("peer not set"));
                     self.goto(6, "opening the DM");
                 } else if self.waited(30) {
                     return self.fail(&format!("no cxok2 / no 🎉 from B: {:?}", cx1.reactions));
                 }
             }
             6 => {
-                if let Some(dm) = app.dms.selected.filter(|d| app.dms.conv(*d).is_some_and(|c| c.peer.id == self.cx.peer)) {
-                    self.cx.dm = dm;
+                let peer = self.cx.peer.expect("peer not set");
+                if let Some(dm) = app.dms.selected.filter(|d| app.dms.conv(*d).is_some_and(|c| c.peer.id == peer)) {
+                    self.cx.dm = Some(dm);
                     app.dms.input = self.cx_tag("cxdm1");
                     app.send_dm();
                     self.goto(7, "wrote cxdm1");
@@ -189,20 +191,22 @@ impl Auto {
                 }
             }
             7 => {
-                let Some(reply) = Self::cx_dm_line(app, self.cx.dm, &self.cx_tag("cxdm2")) else {
+                let dm = self.cx.dm.expect("dm not set");
+                let Some(reply) = Self::cx_dm_line(app, dm, &self.cx_tag("cxdm2")) else {
                     return if self.waited(40) { self.fail("B's DM reply never came") } else { None };
                 };
-                let dm1 = Self::cx_dm_line(app, self.cx.dm, &self.cx_tag("cxdm1"))?;
-                if reply.reply.as_ref().map(|r| r.id) != Some(dm1.id) {
+                let dm1 = Self::cx_dm_line(app, dm, &self.cx_tag("cxdm1"))?;
+                if reply.reply.as_ref().map(|r| r.id.into_inner()) != Some(dm1.id.into_inner()) {
                     return self.fail(&format!("the DM reply does not quote cxdm1: {:?}", reply.reply));
                 }
-                app.react(Target::Dm(self.cx.dm), reply.id, "❤", true);
+                app.react(Target::Dm(dm), *reply.id, "❤", true);
                 self.goto(8, "B's DM reply quotes mine; reacted ❤");
             }
             8 => {
-                if Self::cx_dm_line(app, self.cx.dm, &self.cx_tag("cxok3")).is_some() {
+                let dm = self.cx.dm.expect("dm not set");
+                if Self::cx_dm_line(app, dm, &self.cx_tag("cxok3")).is_some() {
                     app.select_text(ch);
-                    app.admin(crate::roles::AdminCmd::DeleteMessage { id: self.cx.cx1 });
+                    app.admin(crate::roles::AdminCmd::DeleteMessage { id: self.cx.cx1.expect("cx1 not set") });
                     self.goto(9, "B saw the DM reaction; deleting cx1");
                 } else if self.waited(30) {
                     return self.fail("B never saw the DM reaction");
@@ -231,7 +235,7 @@ impl Auto {
             return None;
         }
         let me = app.my_id().unwrap_or_default();
-        let ch = self.cx.ch;
+        let ch = self.cx.ch.expect("channel not set");
         let target = Target::Channel(ch);
         match self.step {
             0 => {
@@ -241,7 +245,7 @@ impl Auto {
             1 => match self.cx_ready(app)? {
                 Err(code) => return Some(code),
                 Ok((ch, peer)) => {
-                    (self.cx.ch, self.cx.peer) = (ch, peer);
+                    (self.cx.ch, self.cx.peer) = (Some(ch), Some(peer));
                     app.select_text(ch);
                     self.cx.sounds = app.notify.stats.sounds.len();
                     self.cx.balloons = app.notify.stats.balloons;
@@ -259,7 +263,7 @@ impl Auto {
                 if cx2.mention_everyone || cx2.mentions_me(me) || cx5.mentions_me(me) {
                     return self.fail("a member's @todos or an old-shape @name counted as a mention");
                 }
-                let chips = app.chatx.chips(target, cx1.id, cx1.caption(), &cx1.mentions, false);
+                let chips = app.chatx.chips(target, *cx1.id, cx1.caption(), &cx1.mentions, false);
                 if chips.len() != 1 || chips[0].chip != Chip::User(me) || &cx1.caption()[chips[0].range.clone()] != "@cxB1" {
                     return self.fail(&format!("the chip is wrong: {chips:?}"));
                 }
@@ -275,12 +279,12 @@ impl Auto {
                 }
                 log(&format!("mentioned by id, chip over @cxB1, @{mentions} of {unread} unread, notification {:?}, badge {}", s.last_balloon, s.badge));
                 // "Responder", with "@ ligado" (the default), then with it off.
-                app.start_reply(target, cx1.id);
-                if !app.chatx.replying.get(&target).is_some_and(|r| r.ping && r.id == cx1.id) {
+                app.start_reply(target, *cx1.id);
+                if !app.chatx.replying.get(&target).is_some_and(|r| r.ping && r.id == *cx1.id) {
                     return self.fail("Responder did not start a reply with @ ligado");
                 }
                 Self::say(app, &format!("{} concordo", self.cx_tag("cx3")));
-                app.start_reply(target, cx1.id);
+                app.start_reply(target, *cx1.id);
                 if let Some(r) = app.chatx.replying.get_mut(&target) {
                     r.ping = false;
                 }
@@ -288,15 +292,16 @@ impl Auto {
                 if !app.chatx.replying.is_empty() {
                     return self.fail("sending did not use up the reply");
                 }
-                self.cx.cx1 = cx1.id;
+                self.cx.cx1 = Some(cx1.id);
                 self.goto(3, "replied twice");
             }
             3 => {
                 let Some(cx3) = Self::cx_msg(app, ch, &self.cx_tag("cx3")) else {
                     return if self.waited(20) { self.fail("my reply never came back") } else { None };
                 };
-                self.cx.cx3 = cx3.id;
-                if Self::cx_react_of(&cx3.reactions, "👍", self.cx.peer) {
+                self.cx.cx3 = Some(cx3.id);
+                let peer = self.cx.peer.expect("peer not set");
+                if Self::cx_react_of(&cx3.reactions, "👍", peer) {
                     Self::say(app, &self.cx_tag("cxok1"));
                     self.goto(4, "A's 👍 arrived live");
                 } else if self.waited(40) {
@@ -306,7 +311,8 @@ impl Auto {
             4 => {
                 let cx3 = Self::cx_msg(app, ch, &self.cx_tag("cx3"))?;
                 if cx3.reactions.is_empty() {
-                    app.react(target, self.cx.cx1, "🎉", true);
+                    let cx1 = *self.cx.cx1.expect("cx1 not set");
+                    app.react(target, cx1, "🎉", true);
                     Self::say(app, &self.cx_tag("cxok2"));
                     self.goto(5, "A's 👍 went away live; reacted 🎉 on cx1");
                 } else if self.waited(30) {
@@ -314,27 +320,30 @@ impl Auto {
                 }
             }
             5 => {
-                let Some(conv) = app.dms.conv_with(self.cx.peer).cloned() else {
+                let peer = self.cx.peer.expect("peer not set");
+                let Some(conv) = app.dms.conv_with(peer).cloned() else {
                     return if self.waited(40) { self.fail("A's DM never came") } else { None };
                 };
                 let Some(dm1) = Self::cx_dm_line(app, conv.id, &self.cx_tag("cxdm1")) else {
                     app.select_dm(conv.id);
                     return if self.waited(40) { self.fail("cxdm1 never came") } else { None };
                 };
-                (self.cx.dm, self.cx.dm1) = (conv.id, dm1.id);
-                app.start_reply(Target::Dm(conv.id), dm1.id);
+                (self.cx.dm, self.cx.dm1) = (Some(conv.id), Some(dm1.id));
+                app.start_reply(Target::Dm(conv.id), *dm1.id);
                 app.dms.input = self.cx_tag("cxdm2");
                 app.send_dm();
                 self.goto(6, "replied in the DM");
             }
             6 => {
-                let Some(reply) = Self::cx_dm_line(app, self.cx.dm, &self.cx_tag("cxdm2")) else {
+                let dm = self.cx.dm.expect("dm not set");
+                let Some(reply) = Self::cx_dm_line(app, dm, &self.cx_tag("cxdm2")) else {
                     return if self.waited(20) { self.fail("my DM reply never came back") } else { None };
                 };
-                if reply.reply.as_ref().map(|r| r.id) != Some(self.cx.dm1) {
+                if reply.reply.as_ref().map(|r| r.id.into_inner()) != self.cx.dm1.map(|id| id.into_inner()) {
                     return self.fail(&format!("my DM reply has no quote: {:?}", reply.reply));
                 }
-                if Self::cx_react_of(&reply.reactions, "❤", self.cx.peer) {
+                let peer = self.cx.peer.expect("peer not set");
+                if Self::cx_react_of(&reply.reactions, "❤", peer) {
                     app.dms.input = self.cx_tag("cxok3");
                     app.send_dm();
                     app.select_text(ch);

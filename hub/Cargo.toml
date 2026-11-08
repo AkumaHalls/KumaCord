@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 vox-log = { workspace = true }
-vox-proto = { workspace = true }
+vox-proto = { workspace = true, features = ["sqlite"] }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util"] }
@@ -36,6 +36,8 @@ base64 = "0.23.1"
 getrandom = "0.4.3"
 # Item 12: personal passwords (argon2id).
 argon2 = "0.5"
+# Windows file ACL for config files (CU-024-001)
+whoami = "1.5"
 thiserror = { workspace = true }
 # Link previews (item 10): the hub fetches pages, so clients never touch arbitrary sites.
 # rustls with the ring provider only (aws-lc-rs would add ~2 MB to the exe).

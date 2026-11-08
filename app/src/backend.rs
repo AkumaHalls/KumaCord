@@ -21,7 +21,7 @@ use vox_client_core::{
     AlertKind, JoinError, JoinStep, MicTest, MicTestConfig, NoiseControl, ShareOptions, ShareSource, UiPlayer, UserAudio, VoiceConfig, VoiceEvent, VoiceGate,
     VoiceSession, WatchLimit,
 };
-use vox_proto::{ChannelId, ClientEvent, Message, MessageId, ServerEvent, User, UserId, PROTOCOL_VERSION, WATCH_STATE_REJECTED};
+use vox_proto::{ChannelId, ClientEvent, DmMessageId, Message, MessageId, ServerEvent, User, UserId, PROTOCOL_VERSION, WATCH_STATE_REJECTED};
 
 mod camera;
 mod sounds;
@@ -733,7 +733,7 @@ impl Controller {
                     match hub.messages(channel, before, 50).await {
                         Ok(messages) => out.send(Ev::History { channel, before, messages }),
                         Err(e) => {
-                            warn!(error = %format!("{e:#}"), channel, "loading history failed");
+                            warn!(error = %format!("{e:#}"), channel = %channel, "loading history failed");
                             out.send(Ev::Notice("Não foi possível carregar as mensagens.".into()));
                         }
                     }
@@ -789,7 +789,7 @@ impl Controller {
                         channel_id: channel,
                         content,
                         mentions: extras.mentions,
-                        reply_to: extras.reply_to,
+                        reply_to: extras.reply_to.map(MessageId),
                         reply_mention: extras.reply_mention,
                     })
                 });
@@ -803,8 +803,8 @@ impl Controller {
                 let out = self.out.clone();
                 tokio::spawn(async move {
                     let r = match target {
-                        crate::chat_images::Target::Channel(_) => hub.react(message, &emoji, add).await,
-                        crate::chat_images::Target::Dm(dm) => hub.dm_react(dm, message, &emoji, add).await,
+                        crate::chat_images::Target::Channel(_) => hub.react(MessageId(message), &emoji, add).await,
+                        crate::chat_images::Target::Dm(dm) => hub.dm_react(dm, DmMessageId(message), &emoji, add).await,
                     };
                     if let Err(e) = r {
                         warn!(error = %format!("{e:#}"), "reaction failed");
@@ -2127,14 +2127,14 @@ async fn run_join(hub: &HubClient, channel: ChannelId, via: JoinVia, cfg: VoiceC
     let resp = match asked {
         Ok(r) => r,
         Err(e) => {
-            warn!(error = %e, channel, ?via, "voice join: hub request failed");
+            warn!(error = %e, channel = %channel, ?via, "voice join: hub request failed");
             return Err(e);
         }
     };
-    info!(channel, hub_ms = started.elapsed().as_millis() as u64, url = %resp.livekit_url, "voice join: hub join ok");
+    info!(channel = %channel, hub_ms = started.elapsed().as_millis() as u64, url = %resp.livekit_url, "voice join: hub join ok");
     match VoiceSession::connect(&resp.livekit_url, &resp.livekit_token, cfg).await {
         Ok(ok) => {
-            info!(channel, total_ms = started.elapsed().as_millis() as u64, "voice join: complete");
+            info!(channel = %channel, total_ms = started.elapsed().as_millis() as u64, "voice join: complete");
             Ok(ok)
         }
         // The core already logged the failing step and the full error chain.
@@ -2142,7 +2142,7 @@ async fn run_join(hub: &HubClient, channel: ChannelId, via: JoinVia, cfg: VoiceC
             if let JoinVia::Dm { dm, .. } = via {
                 // Nobody should keep ringing (or wait in the room) for a call we could not join.
                 if let Err(e) = hub.dm_call_end(dm).await {
-                    warn!(error = %format!("{e:#}"), dm, "ending the dm call after a failed join");
+                    warn!(error = %format!("{e:#}"), dm = %dm, "ending the dm call after a failed join");
                 }
             }
             Err(voice_error_message(&e))

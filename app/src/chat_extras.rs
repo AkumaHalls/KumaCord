@@ -559,7 +559,7 @@ pub fn quote_line(ui: &mut egui::Ui, r: &ReplyRef) -> bool {
     job.append(&format!("{}  ", ph::ARROW_BEND_UP_LEFT), 0.0, egui::TextFormat::simple(small.clone(), weak));
     match who {
         Some(name) => {
-            let author = r.author.as_ref().map(|u| u.id).unwrap_or_default();
+            let author = r.author.as_ref().map(|u| u.id).unwrap_or(UserId(0));
             job.append(&format!("{name}: "), 0.0, egui::TextFormat::simple(crate::theme::semibold(12.0), super::name_color(author)));
             job.append(&body, 0.0, egui::TextFormat::simple(small, weak));
         }
@@ -880,7 +880,7 @@ impl App {
         if self.selected == Some(ch) {
             self.input.clear();
         }
-        tracing::info!(channel = ch, "channel gone: its client state was dropped");
+        tracing::info!(channel = %ch, "channel gone: its client state was dropped");
     }
 
     /// "Apagar mensagem": at once (Shift held), or after "Apagar esta mensagem?".
@@ -890,8 +890,8 @@ impl App {
             return;
         }
         let found = match target {
-            Target::Channel(ch) => self.logs.get(&ch).and_then(|l| l.msgs.iter().find(|m| m.id == id)).map(|m| (m.author.shown_name().to_string(), m.caption().to_string(), m.attachments.len())),
-            Target::Dm(dm) => self.dms.logs.get(&dm).and_then(|l| l.msgs.iter().find(|m| m.id == id)).map(|m| (m.author.shown_name().to_string(), m.caption().to_string(), m.attachments.len())),
+            Target::Channel(ch) => self.logs.get(&ch).and_then(|l| l.msgs.iter().find(|m| m.id == vox_proto::MessageId(id))).map(|m| (m.author.shown_name().to_string(), m.caption().to_string(), m.attachments.len())),
+            Target::Dm(dm) => self.dms.logs.get(&dm).and_then(|l| l.msgs.iter().find(|m| m.id == vox_proto::DmMessageId(id))).map(|m| (m.author.shown_name().to_string(), m.caption().to_string(), m.attachments.len())),
         };
         let Some((author, caption, images)) = found else { return };
         let excerpt = match (caption.trim().is_empty(), images) {
@@ -908,8 +908,8 @@ impl App {
         self.chatx.deletes_sent += 1;
         tracing::info!(?target, id, "delete message");
         match target {
-            Target::Channel(_) => self.admin(crate::roles::AdminCmd::DeleteMessage { id }),
-            Target::Dm(dm) => self.backend.send(Cmd::Dm(super::dms::DmCmd::Delete { dm, id })),
+            Target::Channel(_) => self.admin(crate::roles::AdminCmd::DeleteMessage { id: vox_proto::MessageId(id) }),
+            Target::Dm(dm) => self.backend.send(Cmd::Dm(super::dms::DmCmd::Delete { dm, id: vox_proto::DmMessageId(id) })),
         }
     }
 
@@ -944,8 +944,8 @@ impl App {
 
     fn reply_target_message(&self, target: Target, id: i64) -> Option<User> {
         match target {
-            Target::Channel(ch) => self.logs.get(&ch)?.msgs.iter().find(|m| m.id == id).map(|m| m.author.clone()),
-            Target::Dm(dm) => self.dms.logs.get(&dm)?.msgs.iter().find(|m| m.id == id).map(|m| m.author.clone()),
+            Target::Channel(ch) => self.logs.get(&ch)?.msgs.iter().find(|m| m.id == vox_proto::MessageId(id)).map(|m| m.author.clone()),
+            Target::Dm(dm) => self.dms.logs.get(&dm)?.msgs.iter().find(|m| m.id == vox_proto::DmMessageId(id)).map(|m| m.author.clone()),
         }
     }
 
@@ -999,8 +999,8 @@ impl App {
     fn my_reaction(&self, target: Target, id: i64, emoji: &str) -> bool {
         let me = self.my_id();
         let list = match target {
-            Target::Channel(ch) => self.logs.get(&ch).and_then(|l| l.msgs.iter().find(|m| m.id == id)).map(|m| m.reactions.as_slice()),
-            Target::Dm(dm) => self.dms.logs.get(&dm).and_then(|l| l.msgs.iter().find(|m| m.id == id)).map(|m| m.reactions.as_slice()),
+            Target::Channel(ch) => self.logs.get(&ch).and_then(|l| l.msgs.iter().find(|m| m.id == vox_proto::MessageId(id))).map(|m| m.reactions.as_slice()),
+            Target::Dm(dm) => self.dms.logs.get(&dm).and_then(|l| l.msgs.iter().find(|m| m.id == vox_proto::DmMessageId(id))).map(|m| m.reactions.as_slice()),
         };
         list.is_some_and(|l| l.iter().any(|r| r.emoji == emoji && me.is_some_and(|m| r.users.contains(&m))))
     }
@@ -1008,8 +1008,8 @@ impl App {
     /// The hub says a reaction changed.
     pub(super) fn on_reaction(&mut self, target: Target, id: i64, emoji: &str, user: UserId, added: bool) {
         let list = match target {
-            Target::Channel(ch) => self.logs.get_mut(&ch).and_then(|l| l.msgs.iter_mut().find(|m| m.id == id)).map(|m| &mut m.reactions),
-            Target::Dm(dm) => self.dms.logs.get_mut(&dm).and_then(|l| l.msgs.iter_mut().find(|m| m.id == id)).map(|m| &mut m.reactions),
+            Target::Channel(ch) => self.logs.get_mut(&ch).and_then(|l| l.msgs.iter_mut().find(|m| m.id == vox_proto::MessageId(id))).map(|m| &mut m.reactions),
+            Target::Dm(dm) => self.dms.logs.get_mut(&dm).and_then(|l| l.msgs.iter_mut().find(|m| m.id == vox_proto::DmMessageId(id))).map(|m| &mut m.reactions),
         };
         if let Some(list) = list {
             vox_proto::apply_reaction(list, emoji, user, added);
@@ -1019,8 +1019,8 @@ impl App {
     /// A message was deleted: replies to it now quote "mensagem apagada".
     pub(crate) fn quotes_of_deleted(&mut self, target: Target, id: i64) {
         let gone = |r: &mut Option<ReplyRef>| {
-            if let Some(q) = r.as_mut().filter(|q| q.id == id) {
-                *q = ReplyRef::gone(id);
+            if let Some(q) = r.as_mut().filter(|q| q.id == vox_proto::MessageId(id)) {
+                *q = ReplyRef::gone(vox_proto::MessageId(id));
             }
         };
         match target {
@@ -1032,8 +1032,8 @@ impl App {
     /// (oldest id loaded, all loaded, a page is loading) of a conversation, and whether `id` is in it.
     fn log_facts(&self, target: Target, id: i64) -> (Option<i64>, bool, bool) {
         match target {
-            Target::Channel(ch) => self.logs.get(&ch).map_or((None, false, false), |l| (l.msgs.first().map(|m| m.id), l.no_more, l.msgs.iter().any(|m| m.id == id))),
-            Target::Dm(dm) => self.dms.logs.get(&dm).map_or((None, false, false), |l| (l.msgs.first().map(|m| m.id), l.no_more, l.msgs.iter().any(|m| m.id == id))),
+            Target::Channel(ch) => self.logs.get(&ch).map_or((None, false, false), |l| (l.msgs.first().map(|m| m.id.into_inner()), l.no_more, l.msgs.iter().any(|m| m.id == vox_proto::MessageId(id)))),
+            Target::Dm(dm) => self.dms.logs.get(&dm).map_or((None, false, false), |l| (l.msgs.first().map(|m| m.id.into_inner()), l.no_more, l.msgs.iter().any(|m| m.id == vox_proto::DmMessageId(id)))),
         }
     }
 
@@ -1043,13 +1043,13 @@ impl App {
                 if let Some(l) = self.logs.get_mut(&ch) {
                     l.loading_older = true;
                 }
-                self.backend.send(Cmd::LoadHistory { channel: ch, before: Some(before) });
+                self.backend.send(Cmd::LoadHistory { channel: ch, before: Some(vox_proto::MessageId(before)) });
             }
             Target::Dm(dm) => {
                 if let Some(l) = self.dms.logs.get_mut(&dm) {
                     l.loading_older = true;
                 }
-                self.backend.send(Cmd::Dm(super::dms::DmCmd::History { dm, before: Some(before) }));
+                self.backend.send(Cmd::Dm(super::dms::DmCmd::History { dm, before: Some(vox_proto::DmMessageId(before)) }));
             }
         }
     }
@@ -1290,11 +1290,12 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vox_proto::{DmId, MessageId};
 
     fn people() -> Vec<User> {
-        let mut tati = User::new(2, "tati");
+        let mut tati = User::new(UserId(2), "tati");
         tati.display_name = Some("Tati Silva".into());
-        vec![User::new(1, "dono"), tati, User::new(3, "joao"), User::new(4, "Joana")]
+        vec![User::new(UserId(1), "dono"), tati, User::new(UserId(3), "joao"), User::new(UserId(4), "Joana")]
     }
 
     #[derive(Debug, Clone, PartialEq)]
@@ -1333,20 +1334,20 @@ mod tests {
 
     #[test]
     fn who_may_delete_what() {
-        let (ch, dm) = (Target::Channel(1), Target::Dm(1));
+        let (ch, dm) = (Target::Channel(ChannelId(1)), Target::Dm(DmId(1)));
         // My own channel message: any role, with or without images (the author is what counts).
-        assert!(may_delete(ch, true, Some(5), 5, false, true));
-        assert!(may_delete(ch, true, Some(5), 5, true, true), "an admin / the owner deletes their own too");
+        assert!(may_delete(ch, true, Some(UserId(5)), UserId(5), false, true));
+        assert!(may_delete(ch, true, Some(UserId(5)), UserId(5), true, true), "an admin / the owner deletes their own too");
         // Somebody else's: moderators and up only.
-        assert!(!may_delete(ch, true, Some(5), 6, false, true));
-        assert!(may_delete(ch, true, Some(5), 6, true, true));
+        assert!(!may_delete(ch, true, Some(UserId(5)), UserId(6), false, true));
+        assert!(may_delete(ch, true, Some(UserId(5)), UserId(6), true, true));
         // A hub without roles has no delete endpoint.
-        assert!(!may_delete(ch, false, Some(5), 5, true, true));
+        assert!(!may_delete(ch, false, Some(UserId(5)), UserId(5), true, true));
         // DMs: only my own text lines, whatever my role.
-        assert!(may_delete(dm, true, Some(5), 5, false, true));
-        assert!(!may_delete(dm, true, Some(5), 6, true, true));
-        assert!(!may_delete(dm, true, Some(5), 5, false, false), "call lines stay");
-        assert!(!may_delete(ch, true, None, 5, false, true));
+        assert!(may_delete(dm, true, Some(UserId(5)), UserId(5), false, true));
+        assert!(!may_delete(dm, true, Some(UserId(5)), UserId(6), true, true));
+        assert!(!may_delete(dm, true, Some(UserId(5)), UserId(5), false, false), "call lines stay");
+        assert!(!may_delete(ch, true, None, UserId(5), false, true));
     }
 
     #[test]
@@ -1364,16 +1365,16 @@ mod tests {
     fn candidates_prefix_first_never_me_and_todos_for_staff() {
         let p = people();
         let names = |v: Vec<Candidate>| v.into_iter().map(|c| c.name).collect::<Vec<_>>();
-        assert_eq!(names(candidates(&p, Some(1), "jo", false)), ["Joana", "joao"]);
-        assert_eq!(names(candidates(&p, Some(1), "silva", false)), ["Tati Silva"], "contains, in the display name");
-        assert_eq!(names(candidates(&p, Some(1), "tati s", false)), ["Tati Silva"]);
-        assert!(candidates(&p, Some(1), "do", false).is_empty(), "not me");
-        assert!(candidates(&p, Some(1), "x y", false).is_empty());
-        assert_eq!(names(candidates(&p, Some(3), "to", true)), ["todos"]);
-        assert!(candidates(&p, Some(3), "to", false).is_empty(), "a member is not offered @todos");
-        assert_eq!(candidates(&p, Some(1), "", true).len(), 4, "@todos and the three others");
-        let c = &candidates(&p, Some(1), "tat", false)[0];
-        assert_eq!((c.id, c.username.as_str()), (Some(2), "tati"));
+        assert_eq!(names(candidates(&p, Some(UserId(1)), "jo", false)), ["Joana", "joao"]);
+        assert_eq!(names(candidates(&p, Some(UserId(1)), "silva", false)), ["Tati Silva"], "contains, in the display name");
+        assert_eq!(names(candidates(&p, Some(UserId(1)), "tati s", false)), ["Tati Silva"]);
+        assert!(candidates(&p, Some(UserId(1)), "do", false).is_empty(), "not me");
+        assert!(candidates(&p, Some(UserId(1)), "x y", false).is_empty());
+        assert_eq!(names(candidates(&p, Some(UserId(3)), "to", true)), ["todos"]);
+        assert!(candidates(&p, Some(UserId(3)), "to", false).is_empty(), "a member is not offered @todos");
+        assert_eq!(candidates(&p, Some(UserId(1)), "", true).len(), 4, "@todos and the three others");
+        let c = &candidates(&p, Some(UserId(1)), "tat", false)[0];
+        assert_eq!((c.id, c.username.as_str()), (Some(UserId(2)), "tati"));
     }
 
     #[test]
@@ -1386,34 +1387,34 @@ mod tests {
     #[test]
     fn sent_mentions_follow_the_text() {
         let p = people();
-        let picks = vec![(2, "Tati Silva".to_string()), (3, "joao".to_string())];
-        assert_eq!(send_mentions("oi @Tati Silva", &p, &picks, Some(1)), vec![2], "joao was deleted from the text");
-        assert_eq!(send_mentions("@joana e @TATI", &p, &[], Some(1)), vec![2, 4], "typed by hand");
-        assert!(send_mentions("@dono", &p, &[(1, "dono".into())], Some(1)).is_empty(), "never me");
-        assert!(send_mentions("sem arroba", &p, &[], Some(1)).is_empty());
+        let picks = vec![(UserId(2), "Tati Silva".to_string()), (UserId(3), "joao".to_string())];
+        assert_eq!(send_mentions("oi @Tati Silva", &p, &picks, Some(UserId(1))), vec![UserId(2)], "joao was deleted from the text");
+        assert_eq!(send_mentions("@joana e @TATI", &p, &[], Some(UserId(1))), vec![UserId(2), UserId(4)], "typed by hand");
+        assert!(send_mentions("@dono", &p, &[(UserId(1), "dono".into())], Some(UserId(1))).is_empty(), "never me");
+        assert!(send_mentions("sem arroba", &p, &[], Some(UserId(1))).is_empty());
     }
 
     #[test]
     fn chips_cover_names_and_todos_without_overlaps() {
         let t = "@Tati Silva e @tati e @todos e @Joana";
-        let people = [(2, "tati", Some("Tati Silva")), (4, "Joana", None)];
+        let people = [(UserId(2), "tati", Some("Tati Silva")), (UserId(4), "Joana", None)];
         let s = mention_spans(t, &people, true);
         let shown: Vec<(&str, Chip)> = s.iter().map(|s| (&t[s.range.clone()], s.chip)).collect();
-        assert_eq!(shown, [("@Tati Silva", Chip::User(2)), ("@tati", Chip::User(2)), ("@todos", Chip::Everyone), ("@Joana", Chip::User(4))]);
+        assert_eq!(shown, [("@Tati Silva", Chip::User(UserId(2))), ("@tati", Chip::User(UserId(2))), ("@todos", Chip::Everyone), ("@Joana", Chip::User(UserId(4)))]);
         assert!(mention_spans(t, &people, false).iter().all(|s| s.chip != Chip::Everyone), "a member's @todos is plain text");
         // "@Tati" inside "@Tati Silva" is not a second chip.
-        let s = mention_spans("@Tati Silva", &[(2, "Tati", Some("Tati Silva"))], false);
+        let s = mention_spans("@Tati Silva", &[(UserId(2), "Tati", Some("Tati Silva"))], false);
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].range, 0..11);
     }
 
     #[test]
     fn quotes_and_hover_texts() {
-        let r = ReplyRef { id: 1, author: Some(User::new(2, "Tati")), excerpt: "oi".into(), images: 0, deleted: false };
+        let r = ReplyRef { id: MessageId(1), author: Some(User::new(UserId(2), "Tati")), excerpt: "oi".into(), images: 0, deleted: false };
         assert_eq!(quote_parts(&r), (Some("Tati".into()), "oi".into()));
         assert_eq!(quote_parts(&ReplyRef { excerpt: String::new(), images: 1, ..r.clone() }).1, "imagem");
         assert_eq!(quote_parts(&ReplyRef { excerpt: String::new(), images: 3, ..r.clone() }).1, "3 imagens");
-        assert_eq!(quote_parts(&ReplyRef::gone(1)), (None, "mensagem apagada".into()));
+        assert_eq!(quote_parts(&ReplyRef::gone(MessageId(1))), (None, "mensagem apagada".into()));
         assert_eq!(reaction_hover("👍", &["Tati".into()]), "Tati reagiu com 👍");
         assert_eq!(reaction_hover("👍", &["Tati".into(), "Joao".into()]), "Tati e Joao reagiram com 👍");
         let many: Vec<String> = (0..8).map(|i| format!("p{i}")).collect();

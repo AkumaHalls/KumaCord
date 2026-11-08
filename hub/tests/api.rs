@@ -105,7 +105,7 @@ impl Ws {
     }
 }
 
-fn channel_id(chs: &[Channel], name: &str) -> i64 {
+fn channel_id(chs: &[Channel], name: &str) -> ChannelId {
     chs.iter().find(|c| c.name == name).unwrap().id
 }
 
@@ -203,13 +203,13 @@ async fn voice_join_token() {
     let chs: Vec<Channel> = env.get("/api/channels", &me.token).await.json().await.unwrap();
     let (text, voice) = (channel_id(&chs, "geral"), channel_id(&chs, "Sala 2"));
 
-    let join = |id: i64, token: String| {
+    let join = |id: ChannelId, token: String| {
         let (http, url) = (env.http.clone(), env.url(&format!("/api/voice/{id}/join")));
         async move { http.post(url).bearer_auth(token).send().await.unwrap() }
     };
     assert_eq!(join(voice, "bad".into()).await.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(join(text, me.token.clone()).await.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(join(999, me.token.clone()).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(join(ChannelId(999), me.token.clone()).await.status(), StatusCode::NOT_FOUND);
 
     let r: VoiceJoinResponse = join(voice, me.token.clone()).await.json().await.unwrap();
     assert_eq!(r.room, format!("voice-{voice}"));
@@ -361,25 +361,25 @@ impl Ws {
         out
     }
 
-    async fn voice(&mut self, channel: Option<i64>, muted: bool, streaming: bool) {
+    async fn voice(&mut self, channel: Option<ChannelId>, muted: bool, streaming: bool) {
         self.send(&ClientEvent::VoiceState { channel_id: channel, muted, deafened: false, streaming, camera: false, audio_only: false }).await;
     }
 
-    async fn voice_cam(&mut self, channel: Option<i64>, camera: bool) {
+    async fn voice_cam(&mut self, channel: Option<ChannelId>, camera: bool) {
         self.send(&ClientEvent::VoiceState { channel_id: channel, muted: false, deafened: false, streaming: false, camera, audio_only: false }).await;
     }
 
-    async fn voice_live(&mut self, channel: Option<i64>, streaming: bool, audio_only: bool) {
+    async fn voice_live(&mut self, channel: Option<ChannelId>, streaming: bool, audio_only: bool) {
         self.send(&ClientEvent::VoiceState { channel_id: channel, muted: false, deafened: false, streaming, camera: false, audio_only }).await;
     }
 
-    async fn watch(&mut self, ids: &[i64]) {
+    async fn watch(&mut self, ids: &[UserId]) {
         self.send(&ClientEvent::WatchState { watching: ids.to_vec() }).await;
     }
 }
 
 /// The `watching` list of `who` in the last `VoiceStateChanged` for them (None: no such event).
-fn watching_of(events: &[ServerEvent], who: i64) -> Option<Vec<i64>> {
+fn watching_of(events: &[ServerEvent], who: UserId) -> Option<Vec<UserId>> {
     events.iter().rev().find_map(|e| match e {
         ServerEvent::VoiceStateChanged { member } if member.user.id == who => Some(member.watching.clone()),
         _ => None,
@@ -413,7 +413,7 @@ async fn watch_state_is_validated_broadcast_and_cleared() {
 
     // Nothing is streaming in Beto's room yet, Cris is in another room, and himself and a stranger
     // are not valid either: the set stays empty and nothing is announced.
-    wb.watch(&[a, b, c, d, 987_654]).await;
+    wb.watch(&[a, b, c, d, UserId(987_654)]).await;
     for w in [&mut wa, &mut wb, &mut wc, &mut wd] {
         assert!(watching_of(&w.settle().await, b).is_none(), "an invalid set must not be announced");
     }
@@ -423,7 +423,7 @@ async fn watch_state_is_validated_broadcast_and_cleared() {
     for w in [&mut wa, &mut wb, &mut wc, &mut wd] {
         w.settle().await;
     }
-    wb.watch(&[a, a, b, c, 987_654]).await;
+    wb.watch(&[a, a, b, c, UserId(987_654)]).await;
     for w in [&mut wa, &mut wb, &mut wc, &mut wd] {
         let ev = w.settle().await;
         assert_eq!(ev.len(), 1, "{ev:?}");
@@ -515,7 +515,7 @@ async fn watch_state_is_validated_broadcast_and_cleared() {
 }
 
 /// The member of `who` in the last `VoiceStateChanged` for them.
-fn member_of(events: &[ServerEvent], who: i64) -> Option<VoiceMember> {
+fn member_of(events: &[ServerEvent], who: UserId) -> Option<VoiceMember> {
     events.iter().rev().find_map(|e| match e {
         ServerEvent::VoiceStateChanged { member } if member.user.id == who => Some(member.clone()),
         _ => None,
@@ -653,7 +653,7 @@ async fn watch_state_spam_is_bounded() {
     wa.settle().await;
     wb.settle().await;
     for i in 0..200 {
-        let set: Vec<i64> = if i % 2 == 0 { vec![ana.user.id] } else { vec![] };
+        let set: Vec<UserId> = if i % 2 == 0 { vec![ana.user.id] } else { vec![] };
         wb.watch(&set).await;
     }
     let changes = wa.settle().await.iter().filter(|e| matches!(e, ServerEvent::VoiceStateChanged { .. })).count();

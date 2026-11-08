@@ -309,7 +309,7 @@ async fn history_pages_unread_counts_and_deletes() {
     // Reading: forward only, never past the end, told to my own devices only.
     let mut ws_ana = env.ws(&ana).await;
     let mut ws_bia = env.ws(&bia).await;
-    let r = env.post(&ana, &format!("/api/dms/{}/read", dm.id), json!({ "up_to": reply.id + 500 })).await;
+    let r = env.post(&ana, &format!("/api/dms/{}/read", dm.id), json!({ "up_to": reply.id.into_inner() + 500 })).await;
     assert_eq!(r.status(), StatusCode::OK);
     let ev = ws_ana.wait_for("read", 5, |e| matches!(e, ServerEvent::DmRead { .. })).await;
     assert!(matches!(ev, ServerEvent::DmRead { dm_id, up_to } if dm_id == dm.id && up_to == reply.id));

@@ -185,17 +185,17 @@ impl Ws {
         self.0.send(WsMsg::Text(serde_json::to_string(ev).unwrap().into())).await.unwrap();
     }
 
-    async fn voice(&mut self, channel: Option<i64>, streaming: bool) {
+    async fn voice(&mut self, channel: Option<ChannelId>, streaming: bool) {
         self.send(&ClientEvent::VoiceState { channel_id: channel, muted: false, deafened: false, streaming, camera: false, audio_only: false }).await;
     }
 }
 
-fn voice_ids(chs: &[Channel]) -> (i64, i64) {
-    let v: Vec<i64> = chs.iter().filter(|c| c.kind == ChannelKind::Voice).map(|c| c.id).collect();
+fn voice_ids(chs: &[Channel]) -> (ChannelId, ChannelId) {
+    let v: Vec<ChannelId> = chs.iter().filter(|c| c.kind == ChannelKind::Voice).map(|c| c.id).collect();
     (v[0], v[1])
 }
 
-fn text_id(chs: &[Channel]) -> i64 {
+fn text_id(chs: &[Channel]) -> ChannelId {
     chs.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id
 }
 
@@ -612,14 +612,14 @@ async fn message_deletion_rules() {
         let ServerEvent::MessageCreated { message } = ev else { unreachable!() };
         ids.push(message.id);
     }
-    let del = |id: i64| format!("/api/messages/{id}/delete");
+    let del = |id: MessageId| format!("/api/messages/{id}/delete");
     assert_eq!(env.status(&s.mem, &del(ids[1]), json!({})).await, StatusCode::FORBIDDEN, "a member deletes only their own");
     assert_eq!(env.status(&s.mem, &del(ids[0]), json!({})).await, StatusCode::OK);
     let ev = w_mem2.wait_for("MessageDeleted", |e| matches!(e, ServerEvent::MessageDeleted { .. })).await;
     assert!(matches!(ev, ServerEvent::MessageDeleted { channel_id, message_id } if channel_id == geral && message_id == ids[0]));
     assert_eq!(env.status(&s.moder, &del(ids[1]), json!({})).await, StatusCode::OK, "moderators delete any message");
     assert_eq!(env.status(&s.moder, &del(ids[1]), json!({})).await, StatusCode::NOT_FOUND);
-    assert_eq!(env.status(&s.moder, &del(999_999), json!({})).await, StatusCode::NOT_FOUND);
+    assert_eq!(env.status(&s.moder, &del(MessageId(999_999)), json!({})).await, StatusCode::NOT_FOUND);
     let history: Vec<Message> = env.get(&s.mem, &format!("/api/channels/{geral}/messages")).await.json().await.unwrap();
     assert_eq!(history.iter().map(|m| m.id).collect::<Vec<_>>(), [ids[2]]);
     // Authors carry their role in history; members serialise without one.
@@ -689,7 +689,7 @@ async fn channel_management() {
     assert_eq!(env.status(&s.admin, "/api/admin/channels/9999/rename", json!({"name": "y"})).await, StatusCode::NOT_FOUND);
 
     // Reorder: a permutation of every id.
-    let mut ids: Vec<i64> = list.iter().map(|c| c.id).collect();
+    let mut ids: Vec<ChannelId> = list.iter().map(|c| c.id).collect();
     ids.reverse();
     assert_eq!(env.status(&s.moder, "/api/admin/channels/reorder", json!({"ids": ids})).await, StatusCode::FORBIDDEN);
     assert_eq!(env.status(&s.admin, "/api/admin/channels/reorder", json!({"ids": &ids[1..]})).await, StatusCode::BAD_REQUEST);
@@ -786,7 +786,7 @@ async fn v041_clients_keep_working() {
         if let Ok(Some(Ok(WsMsg::Text(t)))) = tokio::time::timeout(Duration::from_secs(3), ws.next()).await {
             let v: Value = serde_json::from_str(&t).unwrap();
             saw_moderated |= v["type"] == "moderated";
-            saw_flag |= v["type"] == "voice_state_changed" && v["member"]["user"]["id"] == old.user.id && v["member"]["server_muted"] == true;
+            saw_flag |= v["type"] == "voice_state_changed" && v["member"]["user"]["id"] == old.user.id.into_inner() && v["member"]["server_muted"] == true;
         }
     }
     assert!(saw_moderated && saw_flag);

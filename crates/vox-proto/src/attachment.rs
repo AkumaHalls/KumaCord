@@ -38,8 +38,7 @@
 //! one goes); moderators deleting a channel message remove its images too.
 
 use serde::{Deserialize, Serialize};
-
-pub type AttachmentId = i64;
+use crate::AttachmentId;
 
 /// Images on one message.
 pub const ATTACHMENT_MAX_PER_MESSAGE: usize = 4;
@@ -166,10 +165,10 @@ impl crate::DmMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Message, ServerEvent, User};
+    use crate::{ChannelId, Message, MessageId, ServerEvent, User, UserId};
 
     fn att(id: i64) -> Attachment {
-        Attachment { id, mime: "image/webp".into(), width: 1920, height: 1080, size: 312_000, thumb_w: 400, thumb_h: 225, animated: false, hash: "ab12".into() }
+        Attachment { id: AttachmentId(id), mime: "image/webp".into(), width: 1920, height: 1080, size: 312_000, thumb_w: 400, thumb_h: 225, animated: false, hash: "ab12".into() }
     }
 
     #[test]
@@ -190,7 +189,7 @@ mod tests {
 
     #[test]
     fn a_message_without_images_is_byte_identical_to_before() {
-        let m = Message { id: 1, channel_id: 2, author: User::new(3, "a"), content: "oi".into(), created_at_ms: 4, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] };
+        let m = Message { id: MessageId(1), channel_id: ChannelId(2), author: User::new(UserId(3), "a"), content: "oi".into(), created_at_ms: 4, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] };
         assert_eq!(serde_json::to_string(&m).unwrap(), r#"{"id":1,"channel_id":2,"author":{"id":3,"username":"a"},"content":"oi","created_at_ms":4}"#);
     }
 
@@ -208,7 +207,7 @@ mod tests {
 
     #[test]
     fn an_old_app_reads_the_caption_and_the_marker() {
-        let m = Message { id: 1, channel_id: 2, author: User::new(3, "a"), content: with_attachment_marker("olha isso", 2), created_at_ms: 4, attachments: vec![att(7), att(8)], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] };
+        let m = Message { id: MessageId(1), channel_id: ChannelId(2), author: User::new(UserId(3), "a"), content: with_attachment_marker("olha isso", 2), created_at_ms: 4, attachments: vec![att(7), att(8)], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] };
         let json = serde_json::to_string(&ServerEvent::MessageCreated { message: m.clone() }).unwrap();
         assert!(json.contains("\"attachments\":["));
         let V060ServerEvent::MessageCreated { message } = serde_json::from_str::<V060ServerEvent>(&json).unwrap();
@@ -239,7 +238,7 @@ mod tests {
         let gif = Attachment { animated: true, ..att(6) };
         assert!(serde_json::to_string(&gif).unwrap().contains("\"animated\":true"));
         assert_eq!(serde_json::to_string(&SendMessageRequest { content: "oi".into(), ..Default::default() }).unwrap(), r#"{"content":"oi"}"#);
-        assert_eq!(serde_json::to_string(&SendMessageRequest { content: String::new(), attachments: vec![1, 2], ..Default::default() }).unwrap(), r#"{"content":"","attachments":[1,2]}"#);
+        assert_eq!(serde_json::to_string(&SendMessageRequest { content: String::new(), attachments: vec![AttachmentId(1), AttachmentId(2)], ..Default::default() }).unwrap(), r#"{"content":"","attachments":[1,2]}"#);
         let req: crate::DmSendRequest = serde_json::from_str(r#"{"content":"oi"}"#).unwrap();
         assert!(req.attachments.is_empty(), "an old app's DM request has no images");
         assert_eq!(serde_json::to_string(&crate::DmSendRequest { content: "oi".into(), ..Default::default() }).unwrap(), r#"{"content":"oi"}"#);

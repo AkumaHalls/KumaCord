@@ -387,37 +387,37 @@ mod tests {
     #[test]
     fn hide_rules_only_touch_cards_without_video() {
         let mut h = Hidden::default();
-        assert!(Hidden::can_hide(m(1), false));
-        assert!(!Hidden::can_hide(m(1), true), "a camera card is not hidden this way");
-        assert!(!Hidden::can_hide(s(1), false) && !Hidden::can_hide(s(1), true), "nor a stream");
-        h.cards.insert(1);
-        assert!(h.hides(m(1), false));
-        assert!(!h.hides(m(1), true), "their camera came on: the card shows again");
-        assert!(!h.hides(s(1), false) && !h.hides(m(2), false));
+        assert!(Hidden::can_hide(m(UserId(1)), false));
+        assert!(!Hidden::can_hide(m(UserId(1)), true), "a camera card is not hidden this way");
+        assert!(!Hidden::can_hide(s(UserId(1)), false) && !Hidden::can_hide(s(UserId(1)), true), "nor a stream");
+        h.cards.insert(UserId(1));
+        assert!(h.hides(m(UserId(1)), false));
+        assert!(!h.hides(m(UserId(1)), true), "their camera came on: the card shows again");
+        assert!(!h.hides(s(UserId(1)), false) && !h.hides(m(UserId(2)), false));
         h.all_without_video = true;
-        assert!(h.hides(m(2), false) && h.hides(m(3), false), "everybody without video, newcomers too");
-        assert!(!h.hides(m(2), true) && !h.hides(s(2), false));
+        assert!(h.hides(m(UserId(2)), false) && h.hides(m(UserId(3)), false), "everybody without video, newcomers too");
+        assert!(!h.hides(m(UserId(2)), true) && !h.hides(s(UserId(2)), false));
         h.clear();
         assert_eq!(h, Hidden::default());
-        assert!(!h.hides(m(1), false));
+        assert!(!h.hides(m(UserId(1)), false));
     }
 
     #[test]
     fn arrange_puts_pins_first_in_pin_order_and_drops_hidden_cards() {
         // Natural order: Ana, Ana's stream, Bia (camera), Caio, Caio's stream.
-        let cards = [(m(1), false), (s(1), true), (m(2), true), (m(3), false), (s(3), false)];
+        let cards = [(m(UserId(1)), false), (s(UserId(1)), true), (m(UserId(2)), true), (m(UserId(3)), false), (s(UserId(3)), false)];
         let (mut p, mut r) = (Vec::new(), Vec::new());
         assert_eq!(arrange(&cards, &[], &Hidden::default(), &mut p, &mut r), 0);
         assert!(p.is_empty() && r == vec![0, 1, 2, 3, 4]);
         // Pinned in the order they were pinned; a pin of a card that is not there is ignored.
-        assert_eq!(arrange(&cards, &[s(3), m(9), s(1)], &Hidden::default(), &mut p, &mut r), 0);
+        assert_eq!(arrange(&cards, &[s(UserId(3)), m(UserId(9)), s(UserId(1))], &Hidden::default(), &mut p, &mut r), 0);
         assert_eq!((p.clone(), r.clone()), (vec![4, 1], vec![0, 2, 3]));
         // Hidden cards take no space, pinned or not; video cards stay.
-        let h = Hidden { cards: [1].into(), all_without_video: false };
-        assert_eq!(arrange(&cards, &[m(1)], &h, &mut p, &mut r), 1);
+        let h = Hidden { cards: [UserId(1)].into(), all_without_video: false };
+        assert_eq!(arrange(&cards, &[m(UserId(1))], &h, &mut p, &mut r), 1);
         assert_eq!((p.clone(), r.clone()), (vec![], vec![1, 2, 3, 4]));
         let all = Hidden { all_without_video: true, ..Default::default() };
-        assert_eq!(arrange(&cards, &[s(1)], &all, &mut p, &mut r), 2);
+        assert_eq!(arrange(&cards, &[s(UserId(1))], &all, &mut p, &mut r), 2);
         assert_eq!((p.clone(), r.clone()), (vec![1], vec![2, 4]));
         // The same vectors are reused (cleared each time).
         assert_eq!(arrange(&cards, &[], &Hidden::default(), &mut p, &mut r), 0);

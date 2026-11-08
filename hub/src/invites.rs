@@ -112,12 +112,12 @@ pub fn insert(conn: &Connection, hash: &str, by: UserId, expires_at_ms: Option<i
         )?;
         Ok(id)
     })?;
-    get(conn, id).map(|i| i.expect("just inserted"))
+    get(conn, InviteId(id.to_string())).map(|i| i.expect("just inserted"))
 }
 
 /// Revoke (idempotent). `false`: no such invite.
 pub fn revoke_row(conn: &Connection, id: InviteId) -> rusqlite::Result<bool> {
-    if get(conn, id)?.is_none() {
+    if get(conn, id.clone())?.is_none() {
         return Ok(false);
     }
     conn.execute("UPDATE invites SET revoked_at_ms = ? WHERE id = ? AND revoked_at_ms IS NULL", params![now_ms(), id])?;
@@ -178,7 +178,7 @@ async fn check_token(s: &AppState, token: &str) -> anyhow::Result<Result<Invite,
 // ---------------------------------------------------------------- login
 
 /// How a login got past the server password.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Admission {
     /// The server password (or the server has none).
     Password,
@@ -242,8 +242,9 @@ pub async fn take_use(s: &AppState, admission: Admission) -> Result<(), ApiErr> 
 /// account: the caller makes the session with [`crate::db::login_new`] for an invite).
 pub async fn finish_login(s: &AppState, admission: Admission, user: UserId) -> anyhow::Result<()> {
     let Admission::Invite(id) = admission else { return Ok(()) };
+    let id_for_audit = id.clone();
     s.db.call(move |c| add_member(c, user, id)).await?;
-    audit(s, Some(user), AUDIT_INVITE_JOIN, None, format!("#{id}")).await;
+    audit(s, Some(user), AUDIT_INVITE_JOIN, None, format!("#{id_for_audit}")).await;
     Ok(())
 }
 
@@ -299,10 +300,11 @@ pub async fn list_invites(State(s): State<AppState>, me: Authed) -> ApiResult<Ve
 /// `POST /api/invites/{id}/revoke`
 pub async fn revoke(State(s): State<AppState>, me: Authed, Path(id): Path<InviteId>) -> ApiResult<OkResponse> {
     require_admin(&me)?;
+    let id_for_audit = id.clone();
     if !s.db.call(move |c| revoke_row(c, id)).await? {
         return Err(ApiErr::new(StatusCode::NOT_FOUND, "invite not found"));
     }
-    audit(&s, Some(me.user.id), AUDIT_INVITE_REVOKE, None, format!("#{id}")).await;
+    audit(&s, Some(me.user.id), AUDIT_INVITE_REVOKE, None, format!("#{id_for_audit}")).await;
     Ok(Json(OkResponse { ok: true }))
 }
 
@@ -380,37 +382,37 @@ mod tests {
         let c = db();
         let now = now_ms();
         let h = token_hash(&"ab".repeat(16)).unwrap();
-        let i = insert(&c, &h, 1, Some(now + 60_000), Some(2)).unwrap();
+        let i = insert(&c, &h, UserId(1), Some(now + 60_000), Some(2)).unwrap();
         assert_eq!((i.uses, i.max_uses, i.created_by_name.as_str()), (0, Some(2), "dono"));
         assert_eq!(find_by_hash(&c, &h).unwrap().unwrap().id, i.id);
-        assert_eq!(consume(&c, i.id, now).unwrap(), Ok(()));
-        assert_eq!(consume(&c, i.id, now).unwrap(), Ok(()));
-        assert_eq!(consume(&c, i.id, now).unwrap(), Err(ERR_INVITE_USED_UP));
-        assert_eq!(get(&c, i.id).unwrap().unwrap().uses, 2, "a refused use is not counted");
+        assert_eq!(consume(&c, i.id.clone(), now).unwrap(), Ok(()));
+        assert_eq!(consume(&c, i.id.clone(), now).unwrap(), Ok(()));
+        assert_eq!(consume(&c, i.id.clone(), now).unwrap(), Err(ERR_INVITE_USED_UP));
+        assert_eq!(get(&c, i.id.clone()).unwrap().unwrap().uses, 2, "a refused use is not counted");
 
         let h2 = token_hash(&"cd".repeat(16)).unwrap();
-        let j = insert(&c, &h2, 1, Some(now + 1000), None).unwrap();
-        assert_eq!(consume(&c, j.id, now + 999).unwrap(), Ok(()));
-        assert_eq!(consume(&c, j.id, now + 1000).unwrap(), Err(ERR_INVITE_EXPIRED));
+        let j = insert(&c, &h2, UserId(1), Some(now + 1000), None).unwrap();
+        assert_eq!(consume(&c, j.id.clone(), now + 999).unwrap(), Ok(()));
+        assert_eq!(consume(&c, j.id.clone(), now + 1000).unwrap(), Err(ERR_INVITE_EXPIRED));
         assert_eq!(count_active(&c, now).unwrap(), 1);
 
         let h3 = token_hash(&"ef".repeat(16)).unwrap();
-        let k = insert(&c, &h3, 1, None, None).unwrap();
+        let k = insert(&c, &h3, UserId(1), None, None).unwrap();
         for _ in 0..30 {
-            assert_eq!(consume(&c, k.id, now).unwrap(), Ok(()), "unlimited and never expiring");
+            assert_eq!(consume(&c, k.id.clone(), now).unwrap(), Ok(()), "unlimited and never expiring");
         }
-        assert!(revoke_row(&c, k.id).unwrap());
-        assert!(revoke_row(&c, k.id).unwrap(), "revoking twice is fine");
-        assert!(!revoke_row(&c, 999).unwrap());
-        assert_eq!(consume(&c, k.id, now).unwrap(), Err(ERR_INVITE_REVOKED));
-        assert_eq!(get(&c, k.id).unwrap().unwrap().state(now), InviteState::Revoked);
-        assert_eq!(consume(&c, 999, now).unwrap(), Err(ERR_INVITE_INVALID));
-        assert_eq!(list(&c, 10).unwrap().iter().map(|i| i.id).collect::<Vec<_>>(), [k.id, j.id, i.id]);
+        assert!(revoke_row(&c, k.id.clone()).unwrap());
+        assert!(revoke_row(&c, k.id.clone()).unwrap(), "revoking twice is fine");
+        assert!(!revoke_row(&c, InviteId("999".to_string())).unwrap());
+        assert_eq!(consume(&c, k.id.clone(), now).unwrap(), Err(ERR_INVITE_REVOKED));
+        assert_eq!(get(&c, k.id.clone()).unwrap().unwrap().state(now), InviteState::Revoked);
+        assert_eq!(consume(&c, InviteId("999".to_string()), now).unwrap(), Err(ERR_INVITE_INVALID));
+        assert_eq!(list(&c, 10).unwrap().iter().map(|i| i.id.clone()).collect::<Vec<_>>(), [k.id.clone(), j.id.clone(), i.id.clone()]);
 
-        assert!(!is_member(&c, 2).unwrap());
-        add_member(&c, 2, i.id).unwrap();
-        add_member(&c, 2, j.id).unwrap();
-        assert!(is_member(&c, 2).unwrap());
+        assert!(!is_member(&c, UserId(2)).unwrap());
+        add_member(&c, UserId(2), i.id.clone()).unwrap();
+        add_member(&c, UserId(2), j.id.clone()).unwrap();
+        assert!(is_member(&c, UserId(2)).unwrap());
     }
 
     #[test]

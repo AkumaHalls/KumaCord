@@ -139,7 +139,7 @@ impl HubClient {
         self.set_token(Some(login.token.clone()));
         info!(
             user = %login.user.username,
-            user_id = login.user.id,
+            user_id = %login.user.id,
             role = ?login.user.role,
             server = %login.server_name,
             device_token = login.device_token.is_some(),

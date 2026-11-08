@@ -178,11 +178,11 @@ pub async fn run(hub: &HubClient, cmd: ImageCmd, emit: impl Fn(ImageEv)) {
             }
             let result = match target {
                 Target::Channel(ch) => {
-                    let req = vox_proto::SendMessageRequest { content: caption, attachments: ids, mentions: extras.mentions, reply_to: extras.reply_to, reply_mention: extras.reply_mention };
+                    let req = vox_proto::SendMessageRequest { content: caption, attachments: ids, mentions: extras.mentions, reply_to: extras.reply_to.map(vox_proto::MessageId), reply_mention: extras.reply_mention };
                     hub.send_channel_request(ch, &req).await.map(|m| SentMessage::Channel(Box::new(m)))
                 }
                 Target::Dm(dm) => {
-                    let req = vox_proto::DmSendRequest { content: caption, attachments: ids, reply_to: extras.reply_to };
+                    let req = vox_proto::DmSendRequest { content: caption, attachments: ids, reply_to: extras.reply_to.map(vox_proto::DmMessageId) };
                     hub.send_dm_request(dm, &req).await.map(|m| SentMessage::Dm(Box::new(m)))
                 }
             };
@@ -562,7 +562,7 @@ impl App {
                     Ok(sent) => {
                         self.images.sent += 1;
                         if let SentMessage::Channel(m) = &sent {
-                            tracing::info!(message = m.id, images = m.attachments.len(), "message with images sent");
+                            tracing::info!(message = %m.id, images = m.attachments.len(), "message with images sent");
                         }
                         self.images.pending.retain(|p| p.target != target);
                         if let SentMessage::Dm(m) = sent {
@@ -768,7 +768,7 @@ impl App {
             return;
         }
         let index = index.min(items.len() - 1);
-        tracing::info!(attachment = items[index].id, of = items.len(), "image viewer opened");
+        tracing::info!(attachment = %items[index].id, of = items.len(), "image viewer opened");
         self.images.viewer = Some(Viewer { items, index, zoom: 1.0, pan: Vec2::ZERO, frame: 0, frame_at: Instant::now(), msg: None });
     }
 
@@ -1151,7 +1151,7 @@ impl ImageStore {
                 Ok(b) => Bytes::Ready(b),
                 Err(FetchError::Gone) => Bytes::Gone,
                 Err(FetchError::Failed(err)) => {
-                    tracing::debug!(id = id.id, error = %err, "thumbnail download failed");
+                    tracing::debug!(id = %id.id, error = %err, "thumbnail download failed");
                     Bytes::Retry(Instant::now() + RETRY_AFTER)
                 }
             };
@@ -1168,7 +1168,7 @@ impl ImageStore {
                 });
             }
             Err(e) => {
-                tracing::info!(id = id.id, error = ?e, "image download failed");
+                tracing::info!(id = %id.id, error = ?e, "image download failed");
                 *state = FullState::Failed;
             }
         }
@@ -1191,7 +1191,7 @@ impl ImageStore {
                             (ctx.load_texture(format!("attachment-{}-{:016x}-{i}", id.id, id.content), img, TextureOptions::LINEAR), d)
                         })
                         .collect();
-                    tracing::info!(id = id.id, w = first.width(), h = first.height(), "image shown in the viewer");
+                    tracing::info!(id = %id.id, w = first.width(), h = first.height(), "image shown in the viewer");
                     FullState::Ready { bytes, frames: texs, first }
                 }
                 Ok(_) | Err(_) => FullState::Failed,
@@ -1443,36 +1443,36 @@ mod tests {
 
     /// A key for id `id` of content `c`.
     fn k(id: AttachmentId) -> ImgKey {
-        ImgKey { id, content: 0xab00 + id as u64 }
+        ImgKey { id, content: 0xab00 + id.into_inner() as u64 }
     }
 
     #[test]
     fn the_store_asks_once_frees_idle_textures_and_never_asks_for_gone_images() {
         let mut s = ImageStore::default();
         let t0 = Instant::now();
-        s.want_thumb(k(1), t0);
-        s.want_thumb(k(1), t0);
-        s.want_thumb(k(2), t0);
-        s.want_thumb(k(3), t0);
-        s.want_thumb(k(4), t0);
+        s.want_thumb(k(AttachmentId(1)), t0);
+        s.want_thumb(k(AttachmentId(1)), t0);
+        s.want_thumb(k(AttachmentId(2)), t0);
+        s.want_thumb(k(AttachmentId(3)), t0);
+        s.want_thumb(k(AttachmentId(4)), t0);
         let r = s.take_requests();
-        assert_eq!(r, vec![(k(1), true), (k(2), true), (k(3), true)], "at most three at once, each once");
+        assert_eq!(r, vec![(k(AttachmentId(1)), true), (k(AttachmentId(2)), true), (k(AttachmentId(3)), true)], "at most three at once, each once");
         assert!(s.take_requests().is_empty());
-        s.on_fetched(k(1), true, Err(FetchError::Gone));
-        assert_eq!(s.take_requests(), vec![(k(4), true)]);
-        assert!(s.thumb_gone(k(1)));
-        s.want_thumb(k(1), t0 + Duration::from_secs(100));
+        s.on_fetched(k(AttachmentId(1)), true, Err(FetchError::Gone));
+        assert_eq!(s.take_requests(), vec![(k(AttachmentId(4)), true)]);
+        assert!(s.thumb_gone(k(AttachmentId(1))));
+        s.want_thumb(k(AttachmentId(1)), t0 + Duration::from_secs(100));
         assert!(s.take_requests().is_empty(), "a gone image is not asked again");
-        s.on_fetched(k(2), true, Err(FetchError::Failed("x".into())));
-        s.want_thumb(k(2), t0 + Duration::from_secs(1));
+        s.on_fetched(k(AttachmentId(2)), true, Err(FetchError::Failed("x".into())));
+        s.want_thumb(k(AttachmentId(2)), t0 + Duration::from_secs(1));
         assert!(s.take_requests().is_empty(), "not right away");
-        s.want_thumb(k(2), Instant::now() + RETRY_AFTER + Duration::from_secs(1));
-        assert_eq!(s.take_requests(), vec![(k(2), true)], "later, yes");
+        s.want_thumb(k(AttachmentId(2)), Instant::now() + RETRY_AFTER + Duration::from_secs(1));
+        assert_eq!(s.take_requests(), vec![(k(AttachmentId(2)), true)], "later, yes");
         // The viewer's image jumps the queue.
-        s.want_thumb(k(9), t0);
-        s.want_full(k(5));
-        s.on_fetched(k(3), true, Ok(vec![1, 2, 3]));
-        assert_eq!(s.take_requests(), vec![(k(5), false)]);
+        s.want_thumb(k(AttachmentId(9)), t0);
+        s.want_full(k(AttachmentId(5)));
+        s.on_fetched(k(AttachmentId(3)), true, Ok(vec![1, 2, 3]));
+        assert_eq!(s.take_requests(), vec![(k(AttachmentId(5)), false)]);
     }
 
     /// The v0.8.1 bug: a deleted image's id came back on a new upload and the cached thumbnail of
@@ -1482,7 +1482,7 @@ mod tests {
     fn a_reused_id_with_other_content_is_a_different_image() {
         let mut s = ImageStore::default();
         let t0 = Instant::now();
-        let old = Attachment { id: 7, mime: "image/webp".into(), width: 10, height: 10, size: 1, thumb_w: 10, thumb_h: 10, animated: false, hash: "00000000000000aa".into() };
+        let old = Attachment { id: AttachmentId(7), mime: "image/webp".into(), width: 10, height: 10, size: 1, thumb_w: 10, thumb_h: 10, animated: false, hash: "00000000000000aa".into() };
         let new = Attachment { hash: "00000000000000bb".into(), ..old.clone() };
         let (ko, kn) = (ImgKey::of(&old), ImgKey::of(&new));
         assert_ne!(ko, kn);

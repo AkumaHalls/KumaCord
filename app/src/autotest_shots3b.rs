@@ -17,7 +17,7 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use vox_proto::{ChannelKind, PrivateAccess, User};
+use vox_proto::{ChannelId, ChannelKind, PrivateAccess, User};
 
 use super::{shots, Auto};
 use crate::app::chat_extras::Target;
@@ -42,18 +42,18 @@ pub struct State {
     at: std::cell::Cell<Option<Instant>>,
     created: bool,
     peer: Option<User>,
-    cues: i64,
-    geral: i64,
-    jogatina: i64,
-    adm: i64,
+    cues: ChannelId,
+    geral: ChannelId,
+    jogatina: ChannelId,
+    adm: ChannelId,
     sent: u32,
 }
 
-fn channel_id(app: &App, name: &str, kind: ChannelKind) -> Option<i64> {
+fn channel_id(app: &App, name: &str, kind: ChannelKind) -> Option<ChannelId> {
     app.channels.iter().find(|c| c.name == name && c.kind == kind).map(|c| c.id)
 }
 
-fn cued(app: &App, ch: i64, text: &str) -> bool {
+fn cued(app: &App, ch: ChannelId, text: &str) -> bool {
     app.logs.get(&ch).is_some_and(|l| l.msgs.iter().any(|m| m.content == text))
 }
 
@@ -298,7 +298,7 @@ impl Auto {
                 app.call.toast = None;
                 let mine = app.logs.get(&self.s3b.geral).and_then(|l| l.msgs.iter().rev().find(|m| m.content == HELLO).map(|m| m.id));
                 let Some(id) = mine else { return self.fail("my message is gone") };
-                app.ask_delete(Target::Channel(self.s3b.geral), id, false);
+                app.ask_delete(Target::Channel(self.s3b.geral), *id, false);
                 self.s3_next(24, "the Apagar mensagem dialog");
             }
             24 if self.s3_lingered(1.5) => {

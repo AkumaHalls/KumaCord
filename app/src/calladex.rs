@@ -88,7 +88,7 @@ pub fn fun_line(id: UserId) -> &'static str {
 
 fn line_index(id: UserId) -> usize {
     // splitmix64's finaliser: neighbouring ids get unrelated lines.
-    let mut x = id as u64;
+    let mut x = id.into_inner() as u64;
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     x ^= x >> 31;
@@ -407,8 +407,8 @@ mod tests {
     #[test]
     fn entries_are_numbered_in_join_order_with_their_tipo() {
         let u = |id, name: &str, role| User { id, username: name.into(), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None };
-        let people = vec![u(9, "lua", Role::Member), u(2, "dono", Role::Owner), u(5, "sol", Role::Moderator), u(2, "dono", Role::Owner), u(7, "rio", Role::Admin)];
-        let list = entries(people, |id| (id == 5).then_some(1_700_000_000_000), |_| Color32::WHITE);
+        let people = vec![u(UserId(9), "lua", Role::Member), u(UserId(2), "dono", Role::Owner), u(UserId(5), "sol", Role::Moderator), u(UserId(2), "dono", Role::Owner), u(UserId(7), "rio", Role::Admin)];
+        let list = entries(people, |id| (id == UserId(5)).then_some(1_700_000_000_000), |_| Color32::WHITE);
         let shown: Vec<(String, &str, &str)> = list.iter().map(|e| (number(e.number), e.user.username.as_str(), e.tipo)).collect();
         assert_eq!(
             shown,
@@ -422,19 +422,19 @@ mod tests {
 
     #[test]
     fn the_line_is_deterministic_and_varied() {
-        for id in [1, 2, 3, 99, -4, i64::MAX] {
+        for id in [UserId(1), UserId(2), UserId(3), UserId(99), UserId(-4), UserId(i64::MAX)] {
             assert_eq!(fun_line(id), fun_line(id));
             assert!(LINES.contains(&fun_line(id)));
         }
-        let distinct: std::collections::HashSet<_> = (1..=40).map(fun_line).collect();
+        let distinct: std::collections::HashSet<_> = (1..=40).map(|i| fun_line(UserId(i))).collect();
         assert!(distinct.len() >= 8, "only {} different lines for 40 people", distinct.len());
         // On one card no line repeats while the list lasts, and the card is the same every time.
-        let people = |n: i64| (1..=n).map(|id| User::new(id, format!("u{id}"))).collect::<Vec<_>>();
+        let people = |n: i64| (1..=n).map(|id| User::new(UserId(id), format!("u{id}"))).collect::<Vec<_>>();
         let card = entries(people(12), |_| None, |_| Color32::WHITE);
         let lines: std::collections::HashSet<_> = card.iter().map(|e| e.line).collect();
         assert_eq!(lines.len(), 12);
         assert_eq!(card, entries(people(12), |_| None, |_| Color32::WHITE));
-        assert_eq!(card[0].line, fun_line(1), "the first one always gets their own line");
+        assert_eq!(card[0].line, fun_line(UserId(1)), "the first one always gets their own line");
         assert_eq!(entries(people(30), |_| None, |_| Color32::WHITE).len(), 30, "more people than lines");
     }
 

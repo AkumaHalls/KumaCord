@@ -32,9 +32,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Role, User, UserId};
-
-pub type SoundId = i64;
+use crate::{Role, User, UserId, SoundId};
 
 /// Longest clip, in milliseconds.
 pub const SOUND_MAX_MS: u32 = 5_000;
@@ -330,10 +328,10 @@ mod tests {
     #[test]
     fn wire_shapes() {
         let s = Sound {
-            id: 3,
+            id: SoundId("3".into()),
             name: "bruh".into(),
             emoji: "🎺".into(),
-            uploader: User::new(7, "Ana"),
+            uploader: User::new(UserId(7), "Ana"),
             created_at_ms: 5,
             duration_ms: 1200,
             size: 4096,
@@ -342,11 +340,11 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(
             json,
-            r#"{"id":3,"name":"bruh","emoji":"🎺","uploader":{"id":7,"username":"Ana"},"created_at_ms":5,"duration_ms":1200,"size":4096,"hash":"0011223344556677"}"#
+            r#"{"id":"3","name":"bruh","emoji":"🎺","uploader":{"id":7,"username":"Ana"},"created_at_ms":5,"duration_ms":1200,"size":4096,"hash":"0011223344556677"}"#
         );
         assert_eq!(serde_json::from_str::<Sound>(&json).unwrap(), s);
         // A sound without an emoji (the field is optional on the wire).
-        let no_emoji = r#"{"id":3,"name":"x","uploader":{"id":7,"username":"Ana"},"created_at_ms":5,"duration_ms":1200,"size":4096,"hash":"ab"}"#;
+        let no_emoji = r#"{"id":"3","name":"x","uploader":{"id":7,"username":"Ana"},"created_at_ms":5,"duration_ms":1200,"size":4096,"hash":"ab"}"#;
         assert_eq!(serde_json::from_str::<Sound>(no_emoji).unwrap().emoji, "");
         assert_eq!(serde_json::to_string(&SoundRenameRequest { name: "n".into(), emoji: None }).unwrap(), r#"{"name":"n"}"#);
         assert_eq!(serde_json::from_str::<SoundRenameRequest>(r#"{"name":"n"}"#).unwrap().emoji, None);
@@ -356,8 +354,8 @@ mod tests {
     #[test]
     fn who_may_edit() {
         use Role::*;
-        assert!(may_edit_sound(Member, 3, 3), "the uploader");
-        assert!(!may_edit_sound(Member, 3, 4));
-        assert!(may_edit_sound(Moderator, 3, 4) && may_edit_sound(Admin, 3, 4) && may_edit_sound(Owner, 3, 4));
+        assert!(may_edit_sound(Member, UserId(3), UserId(3)), "the uploader");
+        assert!(!may_edit_sound(Member, UserId(3), UserId(4)));
+        assert!(may_edit_sound(Moderator, UserId(3), UserId(4)) && may_edit_sound(Admin, UserId(3), UserId(4)) && may_edit_sound(Owner, UserId(3), UserId(4)));
     }
 }

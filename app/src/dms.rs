@@ -26,7 +26,7 @@ use super::{now_ms, App, Center, Screen, GREEN};
 use crate::backend::Cmd;
 
 /// The voice "channel" of a DM call inside the app (real channel ids are positive).
-pub const DM_CALL_CHANNEL: ChannelId = -1;
+pub const DM_CALL_CHANNEL: ChannelId = ChannelId(-1);
 /// The ringtone repeats this often while a call rings.
 const RING_EVERY: Duration = Duration::from_millis(2500);
 const HISTORY_PAGE: u32 = 50;
@@ -422,7 +422,7 @@ impl App {
         }
         self.dms.input.clear();
         let extras = self.take_send_extras(crate::chat_images::Target::Dm(dm), &text);
-        self.backend.send(Cmd::Dm(DmCmd::Send { dm, content: text, reply_to: extras.reply_to }));
+        self.backend.send(Cmd::Dm(DmCmd::Send { dm, content: text, reply_to: extras.reply_to.map(DmMessageId) }));
     }
 
     /// Viewer counts ("👁") come from the hub's voice state, which never has a private call: they
@@ -604,14 +604,14 @@ impl App {
                 // Its images, chips and a reply being written to it go; replies to it now quote
                 // "mensagem apagada" (v0.8).
                 let atts = gone.map(|m| m.attachments).unwrap_or_default();
-                self.forget_message(crate::chat_images::Target::Dm(dm_id), message_id, &atts);
+                self.forget_message(crate::chat_images::Target::Dm(dm_id), message_id.into_inner(), &atts);
             }
             ServerEvent::DmRead { dm_id, up_to } => {
                 let log = self.dms.logs.get(&dm_id).filter(|l| l.requested).map(|l| l.msgs.as_slice());
                 apply_read(&mut self.dms.convs, dm_id, up_to, log, me);
             }
             ServerEvent::CallInvite { call } => {
-                tracing::info!(call = call.id, dm = call.dm_id, caller = %call.caller.username, mine = call.caller.id == me, "dm call ringing");
+                tracing::info!(call = %call.id, dm = %call.dm_id, caller = %call.caller.username, mine = call.caller.id == me, "dm call ringing");
                 let incoming = call.callee.id == me;
                 // A call from somebody I am already talking to in another call still rings (I decide).
                 self.dms.call = Some(call);
@@ -621,7 +621,7 @@ impl App {
                 }
             }
             ServerEvent::CallAccepted { call } => {
-                tracing::info!(call = call.id, dm = call.dm_id, "dm call answered");
+                tracing::info!(call = %call.id, dm = %call.dm_id, "dm call answered");
                 self.dms.ring_next = None;
                 self.dms.call = Some(call);
             }
@@ -633,7 +633,7 @@ impl App {
 
     /// The call of `dm` is over (`None`: declined).
     fn dm_call_over(&mut self, dm: DmId, reason: Option<CallEndReason>) {
-        tracing::info!(dm, ?reason, "dm call over");
+        tracing::info!(dm = %dm, ?reason, "dm call over");
         self.dms.last_end = Some((dm, reason.unwrap_or(CallEndReason::Other)));
         if self.dms.call.as_ref().is_some_and(|c| c.dm_id == dm) {
             self.dms.call = None;
@@ -721,10 +721,11 @@ impl App {
                         // The page is the hub's truth for what it covers (lines deleted meanwhile
                         // go, an id an older hub reused shows the new line), see `merge_page`.
                         let same = |a: &DmMessage, b: &DmMessage| a.author.id == b.author.id && a.created_at_ms == b.created_at_ms;
-                        let out = super::chat_extras::merge_page(&mut log.msgs, page, before, complete, |m| m.id, same);
+                        let before_i64 = before.map(|id| id.into_inner());
+                        let out = super::chat_extras::merge_page(&mut log.msgs, page, before_i64, complete, |m| m.id.into_inner(), same);
                         let target = crate::chat_images::Target::Dm(dm);
                         for m in out.deleted {
-                            self.forget_message(target, m.id, &m.attachments);
+                            self.forget_message(target, m.id.into_inner(), &m.attachments);
                         }
                         for m in out.replaced {
                             self.forget_images(&m.attachments);
@@ -877,8 +878,9 @@ impl App {
                 let newest = self.dms.logs.get(&dm).and_then(|l| l.msgs.last()).map(|m| m.id);
                 let conv_read = self.dms.conv(dm).map(|c| (c.read_up_to, c.unread));
                 if let (Some(newest), Some((read, unread))) = (newest, conv_read) {
-                    let sent = self.dms.read_sent.get(&dm).copied().unwrap_or(0);
-                    if (newest > read || unread > 0) && newest > sent {
+                    let newest_inner = newest.into_inner();
+                    let sent = self.dms.read_sent.get(&dm).copied().map(|id| id.into_inner()).unwrap_or(0);
+                    if (newest_inner > *read || unread > 0) && newest_inner > sent {
                         self.dms.read_sent.insert(dm, newest);
                         self.backend.send(Cmd::Dm(DmCmd::Read { dm, up_to: newest }));
                         if let Some(me) = me {
@@ -910,7 +912,7 @@ impl App {
         if !self.dms.supported {
             return;
         }
-        let me = self.my_id().unwrap_or_default();
+        let Some(me) = self.my_id() else { return };
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             let unread = self.dms.total_unread();
@@ -994,7 +996,7 @@ impl App {
     /// "Ligar", "Entrar na chamada", "Atender" / "Recusar", or "Desligar" / "Ver chamada".
     pub(super) fn dm_header_actions(&mut self, ui: &mut egui::Ui, dm: DmId, conv: &DmConversation) {
         use crate::ui_kit::{button, icon_button, IconState, Kind};
-        let me = self.my_id().unwrap_or_default();
+        let Some(me) = self.my_id() else { return };
         let peer = conv.peer.clone();
         let call_here = self.dms.call.as_ref().filter(|c| c.dm_id == dm).cloned();
         let in_this_call = self.in_dm_call() && self.dms.voice_dm == Some(dm);
@@ -1171,61 +1173,61 @@ mod tests {
     use super::*;
 
     fn conv(id: DmId, peer: UserId, at: i64) -> DmConversation {
-        DmConversation { id, peer: User::new(peer, format!("u{peer}")), last_message: None, last_activity_ms: at, unread: 0, read_up_to: 0, blocked: false }
+        DmConversation { id, peer: User::new(peer, format!("u{peer}")), last_message: None, last_activity_ms: at, unread: 0, read_up_to: DmMessageId(0), blocked: false }
     }
 
     fn line(id: DmMessageId, dm: DmId, author: UserId, at: i64) -> DmMessage {
         DmMessage { id, dm_id: dm, author: User::new(author, format!("u{author}")), content: format!("m{id}"), created_at_ms: at, kind: DmMessageKind::Text, call_secs: 0, attachments: vec![], reply: None, reactions: vec![] }
     }
 
-    const ME: UserId = 1;
+    const ME: UserId = UserId(1);
 
     #[test]
     fn the_list_is_ordered_by_last_activity() {
-        let mut v = vec![conv(1, 2, 100), conv(2, 3, 300), conv(3, 4, 200), conv(4, 5, 300)];
+        let mut v = vec![conv(DmId(1), UserId(2), 100), conv(DmId(2), UserId(3), 300), conv(DmId(3), UserId(4), 200), conv(DmId(4), UserId(5), 300)];
         sort_convs(&mut v);
-        assert_eq!(v.iter().map(|c| c.id).collect::<Vec<_>>(), [4, 2, 3, 1], "newest first; a tie puts the newer conversation first");
+        assert_eq!(v.iter().map(|c| c.id).collect::<Vec<_>>(), [DmId(4), DmId(2), DmId(3), DmId(1)], "newest first; a tie puts the newer conversation first");
         // A message moves its conversation to the top.
-        assert!(apply_message(&mut v, &line(10, 1, 2, 400), ME, false));
-        assert_eq!(v[0].id, 1);
-        assert_eq!(v[0].last_message.as_ref().map(|m| m.id), Some(10));
+        assert!(apply_message(&mut v, &line(DmMessageId(10), DmId(1), UserId(2), 400), ME, false));
+        assert_eq!(v[0].id, DmId(1));
+        assert_eq!(v[0].last_message.as_ref().map(|m| m.id), Some(DmMessageId(10)));
         // An older line arriving late (history) does not replace the preview or move it back.
-        assert!(apply_message(&mut v, &line(5, 1, 2, 50), ME, false));
-        assert_eq!((v[0].id, v[0].last_message.as_ref().map(|m| m.id), v[0].last_activity_ms), (1, Some(10), 400));
+        assert!(apply_message(&mut v, &line(DmMessageId(5), DmId(1), UserId(2), 50), ME, false));
+        assert_eq!((v[0].id, v[0].last_message.as_ref().map(|m| m.id), v[0].last_activity_ms), (DmId(1), Some(DmMessageId(10)), 400));
         // Unknown conversation: the caller must fetch the list.
-        assert!(!apply_message(&mut v, &line(11, 99, 2, 500), ME, false));
+        assert!(!apply_message(&mut v, &line(DmMessageId(11), DmId(99), UserId(2), 500), ME, false));
     }
 
     #[test]
     fn unread_counts_follow_messages_reads_and_deletes() {
-        let mut v = vec![conv(1, 2, 0)];
-        for (id, at) in [(1, 1), (2, 2), (3, 3)] {
-            apply_message(&mut v, &line(id, 1, 2, at), ME, false);
+        let mut v = vec![conv(DmId(1), UserId(2), 0)];
+        for (id, at) in [(DmMessageId(1), 1), (DmMessageId(2), 2), (DmMessageId(3), 3)] {
+            apply_message(&mut v, &line(id, DmId(1), UserId(2), at), ME, false);
         }
         assert_eq!((v[0].unread, total_unread(&v)), (3, 3));
         // Reading what is on screen counts nothing.
-        apply_message(&mut v, &line(4, 1, 2, 4), ME, true);
-        assert_eq!((v[0].unread, v[0].read_up_to), (3, 4));
+        apply_message(&mut v, &line(DmMessageId(4), DmId(1), UserId(2), 4), ME, true);
+        assert_eq!((v[0].unread, v[0].read_up_to), (3, DmMessageId(4)));
         // A partial read with the log loaded counts what is left.
-        let mut v = vec![conv(1, 2, 0)];
-        let log: Vec<DmMessage> = (1..=4).map(|i| line(i, 1, 2, i)).collect();
+        let mut v = vec![conv(DmId(1), UserId(2), 0)];
+        let log: Vec<DmMessage> = (1..=4).map(|i| line(DmMessageId(i), DmId(1), UserId(2), i)).collect();
         for m in &log {
             apply_message(&mut v, m, ME, false);
         }
-        apply_read(&mut v, 1, 2, Some(&log), ME);
-        assert_eq!((v[0].unread, v[0].read_up_to), (2, 2));
-        apply_read(&mut v, 1, 1, Some(&log), ME);
-        assert_eq!(v[0].read_up_to, 2, "never backwards");
+        apply_read(&mut v, DmId(1), DmMessageId(2), Some(&log), ME);
+        assert_eq!((v[0].unread, v[0].read_up_to), (2, DmMessageId(2)));
+        apply_read(&mut v, DmId(1), DmMessageId(1), Some(&log), ME);
+        assert_eq!(v[0].read_up_to, DmMessageId(2), "never backwards");
         // Deleting an unread line takes it off the count; deleting the newest changes the preview.
-        apply_delete(&mut v, 1, 4, Some(&log[3]), Some(&log[2]), ME);
-        assert_eq!((v[0].unread, v[0].last_message.as_ref().map(|m| m.id)), (1, Some(3)));
+        apply_delete(&mut v, DmId(1), DmMessageId(4), Some(&log[3]), Some(&log[2]), ME);
+        assert_eq!((v[0].unread, v[0].last_message.as_ref().map(|m| m.id)), (1, Some(DmMessageId(3))));
         // Reading up to the newest line clears it, even without the log.
-        apply_read(&mut v, 1, 3, None, ME);
+        apply_read(&mut v, DmId(1), DmMessageId(3), None, ME);
         assert_eq!(v[0].unread, 0);
         // Writing myself reads everything.
-        apply_message(&mut v, &line(5, 1, 2, 5), ME, false);
-        apply_message(&mut v, &line(6, 1, ME, 6), ME, false);
-        assert_eq!((v[0].unread, v[0].read_up_to), (0, 6));
+        apply_message(&mut v, &line(DmMessageId(5), DmId(1), UserId(2), 5), ME, false);
+        apply_message(&mut v, &line(DmMessageId(6), DmId(1), ME, 6), ME, false);
+        assert_eq!((v[0].unread, v[0].read_up_to), (0, DmMessageId(6)));
         // A blocked conversation does not count in the total.
         v[0].unread = 2;
         v[0].blocked = true;
@@ -1236,20 +1238,20 @@ mod tests {
     fn lines_stay_sorted_and_unique() {
         let mut msgs = Vec::new();
         for id in [5, 3, 9, 3, 5] {
-            insert_line(&mut msgs, line(id, 1, 2, id));
+            insert_line(&mut msgs, line(DmMessageId(id), DmId(1), UserId(2), id));
         }
-        assert_eq!(msgs.iter().map(|m| m.id).collect::<Vec<_>>(), [3, 5, 9]);
+        assert_eq!(msgs.iter().map(|m| m.id).collect::<Vec<_>>(), [DmMessageId(3), DmMessageId(5), DmMessageId(9)]);
     }
 
     #[test]
     fn previews_and_call_lines_read_well() {
-        let mut c = conv(1, 2, 0);
+        let mut c = conv(DmId(1), UserId(2), 0);
         assert_eq!(preview_text(&c, ME), "Nenhuma mensagem ainda");
-        let mut m = line(1, 1, ME, 1);
+        let mut m = line(DmMessageId(1), DmId(1), ME, 1);
         m.content = "oi\n  tudo   bem?".into();
         c.last_message = Some(m.clone());
         assert_eq!(preview_text(&c, ME), "Você: oi tudo bem?");
-        m.author = User::new(2, "bia");
+        m.author = User::new(UserId(2), "bia");
         c.last_message = Some(m.clone());
         assert_eq!(preview_text(&c, ME), "oi tudo bem?");
         m.kind = DmMessageKind::CallMissed;
@@ -1264,10 +1266,10 @@ mod tests {
 
     #[test]
     fn people_are_filtered_by_name_and_display_name() {
-        let mut ana = User::new(2, "ana");
+        let mut ana = User::new(UserId(2), "ana");
         ana.display_name = Some("Aninha".into());
-        let people = vec![User::new(1, "eu"), User::new(3, "Bruno"), ana, User::new(4, "caio")];
-        let names = |q: &str| filter_people(&people, q, Some(1)).iter().map(|u| u.username.clone()).collect::<Vec<_>>();
+        let people = vec![User::new(UserId(1), "eu"), User::new(UserId(3), "Bruno"), ana, User::new(UserId(4), "caio")];
+        let names = |q: &str| filter_people(&people, q, Some(UserId(1))).iter().map(|u| u.username.clone()).collect::<Vec<_>>();
         assert_eq!(names(""), ["ana", "Bruno", "caio"], "by shown name, me left out");
         assert_eq!(names("NINH"), ["ana"]);
         assert_eq!(names("br"), ["Bruno"]);

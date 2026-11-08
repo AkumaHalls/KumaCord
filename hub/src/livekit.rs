@@ -10,7 +10,7 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
 
-use crate::config::Config;
+use crate::config::{Config, restrict_mode};
 use crate::job;
 use crate::state::wait_shutdown;
 
@@ -54,11 +54,7 @@ pub fn write_config(cfg: &Config, dir: &Path) -> Result<PathBuf> {
     let path = dir.join("livekit.yaml");
     std::fs::write(&path, yaml).with_context(|| format!("writing {}", path.display()))?;
     // The yaml carries the LiveKit key/secret pair: same treatment as config.toml.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    restrict_mode(&path);
     Ok(path)
 }
 

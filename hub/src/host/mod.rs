@@ -139,7 +139,7 @@ fn read_config(dir: &Path) -> Result<HostedConfig> {
         bail!("{} has no config.toml", dir.display());
     }
     let cfg = crate::config::load_or_create(dir)?;
-    let (bind_ip, hub) = cfg.bind.rsplit_once(':').and_then(|(ip, p)| Some((ip.parse().ok()?, p.parse().ok()?))).unwrap_or((Ipv4Addr::UNSPECIFIED, 7890));
+    let (bind_ip, hub) = cfg.bind.rsplit_once(':').and_then(|(ip, p)| Some((ip.parse().ok()?, p.parse().ok()?))).unwrap_or((Ipv4Addr::LOCALHOST, 7890));
     Ok(HostedConfig {
         name: cfg.server_name,
         password: cfg.server_password,
@@ -238,7 +238,7 @@ impl RunOptions {
         RunOptions {
             net: if offline { NetMode::Off } else { NetMode::Real },
             mapper: None,
-            bind_ip: env("VOX_HOST_BIND").and_then(|v| v.parse().ok()).unwrap_or(Ipv4Addr::UNSPECIFIED),
+            bind_ip: env("VOX_HOST_BIND").and_then(|v| v.parse().ok()).unwrap_or(Ipv4Addr::LOCALHOST),
             first_block: env("VOX_HOST_FIRST_BLOCK").and_then(|v| v.parse().ok()).unwrap_or(0),
             livekit_bin,
             lan_override,

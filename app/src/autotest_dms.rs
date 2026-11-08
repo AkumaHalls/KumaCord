@@ -15,7 +15,7 @@
 
 use std::time::Instant;
 
-use vox_proto::{dm_room, CallEndReason, CallState, DmMessageKind, UserId};
+use vox_proto::{dm_room, CallEndReason, CallState, DmId, DmMessageKind, UserId};
 
 use super::Auto;
 use crate::app::dms::DM_CALL_CHANNEL;
@@ -56,11 +56,11 @@ impl Auto {
         }
     }
 
-    fn dm_has_line(app: &App, dm: i64, text: &str, author: Option<UserId>) -> bool {
+    fn dm_has_line(app: &App, dm: DmId, text: &str, author: Option<UserId>) -> bool {
         app.dms.logs.get(&dm).is_some_and(|l| l.msgs.iter().any(|m| m.content == text && author.is_none_or(|a| m.author.id == a)))
     }
 
-    fn dm_say(app: &mut App, dm: i64, text: &str) {
+    fn dm_say(app: &mut App, dm: DmId, text: &str) {
         app.select_dm(dm);
         app.dms.input = text.to_string();
         app.send_dm();
@@ -115,7 +115,7 @@ impl Auto {
             },
             2 => {
                 if let Some(dm) = app.dms.selected.filter(|d| app.dms.conv(*d).is_some_and(|c| Some(c.peer.id) == self.dm.peer)) {
-                    self.dm.dm = Some(dm);
+                    self.dm.dm = Some(dm.into_inner());
                     let text = self.dm_tag("oi");
                     Self::dm_say(app, dm, &text);
                     self.goto(3, "wrote to B");
@@ -124,7 +124,7 @@ impl Auto {
                 }
             }
             3 => {
-                let dm = self.dm.dm?;
+                let dm = vox_proto::DmId(self.dm.dm?);
                 if Self::dm_has_line(app, dm, &self.dm_tag("resposta"), self.dm.peer) {
                     let mine = Self::dm_has_line(app, dm, &self.dm_tag("oi"), app.my_id());
                     let conv = app.dms.conv(dm).cloned();
@@ -171,7 +171,7 @@ impl Auto {
                 }
             }
             6 => {
-                let dm = self.dm.dm?;
+                let dm = vox_proto::DmId(self.dm.dm?);
                 if Self::dm_has_line(app, dm, &self.dm_tag("ok"), self.dm.peer) {
                     if self.dm_hold() > 0 && self.dm.at.is_none() {
                         self.dm.at = Some(Instant::now());
@@ -189,7 +189,7 @@ impl Auto {
                 }
             }
             7 => {
-                let dm = self.dm.dm?;
+                let dm = vox_proto::DmId(self.dm.dm?);
                 let ended = app.dms.logs.get(&dm).and_then(|l| l.msgs.last()).is_some_and(|m| m.kind == DmMessageKind::CallEnded && m.call_secs >= 1);
                 if app.voice.channel.is_none() && app.dms.call.is_none() && ended {
                     log("the call is over and logged in the DM");
@@ -207,7 +207,7 @@ impl Auto {
         let tell_fail = |app: &mut App, me: &Auto, reason: &str| {
             if let Some(dm) = me.dm.dm {
                 let text = me.dm_tag("falhou");
-                Self::dm_say(app, dm, &text);
+                Self::dm_say(app, vox_proto::DmId(dm), &text);
             }
             me.fail(reason)
         };
@@ -225,7 +225,7 @@ impl Auto {
                 let peer = self.dm.peer?;
                 if let Some(c) = app.dms.conv_with(peer).filter(|c| c.last_message.is_some()).cloned() {
                     log(&format!("A's DM is in my list: unread={} preview={:?}; DM alerts requested {}, taskbar flashes {}", c.unread, c.last_message.as_ref().map(|m| &m.content), app.dms.dm_alerts, app.dms.flashes));
-                    self.dm.dm = Some(c.id);
+                    self.dm.dm = Some(c.id.into_inner());
                     app.select_dm(c.id);
                     self.goto(3, "opened A's DM");
                 } else if self.waited(60) {
@@ -233,7 +233,7 @@ impl Auto {
                 }
             }
             3 => {
-                let dm = self.dm.dm?;
+                let dm = vox_proto::DmId(self.dm.dm?);
                 if Self::dm_has_line(app, dm, &self.dm_tag("oi"), self.dm.peer) {
                     if app.dms.dm_alerts == 0 && app.settings.alerts.enabled {
                         return self.fail("no \"Mensagem direta\" alert was requested");
@@ -323,7 +323,7 @@ impl Auto {
                 if app.voice.cameras.contains(&peer) && fps.is_none_or(|f| f < 3.0) {
                     return tell_fail(app, self, &format!("A's camera is on but its frames do not arrive ({fps:?}/s)"));
                 }
-                let dm = self.dm.dm?;
+                let dm = vox_proto::DmId(self.dm.dm?);
                 let text = self.dm_tag("ok");
                 Self::dm_say(app, dm, &text);
                 self.goto(9, "checks passed; told A");

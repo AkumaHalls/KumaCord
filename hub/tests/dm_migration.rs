@@ -134,7 +134,7 @@ async fn a_v052_database_gets_dms_and_stays_usable() {
     // A v0.5.2 hub has no DMs: the 404 is how a new app knows to hide them.
     let r = http.get(format!("http://127.0.0.1:{port}/api/dms")).bearer_auth(bruno["token"].as_str().unwrap()).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
-    say(port, bruno["token"].as_str().unwrap(), geral, "oi do v0.5.2").await;
+    say(port, bruno["token"].as_str().unwrap(), geral.into_inner(), "oi do v0.5.2").await;
     drop(old); // killed like a crash: the last writes may only be in the WAL
     copy_db(&old_dir, &new_dir);
 
@@ -155,14 +155,14 @@ async fn a_v052_database_gets_dms_and_stays_usable() {
             assert_eq!(r.status(), StatusCode::OK);
             assert!(r.json::<Vec<DmConversation>>().await.unwrap().is_empty(), "a migrated file starts with no DMs");
             let dm: DmConversation = http.post(format!("{base}/api/dms/{carla_id}")).bearer_auth(&bt).json(&json!({})).send().await.unwrap().json().await.unwrap();
-            dm_id = dm.id;
+            dm_id = dm.id.into_inner();
             let r = http.post(format!("{base}/api/dms/{dm_id}/messages")).bearer_auth(&bt).json(&json!({"content": "dm no banco migrado"})).send().await.unwrap();
             assert_eq!(r.status(), StatusCode::OK);
         } else {
             // Second start: the DM is still there, unread for Carla.
             let list: Vec<DmConversation> = http.get(format!("{base}/api/dms")).bearer_auth(&ct).send().await.unwrap().json().await.unwrap();
             assert_eq!(list.len(), 1);
-            assert_eq!((list[0].id, list[0].unread), (dm_id, 1));
+            assert_eq!((list[0].id, list[0].unread), (DmId(dm_id), 1));
             let lines: Vec<DmMessage> = http.get(format!("{base}/api/dms/{dm_id}/messages")).bearer_auth(&ct).send().await.unwrap().json().await.unwrap();
             assert_eq!(lines[0].content, "dm no banco migrado");
         }
@@ -194,6 +194,6 @@ async fn a_v052_database_gets_dms_and_stays_usable() {
         .await
         .unwrap();
     assert_eq!(msgs.len(), 1);
-    say(port, dani["token"].as_str().unwrap(), geral, "de volta ao v0.5.2").await;
+    say(port, dani["token"].as_str().unwrap(), geral.into_inner(), "de volta ao v0.5.2").await;
     drop(old);
 }

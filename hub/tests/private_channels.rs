@@ -691,12 +691,12 @@ async fn an_older_app_sees_nothing_private() {
     for (who, sees) in [(&bia, false), (&ana, true)] {
         // The old app's HTTP list.
         let list: Vec<OldChannel> = env.get(who, "/api/channels").await.json().await.unwrap();
-        assert_eq!(list.iter().any(|c| c.id == t.id), sees);
+        assert_eq!(list.iter().any(|c| c.id == t.id.into_inner()), sees);
         // Its WebSocket: a v0.8 parse of every frame.
         let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}/ws?token={}", env.base, who.token)).await.unwrap();
         let Some(Ok(WsMsg::Text(first))) = ws.next().await else { panic!("no ready") };
         let Ok(OldEvent::Ready { channels }) = serde_json::from_str::<OldEvent>(&first) else { panic!("an old app reads Ready: {first}") };
-        assert_eq!(channels.iter().any(|c| c.id == t.id), sees, "{}", who.user.username);
+        assert_eq!(channels.iter().any(|c| c.id == t.id.into_inner()), sees, "{}", who.user.username);
         if !sees {
             assert!(!first.contains("\"private\""), "nothing private in Bia's snapshot: {first}");
         }
@@ -707,7 +707,7 @@ async fn an_older_app_sees_nothing_private() {
         let until = Instant::now() + Duration::from_millis(800);
         while let Ok(Some(Ok(WsMsg::Text(f)))) = tokio::time::timeout(until.saturating_duration_since(Instant::now()), ws.next()).await {
             if let Ok(OldEvent::ChannelsChanged { channels }) = serde_json::from_str::<OldEvent>(&f) {
-                lists.push(channels.iter().any(|c| c.id == t.id));
+                lists.push(channels.iter().any(|c| c.id == t.id.into_inner()));
             }
             assert!(sees || !f.contains("segredo"), "{f}");
         }

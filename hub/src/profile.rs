@@ -446,10 +446,10 @@ mod tests {
     fn rate_window_slides() {
         let w = RateWindow::new(2, Duration::from_secs(10));
         let t0 = Instant::now();
-        assert!(w.allow(1, t0).is_ok() && w.allow(1, t0).is_ok());
-        assert!(w.allow(1, t0 + Duration::from_secs(1)).is_err());
-        assert!(w.allow(2, t0 + Duration::from_secs(1)).is_ok());
-        assert!(w.allow(1, t0 + Duration::from_secs(10)).is_ok());
+        assert!(w.allow(UserId(1), t0).is_ok() && w.allow(UserId(1), t0).is_ok());
+        assert!(w.allow(UserId(1), t0 + Duration::from_secs(1)).is_err());
+        assert!(w.allow(UserId(2), t0 + Duration::from_secs(1)).is_ok());
+        assert!(w.allow(UserId(1), t0 + Duration::from_secs(10)).is_ok());
     }
 
     #[test]
@@ -458,27 +458,27 @@ mod tests {
         let db = db::Db::open(&dir.path().join("t.db")).unwrap();
         db.call_now(|c| {
             c.execute("INSERT INTO users (username, created_at_ms) VALUES ('ana', 1), ('bia', 1)", [])?;
-            assert_eq!(load(c, 1)?, ProfileRow::default(), "no row yet");
-            update(c, 1, Some(&Some("Ana".into())), Some("oi"), Some(&Some("#112233".into())))?;
-            set_presence(c, 1, Presence::Dnd)?;
-            set_status(c, 1, Some(&CustomStatus { emoji: "🎮".into(), text: "x".into(), expires_at_ms: Some(1000) }))?;
-            set_status(c, 2, Some(&CustomStatus { text: "para sempre".into(), ..Default::default() }))?;
-            let row = load(c, 1)?;
+            assert_eq!(load(c, UserId(1))?, ProfileRow::default(), "no row yet");
+            update(c, UserId(1), Some(&Some("Ana".into())), Some("oi"), Some(&Some("#112233".into())))?;
+            set_presence(c, UserId(1), Presence::Dnd)?;
+            set_status(c, UserId(1), Some(&CustomStatus { emoji: "🎮".into(), text: "x".into(), expires_at_ms: Some(1000) }))?;
+            set_status(c, UserId(2), Some(&CustomStatus { text: "para sempre".into(), ..Default::default() }))?;
+            let row = load(c, UserId(1))?;
             assert_eq!((row.bio.as_str(), row.accent.as_deref(), row.presence), ("oi", Some("#112233"), Presence::Dnd));
-            assert_eq!(db::get_user(c, 1)?.unwrap().display_name.as_deref(), Some("Ana"));
+            assert_eq!(db::get_user(c, UserId(1))?.unwrap().display_name.as_deref(), Some("Ana"));
             // A status that already ran out is not loaded for a connecting person.
-            assert_eq!(load_entry(c, 1, 999)?.status.map(|s| s.text), Some("x".into()));
-            assert_eq!(load_entry(c, 1, 1000)?.status, None);
-            assert_eq!(load_entry(c, 1, 5)?.stored, Presence::Dnd);
+            assert_eq!(load_entry(c, UserId(1), 999)?.status.map(|s| s.text), Some("x".into()));
+            assert_eq!(load_entry(c, UserId(1), 1000)?.status, None);
+            assert_eq!(load_entry(c, UserId(1), 5)?.stored, Presence::Dnd);
             assert_eq!(expire_statuses(c, 999)?, Vec::<UserId>::new());
-            assert_eq!(expire_statuses(c, 1000)?, vec![1]);
-            assert_eq!(load(c, 1)?.status, None);
-            assert!(load(c, 2)?.status.is_some(), "a status without a deadline stays");
+            assert_eq!(expire_statuses(c, 1000)?, vec![UserId(1)]);
+            assert_eq!(load(c, UserId(1))?.status, None);
+            assert!(load(c, UserId(2))?.status.is_some(), "a status without a deadline stays");
             // Clearing the display name leaves the rest of the profile.
-            update(c, 1, Some(&None), None, None)?;
-            assert_eq!(db::get_user(c, 1)?.unwrap().display_name, None);
-            assert_eq!(load(c, 1)?.bio, "oi");
-            assert!(is_other_username(c, "BIA", 1)? && !is_other_username(c, "ANA", 1)?);
+            update(c, UserId(1), Some(&None), None, None)?;
+            assert_eq!(db::get_user(c, UserId(1))?.unwrap().display_name, None);
+            assert_eq!(load(c, UserId(1))?.bio, "oi");
+            assert!(is_other_username(c, "BIA", UserId(1))? && !is_other_username(c, "ANA", UserId(1))?);
             Ok(())
         })
         .unwrap();

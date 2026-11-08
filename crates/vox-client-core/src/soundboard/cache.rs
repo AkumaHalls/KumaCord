@@ -73,7 +73,7 @@ impl SoundCache {
     /// The clip, from memory or from disk; `None` when it was never downloaded (or the file is
     /// damaged, in which case it is removed).
     pub fn get(&self, id: SoundId, hash: &str) -> Option<Arc<SoundPcm>> {
-        let key = (id, hash.to_string());
+        let key = (id.clone(), hash.to_string());
         {
             let mut mem = self.mem.lock();
             if let Some(i) = mem.iter().position(|(k, _)| *k == key) {
@@ -83,12 +83,12 @@ impl SoundCache {
                 return Some(pcm);
             }
         }
-        let path = self.file(id, hash);
+        let path = self.file(id.clone(), hash);
         let bytes = std::fs::read(&path).ok()?;
         match SoundPcm::from_wav(&bytes) {
             Ok(pcm) => Some(self.remember(key, pcm)),
             Err(e) => {
-                tracing::warn!(id, error = %e, "cached sound is damaged; removing it");
+                tracing::warn!(id = %id, error = %e, "cached sound is damaged; removing it");
                 let _ = std::fs::remove_file(&path);
                 None
             }
@@ -105,7 +105,7 @@ impl SoundCache {
     pub fn put(&self, id: SoundId, hash: &str, wav: &[u8]) -> Result<Arc<SoundPcm>> {
         let pcm = SoundPcm::from_wav(wav).context("the downloaded sound is not valid")?;
         std::fs::create_dir_all(&self.dir).with_context(|| format!("creating {}", self.dir.display()))?;
-        let path = self.file(id, hash);
+        let path = self.file(id.clone(), hash);
         let tmp = path.with_extension("part");
         std::fs::write(&tmp, wav).and_then(|_| std::fs::rename(&tmp, &path)).context("saving the sound")?;
         Ok(self.remember((id, hash.to_string()), pcm))
@@ -131,7 +131,7 @@ impl SoundCache {
             if path.extension().is_none_or(|x| x != "wav" && x != "part") {
                 continue;
             }
-            let wanted = keep.iter().any(|(id, hash)| self.file(*id, hash) == path);
+            let wanted = keep.iter().any(|(id, hash)| self.file(id.clone(), hash) == path);
             if !wanted {
                 let _ = std::fs::remove_file(&path);
             }
@@ -152,17 +152,17 @@ mod tests {
     fn put_get_and_survive_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let cache = SoundCache::new(dir.path().join("srv"));
-        assert!(cache.get(1, "abc").is_none() && !cache.has(1, "abc"));
-        let pcm = cache.put(1, "abc", &wav(7, 9600)).unwrap();
+        assert!(cache.get(SoundId("1".into()), "abc").is_none() && !cache.has(SoundId("1".into()), "abc"));
+        let pcm = cache.put(SoundId("1".into()), "abc", &wav(7, 9600)).unwrap();
         assert_eq!((pcm.channels, pcm.frames(), pcm.duration_ms()), (1, 9600, 200));
-        assert!(cache.has(1, "abc"));
-        assert_eq!(cache.get(1, "abc").unwrap(), pcm);
+        assert!(cache.has(SoundId("1".into()), "abc"));
+        assert_eq!(cache.get(SoundId("1".into()), "abc").unwrap(), pcm);
         // A new process: from disk.
         let again = SoundCache::new(dir.path().join("srv"));
-        assert!(again.has(1, "abc"));
-        assert_eq!(again.get(1, "abc").unwrap().samples[0], 7);
+        assert!(again.has(SoundId("1".into()), "abc"));
+        assert_eq!(again.get(SoundId("1".into()), "abc").unwrap().samples[0], 7);
         // Another hash of the same id is another clip.
-        assert!(again.get(1, "def").is_none());
+        assert!(again.get(SoundId("1".into()), "def").is_none());
         // Mono is expanded to stereo for previews only.
         assert_eq!(pcm.to_stereo().len(), 2 * 9600);
     }
@@ -171,15 +171,15 @@ mod tests {
     fn bad_downloads_and_damaged_files_leave_nothing_usable() {
         let dir = tempfile::tempdir().unwrap();
         let cache = SoundCache::new(dir.path());
-        assert!(cache.put(2, "x", b"not a wav").is_err());
-        assert!(!cache.has(2, "x"));
-        cache.put(3, "y", &wav(1, 9600)).unwrap();
+        assert!(cache.put(SoundId("2".into()), "x", b"not a wav").is_err());
+        assert!(!cache.has(SoundId("2".into()), "x"));
+        cache.put(SoundId("3".into()), "y", &wav(1, 9600)).unwrap();
         std::fs::write(dir.path().join("3-y.wav"), b"RIFFdamaged").unwrap();
         let fresh = SoundCache::new(dir.path());
-        assert!(fresh.get(3, "y").is_none());
+        assert!(fresh.get(SoundId("3".into()), "y").is_none());
         assert!(!dir.path().join("3-y.wav").exists(), "the damaged file is removed");
         // A hostile hash cannot leave the directory.
-        cache.put(4, "../../evil", &wav(1, 9600)).unwrap();
+        cache.put(SoundId("4".into()), "../../evil", &wav(1, 9600)).unwrap();
         assert!(dir.path().join("4-evil.wav").exists());
     }
 
@@ -188,14 +188,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = SoundCache::new(dir.path());
         for id in 0..(MEM_CLIPS as i64 + 5) {
-            cache.put(id, "h", &wav(id as i16, 4800)).unwrap();
+            cache.put(SoundId(id.to_string()), "h", &wav(id as i16, 4800)).unwrap();
         }
         assert_eq!(cache.mem.lock().len(), MEM_CLIPS);
-        assert!(cache.get(0, "h").is_some(), "evicted from memory, still on disk");
-        cache.retain(&[(0, "h".into()), (1, "h".into())]);
+        assert!(cache.get(SoundId("0".into()), "h").is_some(), "evicted from memory, still on disk");
+        cache.retain(&[(SoundId("0".into()), "h".into()), (SoundId("1".into()), "h".into())]);
         let mut left: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         left.sort();
         assert_eq!(left, ["0-h.wav", "1-h.wav"]);
-        assert!(cache.get(7, "h").is_none());
+        assert!(cache.get(SoundId("7".into()), "h").is_none());
     }
 }

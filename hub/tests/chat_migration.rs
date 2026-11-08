@@ -138,7 +138,7 @@ async fn a_v070_database_gets_mentions_replies_and_reactions() {
     // A v0.7.0 hub has no reactions: the route does not exist.
     let r = http.post(format!("http://127.0.0.1:{port}/api/messages/1/reactions")).bearer_auth(&bt).json(&json!({"emoji": "👍", "add": true})).send().await.unwrap();
     assert!(matches!(r.status(), StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED), "{}", r.status());
-    let first = say(port, &bt, geral, "oi do v0.7.0 @Carla").await;
+    let first = say(port, &bt, geral.into_inner(), "oi do v0.7.0 @Carla").await;
     let dm: Value = http.post(format!("http://127.0.0.1:{port}/api/dms/{carla}")).bearer_auth(&bt).json(&json!({})).send().await.unwrap().json().await.unwrap();
     let dm_id = dm["id"].as_i64().unwrap();
     let r = http.post(format!("http://127.0.0.1:{port}/api/dms/{dm_id}/messages")).bearer_auth(&bt).json(&json!({"content": "dm do v0.7.0"})).send().await.unwrap();
@@ -151,7 +151,7 @@ async fn a_v070_database_gets_mentions_replies_and_reactions() {
     let port = free_port();
     config(&new_dir, port);
     let base = format!("http://127.0.0.1:{port}");
-    let mut reply_id = 0;
+    let mut reply_id = MessageId(0);
     for round in 0..2 {
         let server = start(new_hub(&new_dir)).await.unwrap();
         let msgs: Vec<Message> = http.get(format!("{base}/api/channels/{geral}/messages")).bearer_auth(&ct).send().await.unwrap().json().await.unwrap();
@@ -160,7 +160,7 @@ async fn a_v070_database_gets_mentions_replies_and_reactions() {
             // The old rows read with nothing new on them.
             assert_eq!(msgs.len(), 1);
             let m = &msgs[0];
-            assert_eq!((m.id, m.content.as_str()), (first, "oi do v0.7.0 @Carla"));
+            assert_eq!((m.id, m.content.as_str()), (MessageId(first), "oi do v0.7.0 @Carla"));
             assert!(m.mentions.is_empty() && !m.mention_everyone && m.reply.is_none() && m.reactions.is_empty());
             assert!(lines[0].reply.is_none() && lines[0].reactions.is_empty());
             // Everything new works on it.
@@ -173,26 +173,26 @@ async fn a_v070_database_gets_mentions_replies_and_reactions() {
                 .unwrap();
             assert_eq!(r.status(), StatusCode::OK);
             let reply: Message = r.json().await.unwrap();
-            assert_eq!(reply.mentions, vec![bruno]);
-            assert_eq!(reply.reply.as_ref().unwrap().author.as_ref().unwrap().id, bruno);
+            assert_eq!(reply.mentions, vec![UserId(bruno)]);
+            assert_eq!(reply.reply.as_ref().unwrap().author.as_ref().unwrap().id, UserId(bruno));
             reply_id = reply.id;
             for (who, emoji) in [(&ct, "👍"), (&bt, "🎉")] {
                 let r = http.post(format!("{base}/api/messages/{first}/reactions")).bearer_auth(who).json(&json!({"emoji": emoji, "add": true})).send().await.unwrap();
                 assert_eq!(r.status(), StatusCode::OK);
             }
             let r = http.post(format!("{base}/api/dms/{dm_id}/messages")).bearer_auth(&ct).json(&json!({"content": "resposta no dm", "reply_to": old_line})).send().await.unwrap();
-            assert_eq!(r.json::<DmMessage>().await.unwrap().reply.unwrap().id, old_line);
+            assert_eq!(r.json::<DmMessage>().await.unwrap().reply.unwrap().id, MessageId(old_line));
             let r = http.post(format!("{base}/api/dms/{dm_id}/messages/{old_line}/reactions")).bearer_auth(&ct).json(&json!({"emoji": "❤", "add": true})).send().await.unwrap();
             assert_eq!(r.status(), StatusCode::OK);
         } else {
             // Second start: all of it is still there (the old sessions too).
             assert_eq!(msgs.len(), 2);
             let reply = msgs.iter().find(|m| m.id == reply_id).unwrap();
-            assert_eq!((reply.mentions.clone(), reply.reply.as_ref().unwrap().id), (vec![bruno], first));
-            let orig = msgs.iter().find(|m| m.id == first).unwrap();
+            assert_eq!((reply.mentions.clone(), reply.reply.as_ref().unwrap().id), (vec![UserId(bruno)], MessageId(first)));
+            let orig = msgs.iter().find(|m| m.id == MessageId(first)).unwrap();
             assert_eq!(orig.reactions.iter().map(|r| r.emoji.as_str()).collect::<Vec<_>>(), ["👍", "🎉"]);
-            assert_eq!(lines.iter().find(|l| l.id == old_line).unwrap().reactions.len(), 1);
-            assert_eq!(lines.first().unwrap().reply.as_ref().unwrap().id, old_line);
+            assert_eq!(lines.iter().find(|l| l.id == DmMessageId(old_line)).unwrap().reactions.len(), 1);
+            assert_eq!(lines.first().unwrap().reply.as_ref().unwrap().id, MessageId(old_line));
         }
         server.shutdown().await;
     }
@@ -205,7 +205,7 @@ async fn a_v070_database_gets_mentions_replies_and_reactions() {
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0]["content"], "respondendo @Bruno", "the reply reads as a plain message");
     assert!(msgs[0].get("reply").is_none() && msgs[1].get("reactions").is_none());
-    say(port, &bt, geral, "de volta ao v0.7.0").await;
+    say(port, &bt, geral.into_inner(), "de volta ao v0.7.0").await;
     // It deletes the reacted message (its own SQL: no idea reactions exist).
     let r = http.post(format!("http://127.0.0.1:{port}/api/messages/{first}/delete")).bearer_auth(&bt).json(&json!({})).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::OK);
@@ -219,10 +219,10 @@ async fn a_v070_database_gets_mentions_replies_and_reactions() {
     let server = start(new_hub(&new_dir)).await.unwrap();
     let base = format!("http://127.0.0.1:{port}");
     let msgs: Vec<Message> = http.get(format!("{base}/api/channels/{geral}/messages")).bearer_auth(&ct).send().await.unwrap().json().await.unwrap();
-    assert_eq!(msgs.iter().find(|m| m.id == reply_id).unwrap().reply, Some(ReplyRef::gone(first)));
+    assert_eq!(msgs.iter().find(|m| m.id == reply_id).unwrap().reply, Some(ReplyRef::gone(MessageId(first))));
     assert!(msgs.iter().any(|m| m.content == "de volta ao v0.7.0" && m.reply.is_none() && m.mentions.is_empty()));
     let lines: Vec<DmMessage> = http.get(format!("{base}/api/dms/{dm_id}/messages")).bearer_auth(&ct).send().await.unwrap().json().await.unwrap();
-    assert_eq!(lines.first().unwrap().reply, Some(ReplyRef::gone(old_line)));
+    assert_eq!(lines.first().unwrap().reply, Some(ReplyRef::gone(MessageId(old_line))));
     server.shutdown().await;
     let db = voxhub_server::db::Db::open(&new_dir.join("voxhub.db")).unwrap();
     db.call_now(|c| {

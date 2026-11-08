@@ -126,7 +126,7 @@ async fn a_v070_database_gets_invites_and_stays_usable() {
     assert_eq!(http.get(format!("http://127.0.0.1:{port}/api/invites")).bearer_auth(&bt).send().await.unwrap().status(), StatusCode::NOT_FOUND);
     let r = login(&http, port, json!({"username": "Zé", "server_password": "", "protocol_version": 1, "invite": "ab".repeat(16)})).await;
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "an old hub wants the password");
-    say(port, &bt, geral, "oi do v0.7.0").await;
+    say(port, &bt, geral.into_inner(), "oi do v0.7.0").await;
     drop(old); // killed like a crash: the last writes may only be in the WAL
     copy_db(&old_dir, &new_dir);
 
@@ -177,6 +177,6 @@ async fn a_v070_database_gets_invites_and_stays_usable() {
     let r = login(&http, port, json!({"username": "Dani", "server_password": "", "protocol_version": 1, "device_token": dani_device})).await;
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
     let dani = login_ok(&http, port, json!({"username": "Dani", "server_password": PASSWORD, "protocol_version": 1})).await;
-    say(port, dani["token"].as_str().unwrap(), geral, "de volta ao v0.7.0").await;
+    say(port, dani["token"].as_str().unwrap(), geral.into_inner(), "de volta ao v0.7.0").await;
     drop(old);
 }

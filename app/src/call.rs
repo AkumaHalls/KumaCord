@@ -365,7 +365,7 @@ impl App {
     pub fn hide_card(&mut self, user: UserId) {
         self.call.hidden.cards.insert(user);
         self.unpin(TileKey::Member(user));
-        tracing::info!(user, hidden = ?self.call.hidden, "stage: card hidden");
+        tracing::info!(user = %user, hidden = ?self.call.hidden, "stage: card hidden");
         self.repaint.wake();
     }
 

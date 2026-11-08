@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use vox_proto::{InviteState, Role};
+use vox_proto::{InviteId, InviteState, Role};
 
 use super::Auto;
 use crate::app::{App, Screen};
@@ -25,7 +25,7 @@ const OWNER_PW: &str = "autotest-host-dono";
 
 #[derive(Default)]
 pub struct State {
-    invite: Option<i64>,
+    invite: Option<InviteId>,
 }
 
 fn log(what: &str) {
@@ -99,7 +99,7 @@ impl Auto {
                     if let Err(e) = std::fs::write(dir.join("invite.txt"), &code) {
                         return self.fail(&format!("cannot write the code: {e}"));
                     }
-                    self.host.invite = Some(id);
+                    self.host.invite = Some(id.clone());
                     log(&format!("invite #{id}: {} chars", code.len()));
                     self.goto(5, "waiting for B (chat and voice)");
                 } else if self.waited(15) {
@@ -127,12 +127,12 @@ impl Auto {
                 }
             }
             7 if self.waited(4) => {
-                let Some(id) = self.host.invite else { return self.fail("no invite id") };
-                app.invite_cmd(InviteCmd::Revoke(id));
+                let Some(ref id) = self.host.invite else { return self.fail("no invite id") };
+                app.invite_cmd(InviteCmd::Revoke(id.clone()));
                 self.goto(8, "revoking the invite");
             }
             8 => {
-                let revoked = app.host.inv.list.iter().any(|i| Some(i.id) == self.host.invite && i.state(crate::app::now_ms()) == InviteState::Revoked);
+                let revoked = app.host.inv.list.iter().any(|i| Some(i.id.clone()) == self.host.invite && i.state(crate::app::now_ms()) == InviteState::Revoked);
                 if revoked {
                     let _ = std::fs::write(self.host_dir().join("revoked.txt"), "revoked");
                     self.goto(9, "revoked; waiting for C's attempt");

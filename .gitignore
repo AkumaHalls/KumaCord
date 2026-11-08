@@ -30,3 +30,7 @@ architecture.md
 ARCHITECTURE_ANALYSIS.md
 IMPLEMENTATION_PLAN.md
 erros-teste.txt
+
+# Logs de build locais
+*.err
+*.log

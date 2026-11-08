@@ -20,7 +20,7 @@
 
 use std::hash::{Hash, Hasher};
 
-use vox_proto::{Attachment, ChannelKind, Message, UserId};
+use vox_proto::{Attachment, ChannelId, ChannelKind, DmId, DmMessageId, Message, MessageId, UserId};
 
 use super::Auto;
 use crate::app::App;
@@ -35,16 +35,16 @@ const LONG_NAME: &str = "canal-de-nome-bem-comprido-teste";
 
 #[derive(Default)]
 pub struct State {
-    geral: i64,
+    geral: ChannelId,
     peer: Option<UserId>,
     m1: Option<Message>,
     m2: Option<Message>,
-    m3: Option<i64>,
+    m3: Option<MessageId>,
     thumb1: Option<u64>,
-    dm: Option<i64>,
-    dm_line: Option<i64>,
-    c1: Option<i64>,
-    c2: Option<i64>,
+    dm: Option<DmId>,
+    dm_line: Option<DmMessageId>,
+    c1: Option<ChannelId>,
+    c2: Option<ChannelId>,
     epoch_before: u32,
 }
 
@@ -72,16 +72,16 @@ impl Auto {
         format!("fxtest {what} {}", self.args.run_id)
     }
 
-    fn fx_msg(app: &App, ch: i64, caption: &str) -> Option<Message> {
+    fn fx_msg(app: &App, ch: ChannelId, caption: &str) -> Option<Message> {
         app.logs.get(&ch)?.msgs.iter().find(|m| m.caption() == caption).cloned()
     }
 
-    fn fx_has(app: &App, ch: i64, id: i64) -> bool {
+    fn fx_has(app: &App, ch: ChannelId, id: MessageId) -> bool {
         app.logs.get(&ch).is_some_and(|l| l.msgs.iter().any(|m| m.id == id))
     }
 
-    fn fx_channel(app: &App, name: &str) -> Option<i64> {
-        app.channels.iter().find(|c| c.name == name && c.kind == ChannelKind::Text).map(|c| c.id)
+    fn fx_channel(app: &App, name: &str) -> Option<ChannelId> {
+        app.channels.iter().find(|c| c.name == name && c.kind == ChannelKind::Text).map(|c| ChannelId(*c.id))
     }
 
     /// Attach a generated picture to `target`'s next message.
@@ -196,7 +196,7 @@ impl Auto {
                     return self.fail(&format!("the message came back with {} images", m.attachments.len()));
                 }
                 // The UI offers "Apagar mensagem" on my own message with an image (drawn this frame).
-                if !app.chatx.delete_offers.contains(&(target, m.id)) {
+                if !app.chatx.delete_offers.contains(&(target, *m.id)) {
                     return if self.waited(20) { self.fail("no \"Apagar mensagem\" on my own message with an image") } else { None };
                 }
                 log(&format!("own picture message {} (image {} hash {}) offers \"Apagar mensagem\"", m.id, m.attachments[0].id, m.attachments[0].hash));
@@ -207,7 +207,7 @@ impl Auto {
                 if !Self::saw_message(app, &self.fx_tag("saw1")) {
                     return if self.waited(90) { self.fail("B never saw the picture") } else { None };
                 }
-                let id = self.fx.m1.as_ref().map(|m| m.id).unwrap_or_default();
+                let id = self.fx.m1.as_ref().map(|m| *m.id).unwrap_or_default();
                 // "Apagar mensagem" without Shift asks first.
                 app.ask_delete(target, id, false);
                 if !app.chatx.confirm_delete.as_ref().is_some_and(|c| c.id == id) {
@@ -266,7 +266,7 @@ impl Auto {
                         log(&format!("B's picture {} arrived; B (a member) deletes it", m.id));
                     }
                     self.fx.m3 = Some(m.id);
-                    if app.chatx.delete_offers.contains(&(target, m.id)) {
+                    if app.chatx.delete_offers.contains(&(target, *m.id)) {
                         log("the owner is offered \"Apagar mensagem (moderação)\" on B's message");
                     }
                 }
@@ -297,7 +297,7 @@ impl Auto {
                     return if self.waited(60) { self.fail("B never opened the new channel") } else { None };
                 }
                 // State to be dropped with the channel: a reply being written, a draft.
-                app.start_reply(Target::Channel(c1), m.id);
+                app.start_reply(Target::Channel(c1), *m.id);
                 app.input = "rascunho".into();
                 self.fx.epoch_before = app.channel_epochs.get(&c1).copied().unwrap_or(0);
                 app.admin(AdminCmd::DeleteChannel { id: c1 });
@@ -369,9 +369,10 @@ impl Auto {
     }
 
     /// Nothing of the deleted channel `ch` is left in the app.
-    fn fx_channel_forgotten(app: &App, ch: i64, epoch_before: u32) -> Result<(), String> {
+    fn fx_channel_forgotten(app: &App, ch: ChannelId, epoch_before: u32) -> Result<(), String> {
         let target = Target::Channel(ch);
         let mut left = Vec::new();
+        let ch_raw = ch.into_inner();
         if app.logs.contains_key(&ch) {
             left.push("messages");
         }
@@ -434,7 +435,7 @@ impl Auto {
                 let Some(m) = Self::fx_msg(app, geral, &self.fx_tag("img1")) else {
                     return if self.waited(90) { self.fail("A's picture never arrived") } else { None };
                 };
-                if app.chatx.delete_offers.contains(&(target, m.id)) {
+                if app.chatx.delete_offers.contains(&(target, *m.id)) {
                     return self.fail("a member is offered \"Apagar mensagem\" on somebody else's message");
                 }
                 let key = ImgKey::of(&m.attachments[0]);
@@ -487,11 +488,11 @@ impl Auto {
                 let Some(m) = Self::fx_msg(app, geral, &self.fx_tag("bimg")) else {
                     return if self.waited(60) { self.fail("my picture did not come back") } else { None };
                 };
-                if !app.chatx.delete_offers.contains(&(target, m.id)) {
+                if !app.chatx.delete_offers.contains(&(target, *m.id)) {
                     return if self.waited(20) { self.fail("a member is not offered \"Apagar mensagem\" on their own picture") } else { None };
                 }
                 // Shift+click: no question.
-                app.ask_delete(target, m.id, true);
+                app.ask_delete(target, *m.id, true);
                 if app.chatx.confirm_delete.is_some() {
                     return self.fail("Shift+click still asked");
                 }
@@ -532,10 +533,10 @@ impl Auto {
                 let Some(line) = app.dms.logs.get(&dm).and_then(|l| l.msgs.iter().find(|m| m.caption() == caption).cloned()) else {
                     return if self.waited(60) { self.fail("my DM picture did not come back") } else { None };
                 };
-                if !app.chatx.delete_offers.contains(&(t, line.id)) {
+                if !app.chatx.delete_offers.contains(&(t, *line.id)) {
                     return if self.waited(20) { self.fail("no \"Apagar mensagem\" on my own DM line") } else { None };
                 }
-                app.ask_delete(t, line.id, true);
+                app.ask_delete(t, *line.id, true);
                 self.fx.dm_line = Some(line.id);
                 self.goto(12, "deleting my DM picture");
             }
@@ -559,7 +560,7 @@ impl Auto {
                     return if self.waited(30) { self.fail("A's message in the new channel never showed") } else { None };
                 };
                 // Reading the channel with state that must go with it: a reply, a draft.
-                app.start_reply(Target::Channel(c1), m.id);
+                app.start_reply(Target::Channel(c1), *m.id);
                 app.input = "rascunho".into();
                 self.fx.epoch_before = app.channel_epochs.get(&c1).copied().unwrap_or(0);
                 // Tell A without leaving the channel (straight to the hub, the input untouched).

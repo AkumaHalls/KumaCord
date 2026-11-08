@@ -76,7 +76,7 @@ pub async fn run_invite(hub: &HubClient, cmd: &InviteCmd) -> Result<InviteReply,
     let r = match cmd {
         InviteCmd::List => hub.invites().await.map(InviteReply::List),
         InviteCmd::Create(req) => hub.create_invite(req).await.map(InviteReply::Created),
-        InviteCmd::Revoke(id) => hub.revoke_invite(*id).await.map(|_| InviteReply::Revoked),
+        InviteCmd::Revoke(id) => hub.revoke_invite(id.clone()).await.map(|_| InviteReply::Revoked),
     };
     r.map_err(|e| {
         tracing::warn!(error = %format!("{e:#}"), ?cmd, "invite call failed");
@@ -366,11 +366,12 @@ impl App {
             }
             InviteReply::Created(c) => match self.invite_code(&c) {
                 Ok(code) => {
-                    tracing::info!(id = c.invite.id, len = code.len(), "invite created");
+                    tracing::info!(id = %c.invite.id, len = code.len(), "invite created");
                     let inv = &mut self.host.inv;
-                    inv.codes.insert(c.invite.id, code.clone());
-                    inv.last = Some((c.invite.id, code));
-                    inv.list.retain(|i| i.id != c.invite.id);
+                    let id = c.invite.id.clone();
+                    inv.codes.insert(id.clone(), code.clone());
+                    inv.last = Some((id.clone(), code));
+                    inv.list.retain(|i| i.id != id);
                     inv.list.insert(0, c.invite);
                 }
                 Err(e) => self.host.inv.error = Some(e),
@@ -752,7 +753,7 @@ impl App {
                 Some(false) => self.host.confirm_stop = false,
                 None => {}
             }
-        } else if let Some(id) = self.host.inv.confirm_revoke {
+        } else if let Some(ref id) = self.host.inv.confirm_revoke {
             let answer = ui_kit::confirm(ctx, "invite_revoke", "Revogar convite", "Revogar", Kind::Danger, !self.host.inv.busy, |ui| {
                 ui_kit::body_text(ui, format!("Revogar o convite #{id}?"));
                 ui_kit::hint(ui, "Ninguém mais entra com este código. Quem já entrou com ele continua no servidor.");
@@ -760,7 +761,7 @@ impl App {
             match answer {
                 Some(true) => {
                     self.host.inv.error = None;
-                    self.invite_cmd(InviteCmd::Revoke(id));
+                    self.invite_cmd(InviteCmd::Revoke(id.clone()));
                 }
                 Some(false) => self.host.inv.confirm_revoke = None,
                 None => {}
@@ -1029,7 +1030,7 @@ impl App {
                 return;
             }
             if ui_kit::button_sized(ui, Kind::Secondary, Size::Small, None, "Revogar").on_hover_text("Ninguém mais entra com este convite (quem já entrou continua)").clicked() {
-                self.host.inv.confirm_revoke = Some(i.id);
+                self.host.inv.confirm_revoke = Some(i.id.clone());
             }
             if let Some(code) = self.host.inv.codes.get(&i.id) {
                 if ui_kit::button_sized(ui, Kind::Ghost, Size::Small, Some(ph::COPY), "Copiar").clicked() {

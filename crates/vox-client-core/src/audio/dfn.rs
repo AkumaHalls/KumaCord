@@ -219,6 +219,11 @@ impl DfnShared {
         self.starts.load(Ordering::Relaxed)
     }
 
+    /// O tempo médio por quadro medido agora (ms).
+    pub fn frame_ns_ms(&self) -> f64 {
+        self.frame_ns.load(Ordering::Relaxed) as f64 / 1e6
+    }
+
     /// Smoothed worker time per 10 ms frame.
     pub fn frame_time(&self) -> Duration {
         Duration::from_nanos(self.frame_ns.load(Ordering::Relaxed) as u64)
@@ -305,6 +310,12 @@ fn worker(sh: Arc<DfnShared>) {
     let mut frame = [0.0f32; FRAME];
     let mut epoch = None;
     let mut errors = 0u32;
+    // O primeiro quadro depois de carregar (e depois de cada reset) é sempre lento: é o
+    // aquecimento do modelo. Ele entrava na média como se fosse ritmo normal, e como a
+    // carência são só 50 quadros, a média ainda estava envenenada quando o orçamento era
+    // verificado — a IA máxima caía sozinha em máquinas que davam conta. Este contador
+    // ignora esses quadros na média.
+    let mut warm = 0u32;
     if model.is_some() {
         sh.loaded.store(true, Ordering::Release);
     }
@@ -315,6 +326,7 @@ fn worker(sh: Arc<DfnShared>) {
                 let t = Instant::now();
                 if epoch != Some(ep) {
                     epoch = Some(ep);
+                    warm = 0;
                     if let Err(e) = m.reset() {
                         warn!(error = %e, "IA máxima: model reset failed");
                     }
@@ -332,9 +344,14 @@ fn worker(sh: Arc<DfnShared>) {
                     std::thread::sleep(Duration::from_micros(extra as u64));
                 }
                 let ns = t.elapsed().as_nanos().min(u32::MAX as u128) as u32;
-                let avg = sh.frame_ns.load(Ordering::Relaxed);
-                let avg = if avg == 0 { ns } else { (avg as u64 * 19 / 20 + ns as u64 / 20) as u32 };
-                sh.frame_ns.store(avg, Ordering::Relaxed);
+                if warm < 20 {
+                    // Aquecimento: não conta como ritmo.
+                    warm += 1;
+                } else {
+                    let avg = sh.frame_ns.load(Ordering::Relaxed);
+                    let avg = if avg == 0 { ns } else { (avg as u64 * 19 / 20 + ns as u64 / 20) as u32 };
+                    sh.frame_ns.store(avg, Ordering::Relaxed);
+                }
                 frame.copy_from_slice(enh.as_slice().expect("contiguous"));
                 // A full output ring means the callback stopped taking frames: drop this one.
                 let _ = sh.output.push(seq, ep, &frame, 1.0);
@@ -405,6 +422,11 @@ impl DfnClient {
 
     pub(crate) fn loaded(&self) -> bool {
         self.sh.loaded()
+    }
+
+    /// O tempo médio por quadro medido agora (ms), para o log de diagnóstico.
+    pub(crate) fn frame_ns_ms(&self) -> f64 {
+        self.sh.frame_ns_ms()
     }
 
     pub(crate) fn depth(&self) -> u64 {

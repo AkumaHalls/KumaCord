@@ -12,7 +12,7 @@
 
 use std::io::Cursor;
 
-use vox_proto::UserId;
+use vox_proto::{ChannelId, UserId};
 
 use super::Auto;
 use crate::app::{App, Center, Screen};

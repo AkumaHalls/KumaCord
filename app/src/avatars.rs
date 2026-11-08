@@ -223,7 +223,7 @@ impl AvatarStore {
             AvatarReply::Image(bytes) => State::Bytes(bytes),
             AvatarReply::NotFound => State::NotFound,
             AvatarReply::Failed(why) => {
-                tracing::debug!(user, why, "avatar download failed");
+                tracing::debug!(%user, why, "avatar download failed");
                 State::Retry { at: now + RETRY_AFTER }
             }
         };
@@ -780,8 +780,8 @@ mod tests {
         out
     }
 
-    fn user(id: i64, avatar: Option<&str>) -> User {
-        User { avatar: avatar.map(Into::into), ..User::new(id, format!("u{id}")) }
+    fn user(id: UserId, avatar: Option<&str>) -> User {
+        User { avatar: avatar.map(Into::into), ..User::new(id, format!("u{}", id.0)) }
     }
 
     /// Ask for everything pending and answer it all with `reply`.
@@ -802,7 +802,7 @@ mod tests {
     fn people_without_a_picture_are_never_asked_for() {
         let (mut s, ctx, now) = (AvatarStore::default(), egui::Context::default(), Instant::now());
         s.begin_frame(now);
-        assert_eq!(s.texture(&ctx, &user(1, None), Class::Small, now), None);
+        assert_eq!(s.texture(&ctx, &user(UserId(1), None), Class::Small, now), None);
         assert!(s.take_requests().is_empty());
         assert_eq!(s.stats(), (0, 0));
     }
@@ -810,15 +810,15 @@ mod tests {
     #[test]
     fn a_picture_is_asked_once_however_often_it_is_drawn_then_shown() {
         let (mut s, ctx, now) = (AvatarStore::default(), egui::Context::default(), Instant::now());
-        let ana = user(1, Some("v1"));
+        let ana = user(UserId(1), Some("v1"));
         for _ in 0..30 {
             s.begin_frame(now);
             assert_eq!(s.texture(&ctx, &ana, Class::Small, now), None, "the initial while it loads");
         }
-        assert_eq!(s.take_requests(), vec![Request { user: 1, version: "v1".into(), class: Class::Small }]);
+        assert_eq!(s.take_requests(), vec![Request { user: UserId(1), version: "v1".into(), class: Class::Small }]);
         assert!(s.take_requests().is_empty());
         assert!(!s.answered(&ana));
-        s.on_image(1, "v1", Class::Small, AvatarReply::Image(jpeg(64, 1)), now);
+        s.on_image(UserId(1), "v1", Class::Small, AvatarReply::Image(jpeg(64, 1)), now);
         assert!(s.answered(&ana) && !s.has_picture(&ana), "answered, not decoded until drawn");
         s.begin_frame(now);
         assert!(s.texture(&ctx, &ana, Class::Small, now).is_some());
@@ -832,27 +832,27 @@ mod tests {
         let (mut s, ctx, now) = (AvatarStore::default(), egui::Context::default(), Instant::now());
         s.begin_frame(now);
         for id in 0..10 {
-            s.texture(&ctx, &user(id, Some("v")), Class::Small, now);
+            s.texture(&ctx, &user(UserId(id), Some("v")), Class::Small, now);
         }
         assert_eq!(s.take_requests().len(), MAX_IN_FLIGHT);
         assert!(s.take_requests().is_empty(), "the window is full");
-        s.on_image(0, "v", Class::Small, AvatarReply::NotFound, now);
+        s.on_image(UserId(0), "v", Class::Small, AvatarReply::NotFound, now);
         assert_eq!(s.take_requests().len(), 1);
     }
 
     #[test]
     fn the_other_size_stands_in_while_one_loads() {
         let (mut s, ctx, now) = (AvatarStore::default(), egui::Context::default(), Instant::now());
-        let ana = user(1, Some("v1"));
+        let ana = user(UserId(1), Some("v1"));
         s.begin_frame(now);
         s.texture(&ctx, &ana, Class::Small, now);
         s.take_requests();
-        s.on_image(1, "v1", Class::Small, AvatarReply::Image(jpeg(64, 1)), now);
+        s.on_image(UserId(1), "v1", Class::Small, AvatarReply::Image(jpeg(64, 1)), now);
         let small = s.texture(&ctx, &ana, Class::Small, now).expect("small is ready");
         // The big one is wanted now (a tile): until it arrives, the small picture is drawn.
         assert_eq!(s.texture(&ctx, &ana, Class::Big, now), Some(small));
-        assert_eq!(s.take_requests(), vec![Request { user: 1, version: "v1".into(), class: Class::Big }]);
-        s.on_image(1, "v1", Class::Big, AvatarReply::Image(jpeg(256, 1)), now);
+        assert_eq!(s.take_requests(), vec![Request { user: UserId(1), version: "v1".into(), class: Class::Big }]);
+        s.on_image(UserId(1), "v1", Class::Big, AvatarReply::Image(jpeg(256, 1)), now);
         let big = s.texture(&ctx, &ana, Class::Big, now).expect("big is ready");
         assert_ne!(big, small);
     }
@@ -860,7 +860,7 @@ mod tests {
     #[test]
     fn a_404_keeps_the_initial_and_is_final_for_that_version() {
         let (mut s, ctx, now) = (AvatarStore::default(), egui::Context::default(), Instant::now());
-        let ana = user(1, Some("v1"));
+        let ana = user(UserId(1), Some("v1"));
         s.begin_frame(now);
         s.texture(&ctx, &ana, Class::Small, now);
         answer_all(&mut s, now, |_| AvatarReply::NotFound);
@@ -869,15 +869,15 @@ mod tests {
         assert_eq!(s.texture(&ctx, &ana, Class::Small, later), None);
         assert!(s.take_requests().is_empty(), "not asked again, however long it takes");
         // A new version is a new picture.
-        let newer = user(1, Some("v2"));
+        let newer = user(UserId(1), Some("v2"));
         s.texture(&ctx, &newer, Class::Small, later);
-        assert_eq!(s.take_requests(), vec![Request { user: 1, version: "v2".into(), class: Class::Small }]);
+        assert_eq!(s.take_requests(), vec![Request { user: UserId(1), version: "v2".into(), class: Class::Small }]);
     }
 
     #[test]
     fn failures_are_retried_later_and_only_while_drawn() {
         let (mut s, ctx, now) = (AvatarStore::default(), egui::Context::default(), Instant::now());
-        let ana = user(1, Some("v1"));
+        let ana = user(UserId(1), Some("v1"));
         s.begin_frame(now);
         s.texture(&ctx, &ana, Class::Small, now);
         answer_all(&mut s, now, |_| AvatarReply::Failed("boom".into()));
@@ -894,32 +894,32 @@ mod tests {
     #[test]
     fn a_broken_picture_keeps_the_initial_without_looping() {
         let (mut s, ctx, now) = (AvatarStore::default(), egui::Context::default(), Instant::now());
-        let ana = user(1, Some("v1"));
+        let ana = user(UserId(1), Some("v1"));
         s.begin_frame(now);
         s.texture(&ctx, &ana, Class::Small, now);
         s.take_requests();
-        s.on_image(1, "v1", Class::Small, AvatarReply::Image(b"<html>nope</html>".to_vec()), now);
+        s.on_image(UserId(1), "v1", Class::Small, AvatarReply::Image(b"<html>nope</html>".to_vec()), now);
         for _ in 0..5 {
             s.begin_frame(now);
             assert_eq!(s.texture(&ctx, &ana, Class::Small, now), None);
         }
         assert!(s.take_requests().is_empty());
         // A picture bigger than the hub ever sends is refused too.
-        s.texture(&ctx, &user(2, Some("v")), Class::Big, now);
+        s.texture(&ctx, &user(UserId(2), Some("v")), Class::Big, now);
         s.take_requests();
-        s.on_image(2, "v", Class::Big, AvatarReply::Image(jpeg(600, 1)), now);
+        s.on_image(UserId(2), "v", Class::Big, AvatarReply::Image(jpeg(600, 1)), now);
         s.begin_frame(now);
-        assert_eq!(s.texture(&ctx, &user(2, Some("v")), Class::Big, now), None);
+        assert_eq!(s.texture(&ctx, &user(UserId(2), Some("v")), Class::Big, now), None);
     }
 
     #[test]
     fn late_answers_for_forgotten_pictures_are_harmless() {
         let (mut s, ctx, now) = (AvatarStore::default(), egui::Context::default(), Instant::now());
         s.begin_frame(now);
-        s.texture(&ctx, &user(1, Some("v1")), Class::Small, now);
+        s.texture(&ctx, &user(UserId(1), Some("v1")), Class::Small, now);
         s.take_requests();
         s.reset(); // another server
-        s.on_image(1, "v1", Class::Small, AvatarReply::Image(jpeg(64, 1)), now);
+        s.on_image(UserId(1), "v1", Class::Small, AvatarReply::Image(jpeg(64, 1)), now);
         assert_eq!(s.stats(), (0, 0));
         assert!(s.take_requests().is_empty());
     }
@@ -927,7 +927,7 @@ mod tests {
     #[test]
     fn idle_textures_are_freed_and_come_back_from_the_kept_bytes() {
         let (mut s, ctx, now) = (AvatarStore::default(), egui::Context::default(), Instant::now());
-        let ana = user(1, Some("v1"));
+        let ana = user(UserId(1), Some("v1"));
         s.begin_frame(now);
         s.texture(&ctx, &ana, Class::Small, now);
         answer_all(&mut s, now, |_| AvatarReply::Image(jpeg(64, 1)));
@@ -950,7 +950,7 @@ mod tests {
         for id in 0..people {
             let t = now + Duration::from_millis(id as u64);
             s.begin_frame(t);
-            let u = user(id, Some("v"));
+            let u = user(UserId(id), Some("v"));
             s.texture(&ctx, &u, Class::Small, t);
             answer_all(&mut s, t, |_| AvatarReply::Image(jpeg(64, 1)));
             s.texture(&ctx, &u, Class::Small, t);
@@ -961,8 +961,8 @@ mod tests {
         let (entries, textures) = s.stats();
         assert_eq!((entries, textures), (MAX_ENTRIES, MAX_TEXTURES));
         // The most recently seen kept their textures; the oldest were dropped first.
-        assert!(s.has_picture(&user(people - 1, Some("v"))));
-        assert!(!s.answered(&user(0, Some("v"))));
+        assert!(s.has_picture(&user(UserId(people - 1), Some("v"))));
+        assert!(!s.answered(&user(UserId(0), Some("v"))));
     }
 
     #[test]

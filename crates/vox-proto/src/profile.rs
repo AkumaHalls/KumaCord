@@ -386,11 +386,11 @@ pub fn clean_status(emoji: &str, text: &str, expires_in_secs: Option<u64>, now_m
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Role, ServerEvent};
+    use crate::{ChannelId, MessageId, Role, ServerEvent, UserId};
 
     #[test]
     fn shown_name_falls_back_to_the_username() {
-        let mut u = User::new(1, "ana");
+        let mut u = User::new(UserId(1), "ana");
         assert_eq!(u.shown_name(), "ana");
         u.display_name = Some("Ana Maria".into());
         assert_eq!(u.shown_name(), "Ana Maria");
@@ -503,7 +503,7 @@ mod tests {
         let p: UserProfile = serde_json::from_str(r#"{"user":{"id":3,"username":"ana"}}"#).unwrap();
         assert_eq!((p.bio.as_str(), p.accent, p.status, p.presence, p.online, p.member_since_ms), ("", None, None, Presence::Online, false, 0));
         let full = UserProfile {
-            user: User { id: 3, username: "ana".into(), role: Role::Admin, flags: 0, role_ids: Vec::new(), avatar: None, display_name: Some("Ana".into()), banner: None },
+            user: User { id: UserId(3), username: "ana".into(), role: Role::Admin, flags: 0, role_ids: Vec::new(), avatar: None, display_name: Some("Ana".into()), banner: None },
             bio: "oi".into(),
             accent: Some("#112233".into()),
             status: Some(CustomStatus { emoji: "🎮".into(), text: "x".into(), expires_at_ms: Some(5) }),
@@ -544,10 +544,10 @@ mod tests {
 
     #[test]
     fn a_user_without_a_display_name_serialises_exactly_as_v052() {
-        let new = User { id: 7, username: "Ana".into(), role: Role::Moderator, flags: 0, role_ids: Vec::new(), avatar: Some("ab".into()), display_name: None, banner: None };
-        let old = v052::User { id: 7, username: "Ana".into(), role: Role::Moderator, avatar: Some("ab".into()) };
+        let new = User { id: UserId(7), username: "Ana".into(), role: Role::Moderator, flags: 0, role_ids: Vec::new(), avatar: Some("ab".into()), display_name: None, banner: None };
+        let old = v052::User { id: UserId(7), username: "Ana".into(), role: Role::Moderator, avatar: Some("ab".into()) };
         assert_eq!(serde_json::to_string(&new).unwrap(), serde_json::to_string(&old).unwrap());
-        assert_eq!(serde_json::to_string(&User::new(7, "Ana")).unwrap(), r#"{"id":7,"username":"Ana"}"#);
+        assert_eq!(serde_json::to_string(&User::new(UserId(7), "Ana")).unwrap(), r#"{"id":7,"username":"Ana"}"#);
         // And an old hub's JSON reads with no display name.
         let back: User = serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
         assert_eq!(back, new);
@@ -555,19 +555,19 @@ mod tests {
 
     #[test]
     fn a_display_name_is_ignored_by_the_v052_shapes() {
-        let mut u = User::new(7, "ana");
+        let mut u = User::new(UserId(7), "ana");
         u.display_name = Some("Ana Maria".into());
         let json = serde_json::to_string(&u).unwrap();
         assert!(json.contains(r#""display_name":"Ana Maria""#));
         let old: v052::User = serde_json::from_str(&json).unwrap();
-        assert_eq!((old.id, old.username.as_str()), (7, "ana"));
+        assert_eq!((old.id, old.username.as_str()), (UserId(7), "ana"));
         assert_eq!(serde_json::from_str::<User>(&json).unwrap(), u);
         // Inside the events an old client understands.
         for ev in [
             ServerEvent::UserOnline { user: u.clone() },
             ServerEvent::UserUpdated { user: u.clone() },
             ServerEvent::Ready { user: u.clone(), channels: vec![], online: vec![u.clone()], voice: vec![], account: None, chat: None, server_id: None, custom_roles: None, categories: None },
-            ServerEvent::MessageCreated { message: crate::Message { id: 1, channel_id: 2, author: u.clone(), content: "oi".into(), created_at_ms: 3, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] } },
+            ServerEvent::MessageCreated { message: crate::Message { id: MessageId(1), channel_id: ChannelId(2), author: u.clone(), content: "oi".into(), created_at_ms: 3, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] } },
         ] {
             let json = serde_json::to_string(&ev).unwrap();
             assert!(serde_json::from_str::<v052::ServerEvent>(&json).is_ok(), "{json}");
@@ -576,21 +576,21 @@ mod tests {
 
     #[test]
     fn presence_changed_is_unknown_to_v052_clients_which_skip_it() {
-        let ev = ServerEvent::PresenceChanged { user_id: 4, presence: Presence::Dnd, status: Some(CustomStatus { text: "x".into(), ..Default::default() }) };
+        let ev = ServerEvent::PresenceChanged { user_id: UserId(4), presence: Presence::Dnd, status: Some(CustomStatus { text: "x".into(), ..Default::default() }) };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(serde_json::from_str::<v052::ServerEvent>(&json).is_err());
         assert!(serde_json::from_str::<ServerEvent>(&json).is_ok());
         // Every other event keeps its shape: Ready has no presence field at all.
-        let ready = ServerEvent::Ready { user: User::new(1, "a"), channels: vec![], online: vec![], voice: vec![], account: None, chat: None, server_id: None, custom_roles: None, categories: None };
+        let ready = ServerEvent::Ready { user: User::new(UserId(1), "a"), channels: vec![], online: vec![], voice: vec![], account: None, chat: None, server_id: None, custom_roles: None, categories: None };
         assert!(!serde_json::to_string(&ready).unwrap().contains("presence"));
     }
 
     #[test]
     fn presence_changed_wire_shape() {
-        let ev = ServerEvent::PresenceChanged { user_id: 4, presence: Presence::Away, status: None };
+        let ev = ServerEvent::PresenceChanged { user_id: UserId(4), presence: Presence::Away, status: None };
         assert_eq!(serde_json::to_string(&ev).unwrap(), r#"{"type":"presence_changed","user_id":4,"presence":"away"}"#);
-        let with = ServerEvent::PresenceChanged { user_id: 4, presence: Presence::Online, status: Some(CustomStatus { emoji: "🎮".into(), ..Default::default() }) };
+        let with = ServerEvent::PresenceChanged { user_id: UserId(4), presence: Presence::Online, status: Some(CustomStatus { emoji: "🎮".into(), ..Default::default() }) };
         let back: ServerEvent = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
-        assert!(matches!(back, ServerEvent::PresenceChanged { user_id: 4, status: Some(s), .. } if s.emoji == "🎮"));
+        assert!(matches!(back, ServerEvent::PresenceChanged { user_id: UserId(4), status: Some(s), .. } if s.emoji == "🎮"));
     }
 }

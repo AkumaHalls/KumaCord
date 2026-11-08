@@ -20,6 +20,7 @@ use crate::linkpreview::{LinkPreviews, RateLimited};
 use crate::livekit_token;
 use crate::state::AppState;
 use crate::util::{now_ms, random_hex, sha256_hex};
+use crate::voice_guard::VoiceGuard;
 use crate::{admin, avatar, db, owner, profile, sounds, ws};
 
 pub fn router(state: AppState) -> Router {
@@ -326,7 +327,7 @@ async fn login(
         return Err(invite_name_taken());
     }
     s.throttle.succeed(&ip);
-    crate::invites::take_use(&s, admission).await?;
+    crate::invites::take_use(&s, admission.clone()).await?;
 
     let token = random_hex::<32>();
     let hash = sha256_hex(&token);
@@ -348,7 +349,7 @@ async fn login(
         let why = if b.reason.trim().is_empty() { String::new() } else { format!(" Motivo: {}.", b.reason.trim()) };
         return Err(ApiErr::new(StatusCode::FORBIDDEN, format!("Você foi banido deste servidor.{why}")));
     }
-    crate::invites::finish_login(&s, admission, row.id).await?;
+    crate::invites::finish_login(&s, admission.clone(), row.id).await?;
     // Private channels (v0.9): a new account, or one whose password state changed outside this hub
     // (`--reset-password`), counts with its role as it is now.
     crate::access::reload_roles(&s).await;
@@ -378,7 +379,7 @@ async fn login(
     // v1.1: the login response carries this user's custom roles (they colour everything).
     let id_for_roles = row.id;
     user.role_ids = s.db.call(move |c| db::custom_role_ids(c, id_for_roles)).await?;
-    tracing::info!(%peer, user = %user.username, id = user.id, role = ?user.role, ?proof, ?admission, must_set_password = row.must_set_password(&owner), "login");
+    tracing::info!(%peer, user = %user.username, id = %user.id, role = ?user.role, ?proof, ?admission, must_set_password = row.must_set_password(&owner), "login");
     Ok(Json(LoginResponse { token, user, server_name: s.cfg.server_name.clone(), device_token }))
 }
 
@@ -405,7 +406,7 @@ async fn messages(
     }
     let limit = q.limit.unwrap_or(50).clamp(1, 100);
     let owner = s.owner().to_string();
-    Ok(Json(s.db.call(move |c| db::list_messages(c, id, q.before, limit, &owner)).await?))
+    Ok(Json(s.db.call(move |c| db::list_messages(c, *id, q.before.map(|m| *m), limit, &owner)).await?))
 }
 
 /// The largest body `POST /api/channels/{id}/messages` reads (v1.0.1): 4000 characters of text,
@@ -440,7 +441,7 @@ async fn post_message(
     let draft = crate::chat::Draft { mentions: req.mentions, reply_to: req.reply_to, reply_mention: req.reply_mention, access: Some(s.access.rules()) };
     let message = s
         .db
-        .call(move |c| db::insert_message_with(c, id, &author, &caption, &ids, &draft, &owner))
+        .call(move |c| db::insert_message_with(c, *id, &author, &caption, &ids, &draft, &owner))
         .await?
         .map_err(crate::attachments::link_err)?;
     s.send_channel(id, &ServerEvent::MessageCreated { message: message.clone() });
@@ -466,7 +467,7 @@ async fn voice_join(
     // A server-muted member (item 12) gets a token that does not allow the microphone at all.
     let server_muted = s.is_server_muted(user.id);
     let token = livekit_token::join_token_with(&lk.api_key, &lk.api_secret, &room, &user.id.to_string(), &user.username, now_ms() / 1000, server_muted);
-    s.voice_guard.issued(user.id);
+    VoiceGuard::issued(&s, user.id).await;
     let livekit_url = livekit_url(&headers, &s.cfg);
     tracing::info!(user = %user.username, room, url = %livekit_url, server_muted, "voice join");
     Ok(Json(VoiceJoinResponse { livekit_url, livekit_token: token, room }))

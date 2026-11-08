@@ -140,7 +140,7 @@ async fn a_v060_database_gets_images_and_stays_usable() {
     // A v0.6.0 hub has no images: the 404 is how a new app knows to hide the clip button.
     let r = http.get(format!("http://127.0.0.1:{port}/api/attachments/limits")).bearer_auth(&bt).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
-    say(port, &bt, geral, "oi do v0.6.0").await;
+    say(port, &bt, geral.into_inner(), "oi do v0.6.0").await;
     let dm: Value = http.post(format!("http://127.0.0.1:{port}/api/dms/{carla_id}")).bearer_auth(&bt).json(&json!({})).send().await.unwrap().json().await.unwrap();
     let dm_id = dm["id"].as_i64().unwrap();
     let r = http.post(format!("http://127.0.0.1:{port}/api/dms/{dm_id}/messages")).bearer_auth(&bt).json(&json!({"content": "dm do v0.6.0"})).send().await.unwrap();
@@ -165,13 +165,13 @@ async fn a_v060_database_gets_images_and_stays_usable() {
             let r = http.get(format!("{base}/api/attachments/limits")).bearer_auth(&bt).send().await.unwrap();
             assert_eq!(r.status(), StatusCode::OK);
             let a: Attachment = http.post(format!("{base}/api/attachments")).bearer_auth(&bt).body(photo()).send().await.unwrap().json().await.unwrap();
-            image_id = a.id;
+            image_id = a.id.into_inner();
             let r = http.post(format!("{base}/api/channels/{geral}/messages")).bearer_auth(&bt).json(&json!({"content": "foto nova", "attachments": [a.id]})).send().await.unwrap();
             assert_eq!(r.status(), StatusCode::OK);
         } else {
             // Second start: the message, its image and the file are still there.
             assert_eq!(msgs[0].caption(), "foto nova");
-            assert_eq!(msgs[0].attachments[0].id, image_id);
+            assert_eq!(msgs[0].attachments[0].id, AttachmentId(image_id));
             let r = http.get(format!("{base}/api/attachments/{image_id}")).bearer_auth(&ct).send().await.unwrap();
             assert_eq!(r.status(), StatusCode::OK);
             assert_eq!(r.bytes().await.unwrap().len() as u64, msgs[0].attachments[0].size);
@@ -206,6 +206,6 @@ async fn a_v060_database_gets_images_and_stays_usable() {
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0]["content"], "foto nova\n[imagem]", "an old hub shows the caption and the marker");
     assert!(msgs[0].get("attachments").is_none());
-    say(port, dani["token"].as_str().unwrap(), geral, "de volta ao v0.6.0").await;
+    say(port, dani["token"].as_str().unwrap(), geral.into_inner(), "de volta ao v0.6.0").await;
     drop(old);
 }

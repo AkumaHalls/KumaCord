@@ -35,6 +35,7 @@ use std::time::Instant;
 
 use vox_proto::{ChannelId, UserId};
 
+use crate::db;
 use crate::livekit_admin::LkError;
 use crate::state::AppState;
 use crate::util::now_ms;
@@ -69,25 +70,27 @@ pub struct VoiceGuard {
 }
 
 #[derive(Default)]
-struct Inner {
+pub struct Inner {
     /// (user, room) -> when the person was first seen there without being listed.
-    unlisted: HashMap<(UserId, String), Instant>,
+    pub unlisted: HashMap<(UserId, String), Instant>,
     /// user -> when they were last revoked (ms).
-    revoked_at: HashMap<UserId, i64>,
+    pub revoked_at: HashMap<UserId, i64>,
     /// user -> when the hub last gave them a join token (ms).
-    issued_at: HashMap<UserId, i64>,
+    pub issued_at: HashMap<UserId, i64>,
     /// Check every `voice_check_fast` until then ([`watch_closely`]).
-    close_until: Option<Instant>,
+    pub close_until: Option<Instant>,
 }
 
 impl VoiceGuard {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The hub just gave `user` a join token.
-    pub fn issued(&self, user: UserId) {
-        self.lock().issued_at.insert(user, now_ms());
+    pub async fn issued(s: &AppState, user: UserId) {
+        let now = now_ms();
+        s.voice_guard.lock().issued_at.insert(user, now);
+        let _ = s.db.call(move |c| db::save_voice_issued_at(c, user, now)).await;
     }
 
     /// Would a participant session of `user` that joined at `joined_at` (unix seconds) be using a
@@ -104,8 +107,10 @@ impl VoiceGuard {
 
 /// `user` was taken out of voice (disconnect, move) or lost their sessions (password reset): a
 /// participant session that joins after this with an older token is removed at once.
-pub fn revoke(s: &AppState, user: UserId) {
-    s.voice_guard.lock().revoked_at.insert(user, now_ms());
+pub async fn revoke(s: &AppState, user: UserId) {
+    let now = now_ms();
+    s.voice_guard.lock().revoked_at.insert(user, now);
+    let _ = s.db.call(move |c| db::save_voice_revocation(c, user, now)).await;
     watch_closely(s);
 }
 
@@ -231,14 +236,14 @@ pub async fn check(s: &AppState) {
     for act in acts {
         match act {
             Act::Remove { room, user, why } => {
-                tracing::warn!(room, user, why, "voice check: participant removed");
+                tracing::warn!(room = %room, user = %user, why, "voice check: participant removed");
                 s.voice_guard.lock().unlisted.remove(&(user, room.clone()));
                 if let Err(LkError::Other(e)) = s.livekit.remove(&room, &user.to_string()).await {
                     tracing::warn!(room, error = %e, "voice check: removing failed");
                 }
             }
             Act::TakeMic { room, user } => {
-                tracing::warn!(room, user, "voice check: server-muted participant could still publish a microphone");
+                tracing::warn!(room = %room, user = %user, "voice check: server-muted participant could still publish a microphone");
                 if let Err(LkError::Other(e)) = crate::admin::sync_mic_permission(s, user, &room).await {
                     tracing::warn!(room, error = %e, "voice check: server mute failed");
                 }
@@ -268,24 +273,24 @@ mod tests {
 
     #[test]
     fn room_names() {
-        assert_eq!(RoomKind::parse("voice-12"), Some(RoomKind::Voice(12)));
-        assert_eq!(RoomKind::parse("dm-3-9"), Some(RoomKind::Dm(3, 9)));
+        assert_eq!(RoomKind::parse("voice-12"), Some(RoomKind::Voice(ChannelId(12))));
+        assert_eq!(RoomKind::parse("dm-3-9"), Some(RoomKind::Dm(UserId(3), UserId(9))));
         assert_eq!(RoomKind::parse("voice-x"), None);
         assert_eq!(RoomKind::parse("dm-3"), None);
         assert_eq!(RoomKind::parse("other"), None);
-        assert_eq!(voice_room(4), "voice-4");
+        assert_eq!(voice_room(ChannelId(4)), "voice-4");
     }
 
     #[test]
     fn tokens_from_before_a_revocation_are_stale() {
         let g = VoiceGuard::default();
-        assert!(!g.stale_token(1, 0), "never revoked");
-        g.lock().revoked_at.insert(1, 10_000);
-        g.lock().issued_at.insert(1, 9_000);
-        assert!(g.stale_token(1, 10), "joined after the revocation with an older token");
-        assert!(!g.stale_token(1, 8), "the session from before (removed by the revocation itself)");
-        g.lock().issued_at.insert(1, 10_500);
-        assert!(!g.stale_token(1, 11), "a token issued after the revocation is fine");
-        assert!(!g.stale_token(2, 11), "somebody else");
+        assert!(!g.stale_token(UserId(1), 0), "never revoked");
+        g.lock().revoked_at.insert(UserId(1), 10_000);
+        g.lock().issued_at.insert(UserId(1), 9_000);
+        assert!(g.stale_token(UserId(1), 10), "joined after the revocation with an older token");
+        assert!(!g.stale_token(UserId(1), 8), "the session from before (removed by the revocation itself)");
+        g.lock().issued_at.insert(UserId(1), 10_500);
+        assert!(!g.stale_token(UserId(1), 11), "a token issued after the revocation is fine");
+        assert!(!g.stale_token(UserId(2), 11), "somebody else");
     }
 }

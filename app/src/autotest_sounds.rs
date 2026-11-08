@@ -254,7 +254,7 @@ impl Auto {
             }
             7 => {
                 if self.snd_saw(app, "b-listed") && self.snd_can_play() {
-                    let id = self.sound.ids[0];
+                    let id = self.sound.ids[0].clone();
                     self.snd_play(app, id);
                     self.goto(8, "played the first sound");
                 } else if self.waited(60) {
@@ -280,7 +280,7 @@ impl Auto {
             9 => {
                 let b_deaf = app.voice_members.values().any(|m| Some(m.user.id) != app.my_id() && m.deafened);
                 if self.snd_saw(app, "b-deaf") && b_deaf && self.snd_can_play() {
-                    let id = self.sound.ids[0];
+                    let id = self.sound.ids[0].clone();
                     self.snd_play(app, id);
                     self.goto(10, "played while B is deafened");
                 } else if self.waited(40) {
@@ -297,7 +297,7 @@ impl Auto {
             }
             11 => {
                 if self.snd_saw(app, "b-muted-ready") && self.snd_can_play() {
-                    let id = self.sound.ids[0];
+                    let id = self.sound.ids[0].clone();
                     self.snd_play(app, id);
                     self.goto(12, "played while B has the soundboard muted");
                 } else if self.waited(40) {
@@ -307,7 +307,7 @@ impl Auto {
             12 => {
                 if self.snd_saw(app, "b-muted-ok") {
                     app.sb.message = None;
-                    app.backend.send(Cmd::Sound(SoundCmd::Rename { id: self.sound.ids[0], name: "bipe novo".into(), emoji: "🎺".into() }));
+                    app.backend.send(Cmd::Sound(SoundCmd::Rename { id: self.sound.ids[0].clone(), name: "bipe novo".into(), emoji: "🎺".into() }));
                     self.goto(13, "renamed the first sound");
                 } else if self.waited(40) {
                     return self.fail("B did not confirm the soundboard mute");
@@ -315,7 +315,7 @@ impl Auto {
             }
             13 => {
                 if self.snd_saw(app, "b-forbidden") {
-                    let id = self.sound.ids[1];
+                    let id = self.sound.ids[1].clone();
                     app.backend.send(Cmd::Sound(SoundCmd::Delete(id)));
                     self.goto(14, "B could not delete my sound; deleting the second sound");
                 } else if self.waited(40) {
@@ -361,7 +361,7 @@ impl Auto {
                     }
                 }
                 if self.snd_can_play() && self.waited(3) {
-                    let id = app.sb.sounds[0].id;
+                    let id = app.sb.sounds[0].id.clone();
                     self.snd_play(app, id);
                 }
                 if self.waited(60) {
@@ -447,7 +447,7 @@ impl Auto {
             }
             7 => {
                 if app.sb.played.len() > self.sound.plays_before {
-                    let p = app.sb.played[self.sound.plays_before];
+                    let p = &app.sb.played[self.sound.plays_before];
                     if p.2 != Heard::Deafened {
                         return self.fail(&format!("deafened, but the play was {:?}", p.2));
                     }
@@ -485,7 +485,7 @@ impl Auto {
             }
             11 => {
                 if app.sb.played.len() > self.sound.plays_before {
-                    let p = app.sb.played[self.sound.plays_before];
+                    let p = &app.sb.played[self.sound.plays_before];
                     if p.2 != Heard::Muted {
                         return self.fail(&format!("soundboard muted, but the play was {:?}", p.2));
                     }
@@ -506,7 +506,7 @@ impl Auto {
             13 => {
                 if app.sb.sounds.iter().any(|s| s.name == "bipe novo") {
                     // Not mine: the delete must be refused.
-                    let Some(other) = app.sb.sounds.iter().find(|s| s.name == "vorbis").map(|s| s.id) else {
+                    let Some(other) = app.sb.sounds.iter().find(|s| s.name == "vorbis").map(|s| s.id.clone()) else {
                         return self.fail("the second sound is gone too early");
                     };
                     app.sb.message = None;
@@ -665,7 +665,7 @@ impl Auto {
             }
             5 => {
                 if app.sb.uploaded_ok >= 1 && app.sb.sounds.len() == self.sound.base + 1 {
-                    let Some(s) = app.sb.sounds.iter().filter(|s| s.name == format!("trecho {}", self.args.run_id)).max_by_key(|s| s.id).cloned() else { return self.fail("the uploaded sound is not in the list") };
+                    let Some(s) = app.sb.sounds.iter().filter(|s| s.name == format!("trecho {}", self.args.run_id)).max_by_key(|s| s.id.clone()).cloned() else { return self.fail("the uploaded sound is not in the list") };
                     log(&format!("selection uploaded: {:?} {} ms, {} bytes", s.name, s.duration_ms, s.size));
                     if !(3_100..=3_300).contains(&s.duration_ms) || s.size > 400_000 {
                         return self.fail(&format!("the hub stored {} ms / {} bytes, expected about 3.2 s", s.duration_ms, s.size));

@@ -212,7 +212,7 @@ impl Shared {
     }
 
     /// Any channel, private or not: only for code that checks access itself (or is Admin+ only).
-    pub fn channel(&self, id: i64) -> Option<Channel> {
+    pub fn channel(&self, id: ChannelId) -> Option<Channel> {
         self.channels.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|c| c.id == id).cloned()
     }
 
@@ -590,7 +590,7 @@ impl Shared {
     /// Would this voice state change nothing (same room, same flags)? Such a frame is dropped
     /// before the rate limit.
     #[allow(clippy::too_many_arguments)]
-    pub fn voice_unchanged(&self, user: UserId, channel_id: Option<i64>, muted: bool, deafened: bool, streaming: bool, camera: bool, audio_only: bool) -> bool {
+    pub fn voice_unchanged(&self, user: UserId, channel_id: Option<ChannelId>, muted: bool, deafened: bool, streaming: bool, camera: bool, audio_only: bool) -> bool {
         let g = self.lock();
         match (g.voice.get(&user), channel_id) {
             (None, None) => true,
@@ -622,7 +622,7 @@ impl Shared {
     pub fn set_voice(
         &self,
         user: &User,
-        channel_id: Option<i64>,
+        channel_id: Option<ChannelId>,
         muted: bool,
         deafened: bool,
         streaming: bool,

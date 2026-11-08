@@ -10,7 +10,7 @@
 //!
 //! Generated pictures only (never anybody's real images); silent (no sound, no microphone).
 
-use vox_proto::{Attachment, UserId};
+use vox_proto::{Attachment, ChannelId, UserId};
 
 use super::Auto;
 use crate::app::App;
@@ -18,7 +18,7 @@ use crate::chat_images::Target;
 
 #[derive(Default)]
 pub struct State {
-    channel: Option<i64>,
+    channel: Option<ChannelId>,
     atts: Vec<Attachment>,
     author: Option<UserId>,
 }
@@ -75,7 +75,7 @@ impl Auto {
     }
 
     /// Logged in and the hub's answer about images arrived. `Some(Err)` = failed.
-    fn img_ready(&mut self, app: &mut App) -> Option<Result<i64, i32>> {
+    fn img_ready(&mut self, app: &mut App) -> Option<Result<ChannelId, i32>> {
         if !self.logged_in(app) || !app.images.supported {
             if self.waited(30) {
                 let why = if self.logged_in(app) { "the hub does not accept images" } else { "could not log in" };
@@ -142,11 +142,12 @@ impl Auto {
                 }
             }
             3 => {
-                let (ch, tag) = (self.img.channel.unwrap_or_default(), self.img_tag("fotos"));
-                let mine = app.logs.get(&ch).and_then(|l| l.msgs.iter().find(|m| m.caption() == tag).cloned());
+                let ch_id = self.img.channel.unwrap_or_default();
+                let tag = self.img_tag("fotos");
+                let mine = app.logs.get(&ch_id).and_then(|l| l.msgs.iter().find(|m| m.caption() == tag).cloned());
                 match mine {
                     Some(m) if m.attachments.len() == 2 && app.images.sent == 1 => {
-                        if app.images.pending_for(Target::Channel(ch)) != 0 {
+                        if app.images.pending_for(Target::Channel(ch_id)) != 0 {
                             return self.fail("the strip still has pictures after sending");
                         }
                         log(&format!("message {} has images {:?}", m.id, m.attachments.iter().map(|a| (a.id, a.width, a.height, a.size)).collect::<Vec<_>>()));
@@ -184,8 +185,9 @@ impl Auto {
                 None => {}
             },
             2 => {
-                let (ch, tag) = (self.img.channel.unwrap_or_default(), self.img_tag("fotos"));
-                if let Some(m) = app.logs.get(&ch).and_then(|l| l.msgs.iter().find(|m| m.caption() == tag)) {
+                let ch_id = self.img.channel.unwrap_or_default();
+                let tag = self.img_tag("fotos");
+                if let Some(m) = app.logs.get(&ch_id).and_then(|l| l.msgs.iter().find(|m| m.caption() == tag)) {
                     if m.attachments.len() != 2 {
                         return self.fail(&format!("A's message has {} images", m.attachments.len()));
                     }

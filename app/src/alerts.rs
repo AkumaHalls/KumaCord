@@ -218,74 +218,74 @@ impl AlertPolicy {
 mod tests {
     use super::*;
 
-    fn user(id: i64) -> User {
+    fn user(id: UserId) -> User {
         User::new(id, format!("u{id}"))
     }
 
-    fn member(id: i64, channel: Option<i64>, streaming: bool) -> VoiceMember {
+    fn member(id: UserId, channel: Option<ChannelId>, streaming: bool) -> VoiceMember {
         VoiceMember { user: user(id), channel_id: channel, muted: false, deafened: false, streaming, watching: vec![], camera: false, server_muted: false, audio_only: false }
     }
 
-    const ME: Option<UserId> = Some(1);
+    const ME: Option<UserId> = Some(UserId(1));
 
     #[test]
     fn someone_joining_or_leaving_my_channel() {
-        let here = Some(10);
+        let here = Some(ChannelId(10));
         // Not in voice: nothing.
-        assert_eq!(voice_alert(ME, None, None, &member(2, Some(10), false)), None);
+        assert_eq!(voice_alert(ME, None, None, &member(UserId(2), Some(ChannelId(10)), false)), None);
         // Joins my channel (new person, or coming from another channel).
-        assert_eq!(voice_alert(ME, here, None, &member(2, Some(10), false)), Some(AlertKind::Join));
-        assert_eq!(voice_alert(ME, here, Some(&member(2, Some(11), false)), &member(2, Some(10), false)), Some(AlertKind::Join));
+        assert_eq!(voice_alert(ME, here, None, &member(UserId(2), Some(ChannelId(10)), false)), Some(AlertKind::Join));
+        assert_eq!(voice_alert(ME, here, Some(&member(UserId(2), Some(ChannelId(11)), false)), &member(UserId(2), Some(ChannelId(10)), false)), Some(AlertKind::Join));
         // Leaves (to nothing, or to another channel).
-        assert_eq!(voice_alert(ME, here, Some(&member(2, Some(10), false)), &member(2, None, false)), Some(AlertKind::Leave));
-        assert_eq!(voice_alert(ME, here, Some(&member(2, Some(10), false)), &member(2, Some(11), false)), Some(AlertKind::Leave));
+        assert_eq!(voice_alert(ME, here, Some(&member(UserId(2), Some(ChannelId(10)), false)), &member(UserId(2), None, false)), Some(AlertKind::Leave));
+        assert_eq!(voice_alert(ME, here, Some(&member(UserId(2), Some(ChannelId(10)), false)), &member(UserId(2), Some(ChannelId(11)), false)), Some(AlertKind::Leave));
         // Other channels are none of my business.
-        assert_eq!(voice_alert(ME, here, Some(&member(2, Some(11), false)), &member(2, Some(12), false)), None);
-        assert_eq!(voice_alert(ME, here, None, &member(2, Some(11), false)), None);
+        assert_eq!(voice_alert(ME, here, Some(&member(UserId(2), Some(ChannelId(11)), false)), &member(UserId(2), Some(ChannelId(12)), false)), None);
+        assert_eq!(voice_alert(ME, here, None, &member(UserId(2), Some(ChannelId(11)), false)), None);
         // A person already in the room changing mute / deafen is not a join.
-        let mut muted = member(2, Some(10), false);
+        let mut muted = member(UserId(2), Some(ChannelId(10)), false);
         muted.muted = true;
-        assert_eq!(voice_alert(ME, here, Some(&member(2, Some(10), false)), &muted), None);
+        assert_eq!(voice_alert(ME, here, Some(&member(UserId(2), Some(ChannelId(10)), false)), &muted), None);
         // My own state is handled by my own actions.
-        assert_eq!(voice_alert(ME, here, None, &member(1, Some(10), false)), None);
+        assert_eq!(voice_alert(ME, here, None, &member(UserId(1), Some(ChannelId(10)), false)), None);
     }
 
     #[test]
     fn live_starting_and_stopping_in_my_channel() {
-        let here = Some(10);
-        let off = member(2, Some(10), false);
-        let on = member(2, Some(10), true);
+        let here = Some(ChannelId(10));
+        let off = member(UserId(2), Some(ChannelId(10)), false);
+        let on = member(UserId(2), Some(ChannelId(10)), true);
         assert_eq!(voice_alert(ME, here, Some(&off), &on), Some(AlertKind::StreamStart));
         assert_eq!(voice_alert(ME, here, Some(&on), &off), Some(AlertKind::StreamStop));
         assert_eq!(voice_alert(ME, here, Some(&on), &on), None);
         // Going live in some other room: silence. Joining while live: just the join.
-        assert_eq!(voice_alert(ME, here, Some(&member(2, Some(11), false)), &member(2, Some(11), true)), None);
+        assert_eq!(voice_alert(ME, here, Some(&member(UserId(2), Some(ChannelId(11)), false)), &member(UserId(2), Some(ChannelId(11)), true)), None);
         assert_eq!(voice_alert(ME, here, None, &on), Some(AlertKind::Join));
         // Leaving while live: just the leave.
-        assert_eq!(voice_alert(ME, here, Some(&on), &member(2, None, false)), Some(AlertKind::Leave));
+        assert_eq!(voice_alert(ME, here, Some(&on), &member(UserId(2), None, false)), Some(AlertKind::Leave));
     }
 
     #[test]
     fn someone_starting_to_watch_my_live() {
-        let here = Some(10);
-        let watching = |id: i64, ch: i64, w: &[i64]| VoiceMember { watching: w.to_vec(), ..member(id, Some(ch), false) };
-        let none = watching(2, 10, &[]);
-        let mine = watching(2, 10, &[1]);
+        let here = Some(ChannelId(10));
+        let watching = |id: UserId, ch: ChannelId, w: &[UserId]| VoiceMember { watching: w.to_vec(), ..member(id, Some(ch), false) };
+        let none = watching(UserId(2), ChannelId(10), &[]);
+        let mine = watching(UserId(2), ChannelId(10), &[UserId(1)]);
         // Starts watching me: one sound; already watching (mute flip): none; stops: none.
         assert_eq!(viewer_alert(ME, here, true, Some(&none), &mine), Some(AlertKind::Viewer));
         assert_eq!(viewer_alert(ME, here, true, None, &mine), Some(AlertKind::Viewer));
         assert_eq!(viewer_alert(ME, here, true, Some(&mine), &mine), None);
         assert_eq!(viewer_alert(ME, here, true, Some(&mine), &none), None);
         // Watching somebody else's stream is not my business; neither is it when I am not live.
-        assert_eq!(viewer_alert(ME, here, true, Some(&none), &watching(2, 10, &[3])), None);
+        assert_eq!(viewer_alert(ME, here, true, Some(&none), &watching(UserId(2), ChannelId(10), &[UserId(3)])), None);
         assert_eq!(viewer_alert(ME, here, false, Some(&none), &mine), None);
         assert_eq!(viewer_alert(ME, None, true, Some(&none), &mine), None);
         // Other rooms (stale data) and myself never count.
-        assert_eq!(viewer_alert(ME, here, true, None, &watching(2, 11, &[1])), None);
-        assert_eq!(viewer_alert(ME, here, true, None, &watching(1, 10, &[1])), None);
+        assert_eq!(viewer_alert(ME, here, true, None, &watching(UserId(2), ChannelId(11), &[UserId(1)])), None);
+        assert_eq!(viewer_alert(ME, here, true, None, &watching(UserId(1), ChannelId(10), &[UserId(1)])), None);
         assert_eq!(viewer_alert(None, here, true, None, &mine), None);
         // The viewer list changing around me (another viewer arrives) does not re-trigger for me.
-        assert_eq!(viewer_alert(ME, here, true, Some(&watching(2, 10, &[1])), &watching(2, 10, &[1, 3])), None);
+        assert_eq!(viewer_alert(ME, here, true, Some(&watching(UserId(2), ChannelId(10), &[UserId(1)])), &watching(UserId(2), ChannelId(10), &[UserId(1), UserId(3)])), None);
     }
 
     #[test]
@@ -294,29 +294,29 @@ mod tests {
         let mut p = AlertPolicy::default();
         // After a (re)connect snapshot everybody's watch re-announces: silent.
         p.on_snapshot(t0);
-        assert!(!p.admit(t0 + Duration::from_millis(500), AlertKind::Viewer, 2));
+        assert!(!p.admit(t0 + Duration::from_millis(500), AlertKind::Viewer, UserId(2)));
         let t = t0 + SNAPSHOT_QUIET;
-        assert!(p.admit(t, AlertKind::Viewer, 2));
+        assert!(p.admit(t, AlertKind::Viewer, UserId(2)));
         // Two people joining my stream at once: one knock. A flapping viewer: once per gap.
-        assert!(!p.admit(t + Duration::from_millis(50), AlertKind::Viewer, 3));
-        assert!(!p.admit(t + Duration::from_millis(1000), AlertKind::Viewer, 2));
-        assert!(p.admit(t + PERSON_GAP, AlertKind::Viewer, 2));
+        assert!(!p.admit(t + Duration::from_millis(50), AlertKind::Viewer, UserId(3)));
+        assert!(!p.admit(t + Duration::from_millis(1000), AlertKind::Viewer, UserId(2)));
+        assert!(p.admit(t + PERSON_GAP, AlertKind::Viewer, UserId(2)));
     }
 
     #[test]
     fn online_and_offline() {
-        assert_eq!(online_alert(ME, &user(2), false), Some(AlertKind::Online));
-        assert_eq!(online_alert(ME, &user(2), true), None, "repeat event");
-        assert_eq!(online_alert(ME, &user(1), false), None, "myself");
-        assert_eq!(offline_alert(ME, None, 2, true, None), Some(AlertKind::Offline));
-        assert_eq!(offline_alert(ME, None, 2, false, None), None, "never listed as online");
-        assert_eq!(offline_alert(ME, None, 1, true, None), None, "myself");
+        assert_eq!(online_alert(ME, &user(UserId(2)), false), Some(AlertKind::Online));
+        assert_eq!(online_alert(ME, &user(UserId(2)), true), None, "repeat event");
+        assert_eq!(online_alert(ME, &user(UserId(1)), false), None, "myself");
+        assert_eq!(offline_alert(ME, None, UserId(2), true, None), Some(AlertKind::Offline));
+        assert_eq!(offline_alert(ME, None, UserId(2), false, None), None, "never listed as online");
+        assert_eq!(offline_alert(ME, None, UserId(1), true, None), None, "myself");
         // Dropping out of my voice channel is a leave, not an offline.
-        let in_room = member(2, Some(10), false);
-        assert_eq!(offline_alert(ME, Some(10), 2, true, Some(&in_room)), Some(AlertKind::Leave));
+        let in_room = member(UserId(2), Some(ChannelId(10)), false);
+        assert_eq!(offline_alert(ME, Some(ChannelId(10)), UserId(2), true, Some(&in_room)), Some(AlertKind::Leave));
         // In some other room, or while I am not in voice: plain offline.
-        assert_eq!(offline_alert(ME, Some(11), 2, true, Some(&in_room)), Some(AlertKind::Offline));
-        assert_eq!(offline_alert(ME, None, 2, true, Some(&in_room)), Some(AlertKind::Offline));
+        assert_eq!(offline_alert(ME, Some(ChannelId(11)), UserId(2), true, Some(&in_room)), Some(AlertKind::Offline));
+        assert_eq!(offline_alert(ME, None, UserId(2), true, Some(&in_room)), Some(AlertKind::Offline));
     }
 
     #[test]
@@ -377,12 +377,12 @@ mod tests {
     fn snapshot_silences_the_next_few_seconds() {
         let t0 = Instant::now();
         let mut p = AlertPolicy::default();
-        assert!(p.admit(t0, AlertKind::Join, 2));
+        assert!(p.admit(t0, AlertKind::Join, UserId(2)));
         p.on_snapshot(t0 + Duration::from_secs(10));
         let t = t0 + Duration::from_secs(10);
-        assert!(!p.admit(t + Duration::from_millis(10), AlertKind::Join, 3));
-        assert!(!p.admit(t + SNAPSHOT_QUIET - Duration::from_millis(1), AlertKind::Leave, 4));
-        assert!(p.admit(t + SNAPSHOT_QUIET, AlertKind::Join, 5));
+        assert!(!p.admit(t + Duration::from_millis(10), AlertKind::Join, UserId(3)));
+        assert!(!p.admit(t + SNAPSHOT_QUIET - Duration::from_millis(1), AlertKind::Leave, UserId(4)));
+        assert!(p.admit(t + SNAPSHOT_QUIET, AlertKind::Join, UserId(5)));
     }
 
     #[test]
@@ -390,24 +390,24 @@ mod tests {
         let t0 = Instant::now();
         let mut p = AlertPolicy::default();
         // Joining a full channel's worth of re-announcements within a moment: one chime.
-        assert!(p.admit(t0, AlertKind::Join, 2));
+        assert!(p.admit(t0, AlertKind::Join, UserId(2)));
         for (i, who) in (3..10).enumerate() {
-            assert!(!p.admit(t0 + Duration::from_millis(10 * i as u64), AlertKind::Join, who));
+            assert!(!p.admit(t0 + Duration::from_millis(10 * i as u64), AlertKind::Join, UserId(who as i64)));
         }
         // A different kind is independent; the same kind plays again after the gap.
-        assert!(p.admit(t0 + Duration::from_millis(50), AlertKind::Leave, 3));
-        assert!(p.admit(t0 + KIND_GAP, AlertKind::Join, 4));
+        assert!(p.admit(t0 + Duration::from_millis(50), AlertKind::Leave, UserId(3)));
+        assert!(p.admit(t0 + KIND_GAP, AlertKind::Join, UserId(4)));
     }
 
     #[test]
     fn a_flapping_person_is_heard_once_per_gap() {
         let t0 = Instant::now();
         let mut p = AlertPolicy::default();
-        assert!(p.admit(t0, AlertKind::Online, 2));
+        assert!(p.admit(t0, AlertKind::Online, UserId(2)));
         // 2 goes offline/online every second: online repeats within PERSON_GAP are dropped.
-        assert!(!p.admit(t0 + Duration::from_millis(1000), AlertKind::Online, 2));
-        assert!(p.admit(t0 + Duration::from_millis(1000), AlertKind::Offline, 2));
-        assert!(p.admit(t0 + PERSON_GAP, AlertKind::Online, 2));
+        assert!(!p.admit(t0 + Duration::from_millis(1000), AlertKind::Online, UserId(2)));
+        assert!(p.admit(t0 + Duration::from_millis(1000), AlertKind::Offline, UserId(2)));
+        assert!(p.admit(t0 + PERSON_GAP, AlertKind::Online, UserId(2)));
     }
 
     #[test]
@@ -415,11 +415,11 @@ mod tests {
         let t0 = Instant::now();
         let mut p = AlertPolicy::default();
         // The hub sends the voice update, then the offline event, a few ms apart.
-        assert!(p.admit(t0, AlertKind::Leave, 2));
-        assert!(!p.admit(t0 + Duration::from_millis(3), AlertKind::Offline, 2));
+        assert!(p.admit(t0, AlertKind::Leave, UserId(2)));
+        assert!(!p.admit(t0 + Duration::from_millis(3), AlertKind::Offline, UserId(2)));
         // Somebody else going offline is unaffected; so is the same person much later.
-        assert!(p.admit(t0 + Duration::from_millis(500), AlertKind::Offline, 3));
-        assert!(p.admit(t0 + Duration::from_secs(30), AlertKind::Offline, 2));
+        assert!(p.admit(t0 + Duration::from_millis(500), AlertKind::Offline, UserId(3)));
+        assert!(p.admit(t0 + Duration::from_secs(30), AlertKind::Offline, UserId(2)));
     }
 
     #[test]
@@ -430,12 +430,12 @@ mod tests {
         let mut played = 0;
         // Many different people doing different things in 2.4 s, each spaced past KIND_GAP.
         for i in 0..6u64 {
-            if p.admit(t0 + Duration::from_millis(400 * i), kinds[i as usize], 100 + i as i64) {
+            if p.admit(t0 + Duration::from_millis(400 * i), kinds[i as usize], UserId(100 + i as i64)) {
                 played += 1;
             }
         }
         assert_eq!(played, WINDOW_MAX);
         // Once the window has passed it plays again.
-        assert!(p.admit(t0 + Duration::from_millis(400 * 5) + WINDOW, AlertKind::Join, 200));
+        assert!(p.admit(t0 + Duration::from_millis(400 * 5) + WINDOW, AlertKind::Join, UserId(200)));
     }
 }

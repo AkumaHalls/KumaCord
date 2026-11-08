@@ -248,7 +248,7 @@ pub async fn disconnect(State(s): State<AppState>, me: Authed, Path(id): Path<Us
         return Err(ApiErr::new(StatusCode::CONFLICT, "not in voice"));
     };
     // Tokens from before this moment no longer get them back in.
-    voice_guard::revoke(&s, id);
+    voice_guard::revoke(&s, id).await;
     s.send_to(id, &ServerEvent::Moderated { action: ModAction::Disconnect, by: me.user.clone() });
     s.force_leave(id);
     // A current client leaves by itself (a clean, client-side close); LiveKit removes whoever is
@@ -284,7 +284,7 @@ pub async fn move_user(State(s): State<AppState>, me: Authed, Path(id): Path<Use
         return Err(ApiErr::new(StatusCode::BAD_REQUEST, "already in that channel"));
     }
     // The app joins the new room with a fresh token; older tokens are done.
-    voice_guard::revoke(&s, id);
+    voice_guard::revoke(&s, id).await;
     s.send_to(id, &ServerEvent::Moderated { action: ModAction::Move { channel_id: to }, by: me.user.clone() });
     // A current client leaves the old room by itself and joins the new one; an older client does
     // not know the event, so it is removed from the old room after a grace period.
@@ -295,7 +295,7 @@ pub async fn move_user(State(s): State<AppState>, me: Authed, Path(id): Path<Use
             lk_result("move: leave old room", s2.livekit.remove(&room(ch), &id.to_string()).await);
         }
         if s2.voice_of(id).and_then(|m| m.channel_id) == Some(from) {
-            tracing::info!(user = id, from, to, "moved member still in the old channel: removed");
+            tracing::info!(user = %id, from = %from, to = %to, "moved member still in the old channel: removed");
             s2.force_leave(id);
         }
     });
@@ -334,7 +334,7 @@ pub async fn stop_stream(State(s): State<AppState>, me: Authed, Path(id): Path<U
 /// `POST /api/messages/{id}/delete`
 pub async fn delete_message(State(s): State<AppState>, me: Authed, Path(id): Path<MessageId>) -> ApiResult<OkResponse> {
     // A message of a private channel I may not see is as unknown as a missing one (v0.9).
-    let Some((channel_id, author, content)) = s.db.call(move |c| db::get_message(c, id)).await?.filter(|(ch, _, _)| s.can_see(me.user.id, *ch)) else {
+    let Some((channel_id, author, content)) = s.db.call(move |c| db::get_message(c, *id)).await?.filter(|(ch, _, _)| s.can_see(me.user.id, ChannelId(*ch))) else {
         return Err(ApiErr::new(StatusCode::NOT_FOUND, "message not found"));
     };
     let own = author == me.user.id;
@@ -344,15 +344,16 @@ pub async fn delete_message(State(s): State<AppState>, me: Authed, Path(id): Pat
     let dir = s.attachments.dir.clone();
     s.db
         .call(move |c| {
-            db::delete_message(c, id)?;
+            db::delete_message(c, *id)?;
             crate::attachments::collect_garbage(c, &dir)
         })
         .await?;
-    s.send_channel(channel_id, &ServerEvent::MessageDeleted { channel_id, message_id: id });
+    let ch_id = ChannelId(channel_id);
+    s.send_channel(ch_id, &ServerEvent::MessageDeleted { channel_id: ch_id, message_id: id });
     if !own {
         let excerpt: String = content.chars().take(80).collect();
         let more = if content.chars().count() > 80 { "..." } else { "" };
-        let detail = format!("#{}: {excerpt}{more}", channel_name(&s, channel_id));
+        let detail = format!("#{}: {excerpt}{more}", channel_name(&s, ch_id));
         audit(&s, Some(me.user.id), AUDIT_DELETE_MESSAGE, Some(author), detail).await;
     }
     Ok(ok())
@@ -467,7 +468,7 @@ pub async fn ban_user(State(s): State<AppState>, me: Authed, Path(id): Path<User
     let by = Some(me.user.id);
     s.db.call(move |c| db::ban(c, id, by, &reason_for_db)).await?;
     s.kick(id, None);
-    voice_guard::revoke(&s, id);
+    voice_guard::revoke(&s, id).await;
     s.force_leave(id);
     audit(&s, Some(me.user.id), AUDIT_BAN, Some(id), reason).await;
     Ok(ok())
@@ -658,7 +659,7 @@ pub async fn reset_password(State(s): State<AppState>, me: Authed, Path(id): Pat
     let (code, expires_at_ms) = issue_reset_code_async(&s, t.id).await?;
     s.kick(id, None);
     // Their sessions are gone: so is their voice, and an old join token does not bring it back.
-    voice_guard::revoke(&s, id);
+    voice_guard::revoke(&s, id).await;
     s.force_leave(id);
     voice_guard::remove_everywhere(&s, id).await;
     // Until a new password is chosen, a staff role counts as Membro for private channels (v0.9).
@@ -755,7 +756,7 @@ pub async fn create_channel(State(s): State<AppState>, me: Authed, body: Result<
             }
             // v1.1: created inside a category (the caller checked it exists).
             if let Some(cat) = category {
-                db::set_channel_category(&tx, ch.id, Some(cat))?;
+                db::set_channel_category(&tx, ch.id, Some(*cat))?;
                 ch.category_id = Some(cat);
             }
             tx.commit()?;
@@ -786,7 +787,7 @@ pub async fn set_channel_access(State(s): State<AppState>, me: Authed, Path(id):
     }
     reload_channels(&s).await?;
     let names = names_of(&s, stored.as_ref().map(|p| p.users.clone()).unwrap_or_default()).await;
-    tracing::info!(channel = id, private = stored.is_some(), "channel access changed");
+    tracing::info!(channel = %id, private = stored.is_some(), "channel access changed");
     let detail = format!("{}: {}", ch.name, crate::access::describe(stored.as_ref(), &names));
     audit(&s, Some(me.user.id), AUDIT_CHANNEL_ACCESS, None, detail).await;
     Ok(ok())
@@ -801,7 +802,7 @@ pub async fn rename_channel(State(s): State<AppState>, me: Authed, Path(id): Pat
         return Err(ApiErr::new(StatusCode::NOT_FOUND, "channel not found"));
     };
     let n2 = name.clone();
-    s.db.call(move |c| db::rename_channel(c, id, &n2)).await?;
+    s.db.call(move |c| db::rename_channel(c, *id, &n2)).await?;
     reload_channels(&s).await?;
     audit(&s, Some(me.user.id), AUDIT_CHANNEL_RENAME, None, format!("{} -> {name}", old.name)).await;
     Ok(ok())
@@ -826,7 +827,7 @@ pub async fn set_channel_category(
         }
     }
     let cat = req.category_id;
-    let moved = s.db.call(move |c| db::set_channel_category(c, id, cat)).await?;
+    let moved = s.db.call(move |c| db::set_channel_category(c, id, cat.map(|c| *c))).await?;
     if !moved {
         return Err(ApiErr::new(StatusCode::NOT_FOUND, "canal não encontrado"));
     }
@@ -891,7 +892,7 @@ pub async fn update_category(State(s): State<AppState>, me: Authed, Path(id): Pa
     can_manage_channels(&me)?;
     let (name, color) = check_category(&req.name, &req.color)?;
     let cat_name = name.clone();
-    let category = ChannelCategory { id, name, color, position: req.position };
+    let category = ChannelCategory { id: ChannelId(id), name, color, position: req.position };
     let updated = s.db.call(move |c| db::update_category(c, &category)).await?;
     if !updated {
         return Err(ApiErr::new(StatusCode::NOT_FOUND, "categoria não encontrada"));
@@ -937,7 +938,7 @@ pub async fn delete_channel(State(s): State<AppState>, me: Authed, Path(id): Pat
     let dir = s.attachments.dir.clone();
     s.db
         .call(move |c| {
-            db::delete_channel(c, id)?;
+            db::delete_channel(c, *id)?;
             crate::attachments::collect_garbage(c, &dir)
         })
         .await?;
@@ -972,7 +973,7 @@ pub async fn reorder_channels(State(s): State<AppState>, me: Authed, body: Resul
     if have != want {
         return Err(ApiErr::new(StatusCode::BAD_REQUEST, "ids must list every channel exactly once"));
     }
-    let ids = req.ids.clone();
+    let ids: Vec<i64> = req.ids.iter().map(|c| c.into_inner()).collect();
     s.db.call(move |c| db::reorder_channels(c, &ids)).await?;
     reload_channels(&s).await?;
     audit(&s, Some(me.user.id), AUDIT_CHANNEL_REORDER, None, String::new()).await;

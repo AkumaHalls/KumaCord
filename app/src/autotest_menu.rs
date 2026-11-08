@@ -25,7 +25,7 @@
 use std::time::Instant;
 
 use eframe::egui;
-use vox_proto::{Presence, UserId};
+use vox_proto::{ChannelId, Presence, UserId};
 
 use super::Auto;
 use crate::app::{App, Center, Pick, Share};

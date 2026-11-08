@@ -119,7 +119,7 @@ impl Auto {
                 // A's menu, opened where a right-click in the middle of the tile would.
                 let ppp = app.repaint_ctx().pixels_per_point();
                 let (x, y, w, h) = app.video.placed.get(key).copied().ok_or("the camera video is not placed")?;
-                let user = self.cam_of.as_deref().and_then(|i| i.parse::<i64>().ok()).and_then(|id| app.known_user(id));
+                let user = self.cam_of.as_deref().and_then(|i| i.parse::<i64>().ok()).and_then(|id| app.known_user(vox_proto::UserId(id)));
                 let user = user.ok_or("A is not a known user")?;
                 let pos = eframe::egui::pos2((x + w / 2) as f32 / ppp, (y + h / 2) as f32 / ppp);
                 let ctx = app.repaint_ctx();

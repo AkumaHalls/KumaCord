@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use vox_client_core::AlertKind;
-use vox_proto::{ChannelId, DmId, DmMessage, Message};
+use vox_proto::{ChannelId, DmId, DmMessage, Message, UserId};
 
 use super::{App, Center, Screen};
 use crate::tray::{Tray, TrayEvent};
@@ -411,7 +411,7 @@ impl App {
             }
             // Which messages the counter stands for: a deleted one takes its count with it.
             let ids = self.chatx.unread_ids.entry(m.channel_id).or_default();
-            ids.push((m.id, is_mention));
+            ids.push((m.id.into_inner(), is_mention));
             if ids.len() > UNREAD_IDS_MAX {
                 ids.remove(0);
             }
@@ -431,7 +431,7 @@ impl App {
 
     /// A DM line from somebody else arrived and is not being read (`dms.rs` decided that and
     /// plays the sound): the taskbar flash and the Windows notification.
-    pub(super) fn dm_message_arrived(&mut self, m: &DmMessage, me: i64) {
+    pub(super) fn dm_message_arrived(&mut self, m: &DmMessage, me: UserId) {
         let inc = Incoming {
             is_dm: true,
             is_mention: false,
@@ -448,7 +448,7 @@ impl App {
         }
     }
 
-    fn chat_sound(&mut self, kind: AlertKind, who: i64) {
+    fn chat_sound(&mut self, kind: AlertKind, who: UserId) {
         if self.remote_alert(kind, who) {
             self.notify.stats.sounds.push(kind.name());
         }

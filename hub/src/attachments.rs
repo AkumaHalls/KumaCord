@@ -253,8 +253,12 @@ fn for_owners(conn: &Connection, ids: &[i64], dm: bool) -> rusqlite::Result<Hash
     let rows = st.query_map(rusqlite::params_from_iter(ids.iter()), row)?;
     for r in rows {
         let r = r?;
-        let owner = if dm { r.dm_message_id } else { r.message_id };
-        if let Some(o) = owner {
+        let inner: Option<i64> = if dm {
+            r.dm_message_id.map(|m| m.into_inner())
+        } else {
+            r.message_id.map(|m| m.into_inner())
+        };
+        if let Some(o) = inner {
             out.entry(o).or_default().push(r.to_wire());
         }
     }
@@ -263,7 +267,7 @@ fn for_owners(conn: &Connection, ids: &[i64], dm: bool) -> rusqlite::Result<Hash
 
 /// Fill `attachments` of channel messages.
 pub fn fill_messages(conn: &Connection, msgs: &mut [Message]) -> rusqlite::Result<()> {
-    let ids: Vec<i64> = msgs.iter().map(|m| m.id).collect();
+    let ids: Vec<i64> = msgs.iter().map(|m| m.id.into_inner()).collect();
     let mut map = for_owners(conn, &ids, false)?;
     for m in msgs {
         m.attachments = map.remove(&m.id).unwrap_or_default();
@@ -273,7 +277,7 @@ pub fn fill_messages(conn: &Connection, msgs: &mut [Message]) -> rusqlite::Resul
 
 /// Fill `attachments` of DM lines.
 pub fn fill_dm_messages(conn: &Connection, msgs: &mut [DmMessage]) -> rusqlite::Result<()> {
-    let ids: Vec<i64> = msgs.iter().map(|m| m.id).collect();
+    let ids: Vec<i64> = msgs.iter().map(|m| m.id.into_inner()).collect();
     let mut map = for_owners(conn, &ids, true)?;
     for m in msgs {
         m.attachments = map.remove(&m.id).unwrap_or_default();
@@ -292,8 +296,8 @@ pub enum LinkError {
 /// Where linked attachments go.
 #[derive(Debug, Clone, Copy)]
 pub enum Owner {
-    Channel(MessageId),
-    Dm(DmMessageId),
+    Channel(Option<MessageId>),
+    Dm(Option<DmMessageId>),
 }
 
 /// Check that `ids` are `me`'s pending attachments (distinct, at most four). Run it in the same
@@ -514,7 +518,7 @@ pub fn store_upload(conn: &mut Connection, dir: &Path, user: UserId, up: &Upload
         )?;
         // Old days of the allowance are of no use.
         tx.execute("DELETE FROM attachment_uploads WHERE day < ?", [day_of(now) - 2])?;
-        Ok(get(&tx, id)?.expect("just inserted"))
+        Ok(get(&tx, AttachmentId(id))?.expect("just inserted"))
     })();
     match result {
         Ok(r) => {
@@ -680,7 +684,7 @@ pub async fn upload(State(s): State<AppState>, AuthUser(me): AuthUser, Query(q):
         tracing::info!(user = %me.username, ?e, "image not stored");
         store_err(e)
     })?;
-    tracing::info!(user = %me.username, id = stored.id, received = len, stored = sizes.0, thumb = sizes.1, w, h, mime, animated, "image uploaded");
+    tracing::info!(user = %me.username, id = %stored.id, received = len, stored = sizes.0, thumb = sizes.1, w, h, mime, animated, "image uploaded");
     Ok(Json(stored.to_wire()))
 }
 
@@ -690,14 +694,14 @@ pub async fn upload(State(s): State<AppState>, AuthUser(me): AuthUser, Query(q):
 fn visible_to(conn: &Connection, r: &Row, me: UserId, rules: &crate::access::Rules) -> rusqlite::Result<bool> {
     // The message must exist and be the uploader's own (an id reused after a deletion is not).
     if let Some(m) = r.message_id {
-        let channel: Option<ChannelId> = conn.query_row("SELECT channel_id FROM messages WHERE id = ? AND user_id = ?", [m, r.uploader], |x| x.get(0)).optional()?;
+        let channel: Option<ChannelId> = conn.query_row("SELECT channel_id FROM messages WHERE id = ? AND user_id = ?", params![m, r.uploader], |x| x.get(0)).optional()?;
         return Ok(channel.is_some_and(|ch| rules.can_see(me, ch)));
     }
     if let Some(line) = r.dm_message_id {
         let pair: Option<(UserId, UserId)> = conn
             .query_row(
                 "SELECT c.user_lo, c.user_hi FROM dm_messages m JOIN dm_conversations c ON c.id = m.dm_id WHERE m.id = ? AND m.author_id = ?",
-                [line, r.uploader],
+                params![line, r.uploader],
                 |x| Ok((x.get(0)?, x.get(1)?)),
             )
             .optional()?;
@@ -794,8 +798,8 @@ mod tests {
     fn identical_files_are_stored_once_and_go_with_the_last_reference() {
         let dir = tempfile::tempdir().unwrap();
         let mut c = mem();
-        let a = store_upload(&mut c, dir.path(), 1, &upload_of(vec![1; 100]), BIG, 1000).unwrap();
-        let b = store_upload(&mut c, dir.path(), 2, &upload_of(vec![1; 100]), BIG, 1000).unwrap();
+        let a = store_upload(&mut c, dir.path(), UserId(1), &upload_of(vec![1; 100]), BIG, 1000).unwrap();
+        let b = store_upload(&mut c, dir.path(), UserId(2), &upload_of(vec![1; 100]), BIG, 1000).unwrap();
         assert_ne!(a.id, b.id);
         assert_eq!(a.blob_hash, b.blob_hash);
         assert_eq!(usage(&c).unwrap(), 100, "one file");
@@ -815,20 +819,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut c = mem();
         let p = Policy { storage_cap: 1 << 30, daily_bytes: 250, may_evict: false };
-        store_upload(&mut c, dir.path(), 1, &upload_of(vec![1; 200]), p, 1000).unwrap();
-        assert!(matches!(store_upload(&mut c, dir.path(), 1, &upload_of(vec![2; 100]), p, 1000), Err(StoreError::Daily)));
+        store_upload(&mut c, dir.path(), UserId(1), &upload_of(vec![1; 200]), p, 1000).unwrap();
+        assert!(matches!(store_upload(&mut c, dir.path(), UserId(1), &upload_of(vec![2; 100]), p, 1000), Err(StoreError::Daily)));
         // Another person, and the next day, are fine.
-        store_upload(&mut c, dir.path(), 2, &upload_of(vec![2; 100]), p, 1000).unwrap();
-        store_upload(&mut c, dir.path(), 1, &upload_of(vec![3; 100]), p, 1000 + DAY_MS).unwrap();
+        store_upload(&mut c, dir.path(), UserId(2), &upload_of(vec![2; 100]), p, 1000).unwrap();
+        store_upload(&mut c, dir.path(), UserId(1), &upload_of(vec![3; 100]), p, 1000 + DAY_MS).unwrap();
         // Total cap: 400 bytes stored now.
         let cap = Policy { storage_cap: 450, daily_bytes: 1 << 30, may_evict: false };
-        assert!(matches!(store_upload(&mut c, dir.path(), 2, &upload_of(vec![4; 100]), cap, 2000), Err(StoreError::Full)));
+        assert!(matches!(store_upload(&mut c, dir.path(), UserId(2), &upload_of(vec![4; 100]), cap, 2000), Err(StoreError::Full)));
         // A file that is already stored takes no new space.
-        store_upload(&mut c, dir.path(), 2, &upload_of(vec![1; 200]), cap, 2000).unwrap();
+        store_upload(&mut c, dir.path(), UserId(2), &upload_of(vec![1; 200]), cap, 2000).unwrap();
         // With retention on, the oldest images (older than a day) make room.
         let evict = Policy { may_evict: true, ..cap };
         let now = 1000 + 3 * DAY_MS;
-        let r = store_upload(&mut c, dir.path(), 2, &upload_of(vec![5; 100]), evict, now).unwrap();
+        let r = store_upload(&mut c, dir.path(), UserId(2), &upload_of(vec![5; 100]), evict, now).unwrap();
         assert!(usage(&c).unwrap() <= 450);
         assert!(get(&c, r.id).unwrap().is_some());
     }
@@ -837,7 +841,7 @@ mod tests {
     fn pending_uploads_expire_and_stray_files_are_removed() {
         let dir = tempfile::tempdir().unwrap();
         let mut c = mem();
-        let r = store_upload(&mut c, dir.path(), 1, &upload_of(vec![9; 50]), BIG, 1000).unwrap();
+        let r = store_upload(&mut c, dir.path(), UserId(1), &upload_of(vec![9; 50]), BIG, 1000).unwrap();
         std::fs::create_dir_all(dir.path().join("zz")).unwrap();
         std::fs::write(dir.path().join("zz").join("zzzz.webp"), b"stray").unwrap();
         let (expired, old, files) = sweep(&c, dir.path(), 1000 + 10_000, 0).unwrap();
@@ -851,20 +855,20 @@ mod tests {
     fn linking_needs_my_own_pending_images() {
         let dir = tempfile::tempdir().unwrap();
         let mut c = mem();
-        let a = store_upload(&mut c, dir.path(), 1, &upload_of(vec![1; 10]), BIG, 1).unwrap();
-        let b = store_upload(&mut c, dir.path(), 2, &upload_of(vec![2; 10]), BIG, 1).unwrap();
-        assert_eq!(check_pending(&c, 1, &[a.id]).unwrap(), Ok(()));
-        assert_eq!(check_pending(&c, 1, &[b.id]).unwrap(), Err(LinkError::Invalid), "not mine");
-        assert_eq!(check_pending(&c, 1, &[a.id, a.id]).unwrap(), Err(LinkError::Invalid), "twice");
-        assert_eq!(check_pending(&c, 1, &[1, 2, 3, 4, 5]).unwrap(), Err(LinkError::TooMany));
+        let a = store_upload(&mut c, dir.path(), UserId(1), &upload_of(vec![1; 10]), BIG, 1).unwrap();
+        let b = store_upload(&mut c, dir.path(), UserId(2), &upload_of(vec![2; 10]), BIG, 1).unwrap();
+        assert_eq!(check_pending(&c, UserId(1), &[a.id]).unwrap(), Ok(()));
+        assert_eq!(check_pending(&c, UserId(1), &[b.id]).unwrap(), Err(LinkError::Invalid), "not mine");
+        assert_eq!(check_pending(&c, UserId(1), &[a.id, a.id]).unwrap(), Err(LinkError::Invalid), "twice");
+        assert_eq!(check_pending(&c, UserId(1), &[AttachmentId(1), AttachmentId(2), AttachmentId(3), AttachmentId(4), AttachmentId(5)]).unwrap(), Err(LinkError::TooMany));
         c.execute("INSERT INTO messages VALUES (77, 1, 1, '', 0)", []).unwrap();
-        let linked = link(&c, &[a.id], Owner::Channel(77)).unwrap();
+        let linked = link(&c, &[a.id], Owner::Channel(Some(MessageId(77)))).unwrap();
         assert_eq!(linked[0].id, a.id);
-        assert_eq!(check_pending(&c, 1, &[a.id]).unwrap(), Err(LinkError::Invalid), "already used");
-        let mut m = vec![Message { id: 77, channel_id: 1, author: User::new(1, "a"), content: String::new(), created_at_ms: 0, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] }];
+        assert_eq!(check_pending(&c, UserId(1), &[a.id]).unwrap(), Err(LinkError::Invalid), "already used");
+        let mut m = vec![Message { id: MessageId(77), channel_id: ChannelId(1), author: User::new(UserId(1), "a"), content: String::new(), created_at_ms: 0, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] }];
         fill_messages(&c, &mut m).unwrap();
         assert_eq!(m[0].attachments.len(), 1);
-        assert_eq!(unlink_message(&c, 77).unwrap(), 1);
+        assert_eq!(unlink_message(&c, MessageId(77)).unwrap(), 1);
     }
 
     /// Rollback: a v0.6.0 hub deletes a DM line without its images, and SQLite gives the deleted
@@ -889,7 +893,7 @@ mod tests {
             // With the triggers: the v0.6.0 delete takes the image rows along.
             let img = store_upload(c, &files, a, &upload_of(vec![1; 10]), BIG, 1).unwrap();
             let line = dms::insert_line(c, &ab, a, DmMessageKind::Text, "foto", 0, "")?;
-            link(c, &[img.id], Owner::Dm(line.id))?;
+            link(c, &[img.id], Owner::Dm(Some(line.id)))?;
             c.execute("DELETE FROM dm_messages WHERE id = ?", [line.id])?; // v0.6.0's SQL
             let reused = old_insert(c, &cd, cc, "oi")?;
             assert_eq!(reused.id, line.id, "SQLite reuses the id (the scenario)");
@@ -903,7 +907,7 @@ mod tests {
             c.execute_batch("DROP TRIGGER attachments_follow_dm_message")?;
             let img2 = store_upload(c, &files, a, &upload_of(vec![2; 10]), BIG, 1).unwrap();
             let line2 = dms::insert_line(c, &ab, a, DmMessageKind::Text, "foto", 0, "")?;
-            link(c, &[img2.id], Owner::Dm(line2.id))?;
+            link(c, &[img2.id], Owner::Dm(Some(line2.id)))?;
             c.execute("DELETE FROM dm_messages WHERE id = ?", [line2.id])?;
             let reused2 = old_insert(c, &cd, cc, "oi de novo")?;
             assert_eq!(reused2.id, line2.id);

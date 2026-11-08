@@ -13,6 +13,7 @@
 use std::time::Instant;
 
 use eframe::egui;
+use vox_proto::ChannelId;
 
 use super::Auto;
 use crate::app::App;
@@ -309,7 +310,7 @@ impl Auto {
                 app.golive.open = false;
                 app.golive.mode = crate::app::ShareMode::ScreenAudio;
                 // Leave the soundboard as it was found.
-                let ids: Vec<_> = app.sb.sounds.iter().map(|s| s.id).collect();
+                let ids: Vec<_> = app.sb.sounds.iter().map(|s| s.id.clone()).collect();
                 for id in ids {
                     app.backend.send(crate::backend::Cmd::Sound(crate::soundboard::SoundCmd::Delete(id)));
                 }

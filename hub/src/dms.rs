@@ -214,7 +214,7 @@ fn msg_row(pair: &Pair) -> impl Fn(&rusqlite::Row) -> rusqlite::Result<DmMessage
             created_at_ms: r.get(6)?,
             attachments: Vec::new(),
             // (A placeholder until `chat::fill_dm_lines`.)
-            reply: r.get::<_, Option<DmMessageId>>(7)?.map(ReplyRef::gone),
+            reply: r.get::<_, Option<DmMessageId>>(7)?.map(|id| ReplyRef::gone(MessageId(id.into_inner()))),
             reactions: Vec::new(),
         })
     }
@@ -259,8 +259,8 @@ pub fn insert_line_with(
     let side = if author == c.lo { "lo_read_id" } else { "hi_read_id" };
     tx.execute(&format!("UPDATE dm_conversations SET last_activity_ms = ?, {side} = MAX({side}, ?) WHERE id = ?"), params![now, id, c.id])?;
     let pair = Pair::load(&tx, c, owner)?;
-    let linked = crate::attachments::link(&tx, attachments, crate::attachments::Owner::Dm(id))?;
-    let msg = DmMessage { id, dm_id: c.id, author: pair.get(author), content: body.to_string(), created_at_ms: now, kind, call_secs, attachments: linked, reply, reactions: Vec::new() };
+    let linked = crate::attachments::link(&tx, attachments, crate::attachments::Owner::Dm(Some(DmMessageId(id))))?;
+    let msg = DmMessage { id: DmMessageId(id), dm_id: c.id, author: pair.get(author), content: body.to_string(), created_at_ms: now, kind, call_secs, attachments: linked, reply, reactions: Vec::new() };
     tx.commit()?;
     Ok(Ok(msg))
 }
@@ -269,7 +269,7 @@ pub fn insert_line_with(
 pub fn list_lines(conn: &Connection, c: &ConvRow, before: Option<DmMessageId>, limit: i64, owner: &str) -> rusqlite::Result<Vec<DmMessage>> {
     let pair = Pair::load(conn, c, owner)?;
     let mut st = conn.prepare(&format!("SELECT {MSG_COLS} FROM dm_messages WHERE dm_id = ?1 AND id < ?2 ORDER BY id DESC LIMIT ?3"))?;
-    let rows = st.query_map(params![c.id, before.unwrap_or(i64::MAX), limit], msg_row(&pair))?;
+    let rows = st.query_map(params![c.id, before.map(|b| b.into_inner()).unwrap_or(i64::MAX), limit], msg_row(&pair))?;
     let mut lines = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     crate::attachments::fill_dm_messages(conn, &mut lines)?;
     crate::chat::fill_dm_lines(conn, &mut lines, owner)?;
@@ -375,7 +375,7 @@ async fn open(State(s): State<AppState>, AuthUser(me): AuthUser, Path(other): Pa
             view(c, &row, me.id, &owner)
         })
         .await?;
-    tracing::info!(user = %me.username, dm = conv.id, "dm opened");
+    tracing::info!(user = %me.username, dm = %conv.id, "dm opened");
     Ok(Json(conv))
 }
 
@@ -473,7 +473,7 @@ async fn react(
             if !text_line {
                 return Ok(crate::chat::Toggled::NoMessage);
             }
-            crate::chat::toggle(c, true, message_id, me_id, &e, add)
+            crate::chat::toggle(c, true, *message_id, me_id, &e, add)
         })
         .await?;
     if let Some(err) = crate::chat::toggled_err(t) {
@@ -494,12 +494,12 @@ async fn read(State(s): State<AppState>, AuthUser(me): AuthUser, Path(id): Path<
         .db
         .call(move |c| {
             let last: i64 = c.query_row("SELECT COALESCE(MAX(id), 0) FROM dm_messages WHERE dm_id = ?", [id], |r| r.get(0))?;
-            let to = req.up_to.clamp(0, last);
+            let to = req.up_to.clamp(DmMessageId(0), DmMessageId(last));
             c.execute(&format!("UPDATE dm_conversations SET {side} = MAX({side}, ?) WHERE id = ?"), params![to, id])?;
             c.query_row(&format!("SELECT {side} FROM dm_conversations WHERE id = ?"), [id], |r| r.get::<_, i64>(0))
         })
         .await?;
-    s.send_to(me.id, &ServerEvent::DmRead { dm_id: id, up_to });
+    s.send_to(me.id, &ServerEvent::DmRead { dm_id: id, up_to: DmMessageId(up_to) });
     Ok(Json(OkResponse { ok: true }))
 }
 
@@ -512,7 +512,7 @@ async fn block(State(s): State<AppState>, AuthUser(me): AuthUser, Path(other): P
     user_row(&s, other).await?;
     let me_id = me.id;
     s.db.call(move |c| set_block(c, me_id, other, req.blocked)).await?;
-    tracing::info!(user = %me.username, other, blocked = req.blocked, "dm block changed");
+    tracing::info!(user = %me.username, other = %other, blocked = req.blocked, "dm block changed");
     if req.blocked {
         crate::calls::end_between(&s, me.id, other).await;
     }
@@ -543,33 +543,33 @@ mod tests {
     #[test]
     fn one_conversation_per_pair_whoever_opens_it() {
         let c = mem();
-        let x = open_conv(&c, 2, 1, 2).unwrap();
-        let y = open_conv(&c, 1, 2, 1).unwrap();
+        let x = open_conv(&c, UserId(2), UserId(1), UserId(2)).unwrap();
+        let y = open_conv(&c, UserId(1), UserId(2), UserId(1)).unwrap();
         assert_eq!(x.id, y.id);
-        assert_eq!((x.lo, x.hi), (1, 2));
-        assert!(x.has(1) && x.has(2) && !x.has(3));
-        assert_eq!(x.peer_of(1), 2);
-        let z = open_conv(&c, 1, 3, 1).unwrap();
+        assert_eq!((x.lo, x.hi), (UserId(1), UserId(2)));
+        assert!(x.has(UserId(1)) && x.has(UserId(2)) && !x.has(UserId(3)));
+        assert_eq!(x.peer_of(UserId(1)), UserId(2));
+        let z = open_conv(&c, UserId(1), UserId(3), UserId(1)).unwrap();
         assert_ne!(z.id, x.id);
     }
 
     #[test]
     fn an_empty_conversation_is_listed_only_for_whoever_opened_it() {
         let c = mem();
-        open_conv(&c, 1, 2, 1).unwrap();
-        assert_eq!(my_convs(&c, 1).unwrap().len(), 1);
-        assert!(my_convs(&c, 2).unwrap().is_empty());
-        assert!(my_convs(&c, 3).unwrap().is_empty());
+        open_conv(&c, UserId(1), UserId(2), UserId(1)).unwrap();
+        assert_eq!(my_convs(&c, UserId(1)).unwrap().len(), 1);
+        assert!(my_convs(&c, UserId(2)).unwrap().is_empty());
+        assert!(my_convs(&c, UserId(3)).unwrap().is_empty());
     }
 
     #[test]
     fn blocks_go_one_way_and_undo() {
         let c = mem();
-        set_block(&c, 1, 2, true).unwrap();
-        set_block(&c, 1, 2, true).unwrap();
-        assert!(is_blocked(&c, 1, 2).unwrap() && !is_blocked(&c, 2, 1).unwrap());
-        assert!(blocked_between(&c, 2, 1).unwrap());
-        set_block(&c, 1, 2, false).unwrap();
-        assert!(!blocked_between(&c, 1, 2).unwrap());
+        set_block(&c, UserId(1), UserId(2), true).unwrap();
+        set_block(&c, UserId(1), UserId(2), true).unwrap();
+        assert!(is_blocked(&c, UserId(1), UserId(2)).unwrap() && !is_blocked(&c, UserId(2), UserId(1)).unwrap());
+        assert!(blocked_between(&c, UserId(2), UserId(1)).unwrap());
+        set_block(&c, UserId(1), UserId(2), false).unwrap();
+        assert!(!blocked_between(&c, UserId(1), UserId(2)).unwrap());
     }
 }

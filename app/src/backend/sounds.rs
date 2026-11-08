@@ -154,7 +154,7 @@ impl Controller {
         }
         *self.sb.list.lock().unwrap_or_else(|e| e.into_inner()) = list.clone();
         if let Some(cache) = self.sound_cache() {
-            let keep: Vec<_> = list.iter().map(|s| (s.id, s.hash.clone())).collect();
+            let keep: Vec<_> = list.iter().map(|s| (s.id.clone(), s.hash.clone())).collect();
             tokio::task::spawn_blocking(move || cache.retain(&keep));
         }
         self.out.send(Ev::Sound(SoundEv::List { supported: true, sounds: list }));
@@ -195,12 +195,15 @@ impl Controller {
         let (list, flag) = (self.sb.list.clone(), self.sb.prefetching.clone());
         tokio::spawn(async move {
             loop {
-                let next = list.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|s| !cache.has(s.id, &s.hash)).cloned();
+                let next = list.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|s| !cache.has(s.id.clone(), &s.hash)).cloned();
                 let Some(s) = next else { break };
-                match hub.sound_audio(s.id, &s.hash).await.and_then(|wav| cache.put(s.id, &s.hash, &wav).map(|_| ())) {
-                    Ok(()) => tracing::debug!(id = s.id, name = %s.name, "sound downloaded"),
+                let sound_id = s.id.clone();
+                let sound_hash = s.hash.clone();
+                let sound_name = s.name.clone();
+                match hub.sound_audio(sound_id.clone(), &sound_hash).await.and_then(|wav| cache.put(sound_id.clone(), &sound_hash, &wav).map(|_| ())) {
+                    Ok(()) => tracing::debug!(id = %sound_id, name = %sound_name, "sound downloaded"),
                     Err(e) => {
-                        warn!(id = s.id, error = %format!("{e:#}"), "sound download failed");
+                        warn!(id = %sound_id, error = %format!("{e:#}"), "sound download failed");
                         break;
                     }
                 }
@@ -316,7 +319,7 @@ impl Controller {
                 info!(ms = pcm.duration_ms(), "clip preview suppressed (VOX_NO_PLAYBACK)");
                 return say(Ok(pcm.duration_ms()));
             }
-            let late = LateSound { voice_gen, sound_id: -1, by: User::new(-1, ""), pcm: Ok(pcm), asked: Instant::now(), device };
+            let late = LateSound { voice_gen, sound_id: SoundId("-1".into()), by: User::new(UserId(-1), ""), pcm: Ok(pcm), asked: Instant::now(), device };
             let _ = int_tx.send(Internal::LateSound(late));
         });
     }
@@ -324,7 +327,7 @@ impl Controller {
     /// "Ouvir só aqui".
     fn sound_preview(&mut self, id: SoundId) {
         if self.no_playback {
-            tracing::debug!(id, "sound preview suppressed (VOX_NO_PLAYBACK)");
+            tracing::debug!(id = %id, "sound preview suppressed (VOX_NO_PLAYBACK)");
             return;
         }
         let Some(sound) = self.sb_list().into_iter().find(|s| s.id == id) else { return };
@@ -343,20 +346,22 @@ impl Controller {
     }
 
     fn sound_pcm(&mut self, s: &Sound) -> Option<Arc<SoundPcm>> {
-        self.sound_cache()?.get(s.id, &s.hash)
+        self.sound_cache()?.get(s.id.clone(), &s.hash)
     }
 
     /// Download a clip nobody had cached. `by`: who played it (`None`: a local preview).
     fn fetch_late(&mut self, sound: Sound, by: Option<User>) {
         let (Some(hub), Some(cache)) = (self.hub.clone(), self.sound_cache()) else { return };
         let (int_tx, voice_gen, asked) = (self.int_tx.clone(), self.voice_gen, Instant::now());
+        let sound_id = sound.id.clone();
+        let sound_hash = sound.hash.clone();
         tokio::spawn(async move {
-            let pcm = match hub.sound_audio(sound.id, &sound.hash).await {
-                Ok(wav) => cache.put(sound.id, &sound.hash, &wav).map_err(|e| format!("{e:#}")),
+            let pcm = match hub.sound_audio(sound_id.clone(), &sound_hash).await {
+                Ok(wav) => cache.put(sound_id.clone(), &sound_hash, &wav).map_err(|e| format!("{e:#}")),
                 Err(e) => Err(format!("{e:#}")),
             };
-            let by = by.unwrap_or_else(|| User::new(-1, ""));
-            let _ = int_tx.send(Internal::LateSound(LateSound { voice_gen, sound_id: sound.id, by, pcm, asked, device: None }));
+            let by = by.unwrap_or_else(|| User::new(UserId(-1), ""));
+            let _ = int_tx.send(Internal::LateSound(LateSound { voice_gen, sound_id, by, pcm, asked, device: None }));
         });
     }
 
@@ -367,25 +372,25 @@ impl Controller {
         }
         let pcm = match late.pcm {
             Ok(p) => p,
-            Err(e) => return warn!(id = late.sound_id, error = %e, "sound download failed"),
+            Err(e) => return warn!(id = %late.sound_id, error = %e, "sound download failed"),
         };
-        if late.by.id < 0 {
+        if late.by.id.into_inner() < 0 {
             // A preview that waited for its download, or the trim editor's clip.
             let gain = self.sb.gain();
             let played = match &self.voice {
                 Some(v) => v.preview_sound(&pcm, gain),
                 // Not in a voice channel: the output device is opened just for it.
-                None if late.sound_id < 0 => self.ui_player.play_pcm(pcm.to_stereo(), gain, late.device.as_deref()),
+                None if late.sound_id.as_str() == "-1" => self.ui_player.play_pcm(pcm.to_stereo(), gain, late.device.as_deref()),
                 None => false,
             };
-            if late.sound_id < 0 {
+            if late.sound_id.as_str() == "-1" {
                 let r = if played { Ok(pcm.duration_ms()) } else { Err("Não consegui tocar: a saída de áudio não está disponível.".to_string()) };
                 self.out.send(Ev::Sound(SoundEv::ClipPreview(r)));
             }
             return;
         }
         if late.asked.elapsed() > MAX_LATE {
-            return info!(id = late.sound_id, "downloaded sound arrived too late; not played");
+            return info!(id = %late.sound_id, "downloaded sound arrived too late; not played");
         }
         // The personal rules may have changed while it downloaded.
         if self.sb.muted || self.sb.muted_sounds.contains(&late.sound_id) || self.voice.as_ref().is_none_or(|v| v.is_deafened()) {
@@ -397,13 +402,13 @@ impl Controller {
     /// `SoundPlayed` from the hub. Always tells the UI (the tile flashes even when nothing is
     /// played here); plays the clip when the personal rules allow.
     pub(super) fn sound_played(&mut self, sound_id: SoundId, by: User, channel_id: ChannelId) {
-        let heard = self.sound_played_inner(sound_id, &by, channel_id);
+        let heard = self.sound_played_inner(&sound_id, &by, channel_id);
         if let Some(heard) = heard {
             self.out.send(Ev::Sound(SoundEv::Played { sound_id, by, heard }));
         }
     }
 
-    fn sound_played_inner(&mut self, sound_id: SoundId, by: &User, channel_id: ChannelId) -> Option<Heard> {
+    fn sound_played_inner(&mut self, sound_id: &SoundId, by: &User, channel_id: ChannelId) -> Option<Heard> {
         // Only the room we are in (a stale event after leaving or moving is ignored).
         if self.voice_channel != Some(channel_id) || self.voice.is_none() {
             return None;
@@ -415,13 +420,13 @@ impl Controller {
         } else if self.voice.as_ref().is_some_and(|v| v.is_deafened()) {
             Heard::Deafened
         } else {
-            let Some(sound) = self.sb_list().into_iter().find(|s| s.id == sound_id) else {
-                warn!(sound_id, "played sound is not in the list (yet); ignored");
+            let Some(sound) = self.sb_list().into_iter().find(|s| s.id == *sound_id) else {
+                warn!(sound_id = %sound_id, "played sound is not in the list (yet); ignored");
                 return None;
             };
             match self.sound_pcm(&sound) {
                 Some(pcm) => {
-                    if self.queue_sound(sound_id, &pcm) {
+                    if self.queue_sound(sound_id.clone(), &pcm) {
                         Heard::Playing
                     } else {
                         Heard::NoOutput
@@ -433,7 +438,7 @@ impl Controller {
                 }
             }
         };
-        info!(sound_id, by = %by.username, ?heard, "sound played in my room");
+        info!(sound_id = %sound_id, by = %by.username, ?heard, "sound played in my room");
         Some(heard)
     }
 
@@ -477,7 +482,7 @@ fn measure_headless(mixer: Arc<vox_client_core::audio::Mixer>, sound_id: SoundId
         let rms = if n > 0 { (sum / n as f64).sqrt() } else { 0.0 };
         let rms_dbfs = if rms > 0.0 { 20.0 * rms.log10() as f32 } else { f32::NEG_INFINITY };
         let ms = (n / 2 * 1000 / 48_000) as u32;
-        tracing::debug!(sound_id, clip_ms, ms, "headless mix measured");
+        tracing::debug!(sound_id = %sound_id, clip_ms, ms, "headless mix measured");
         out.send(Ev::Sound(SoundEv::MixerHeard { sound_id, rms_dbfs, peak: peak as f32 / 32768.0, ms }));
     });
 }

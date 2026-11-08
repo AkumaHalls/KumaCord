@@ -234,13 +234,13 @@ async fn ids_are_never_reused_on_a_v081_database() {
     let (bt, bruno) = hub.login("Bruno", None).await;
     let chs: Vec<Channel> = hub.get(&bt, "/api/channels").await;
     let geral = chs.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
-    let first = hub.say(&bt, geral, "primeira do v0.8.1").await;
-    let (old_photo_msg, old_photo) = hub.send_photo(&bt, geral, 1, "foto do v0.8.1").await;
+    let first = hub.say(&bt, geral.into_inner(), "primeira do v0.8.1").await;
+    let (old_photo_msg, old_photo) = hub.send_photo(&bt, geral.into_inner(), 1, "foto do v0.8.1").await;
     let extra = hub.create_channel(&dt, "extra").await;
     let dm: Value = hub.ok(&dt, &format!("/api/dms/{bruno}"), json!({})).await;
     let dm_id = dm["id"].as_i64().unwrap();
     let old_line = hub.dm_line(&dt, dm_id, "dm do v0.8.1").await;
-    seen.note(old_photo_msg.id, old_photo.id, extra.id, old_line);
+    seen.note(old_photo_msg.id.into_inner(), old_photo.id.into_inner(), extra.id.into_inner(), old_line);
     drop(old); // killed like a crash: the last writes may only be in the WAL
     copy_db(&old_dir, &new_dir);
 
@@ -252,9 +252,9 @@ async fn ids_are_never_reused_on_a_v081_database() {
         let server = start(new_hub(&new_dir)).await.unwrap();
         // The old sessions still work and the old rows are there.
         let msgs: Vec<Message> = hub.get(&bt, &format!("/api/channels/{geral}/messages")).await;
-        assert!(msgs.iter().any(|m| m.id == first), "round {round}");
+        assert!(msgs.iter().any(|m| m.id == MessageId::from(first)), "round {round}");
         let newest = msgs.iter().map(|m| m.id).max().unwrap();
-        assert_eq!(newest, seen.message, "round {round}: the newest message is the one made last");
+        assert_eq!(newest, MessageId::from(seen.message), "round {round}: the newest message is the one made last");
         let (newest_photo_msg, newest_photo) = msgs.iter().filter(|m| !m.attachments.is_empty()).map(|m| (m.id, m.attachments[0].clone())).max_by_key(|(id, _)| *id).unwrap();
         assert_eq!(newest_photo_msg, newest, "round {round}: the newest message has the newest image");
         let (code, old_etag) = hub.thumb_status(&bt, newest_photo.id).await;
@@ -264,30 +264,30 @@ async fn ids_are_never_reused_on_a_v081_database() {
         let _: OkResponse = hub.ok(&bt, &format!("/api/messages/{newest}/delete"), json!({})).await;
         assert_eq!(hub.thumb_status(&bt, newest_photo.id).await.0, StatusCode::NOT_FOUND, "the image went with its message");
         let newest_channel = hub.get::<Vec<Channel>>(&dt, "/api/channels").await.iter().map(|c| c.id).max().unwrap();
-        assert_eq!(newest_channel, seen.channel, "round {round}");
+        assert_eq!(newest_channel, ChannelId::from(seen.channel), "round {round}");
         let _: OkResponse = hub.ok(&dt, &format!("/api/admin/channels/{newest_channel}/delete"), json!({})).await;
         let lines: Vec<DmMessage> = hub.get(&dt, &format!("/api/dms/{dm_id}/messages")).await;
         let newest_line = lines.iter().map(|l| l.id).max().unwrap();
-        assert_eq!(newest_line, seen.dm_line, "round {round}");
+        assert_eq!(newest_line, DmMessageId::from(seen.dm_line), "round {round}");
         let _: OkResponse = hub.ok(&dt, &format!("/api/dms/{dm_id}/messages/{newest_line}/delete"), json!({})).await;
 
         // ...and make new ones: every id is fresh (SQLite alone would hand the deleted ones out).
-        let text = hub.say(&bt, geral, &format!("texto {round}")).await;
+        let text = hub.say(&bt, geral.into_inner(), &format!("texto {round}")).await;
         assert!(text > seen.message, "round {round}: message {text} reused (newest seen {})", seen.message);
-        let (photo_msg, photo) = hub.send_photo(&bt, geral, 10 + round as u8, "foto nova").await;
-        assert!(photo_msg.id > text);
-        assert!(photo.id > seen.attachment, "round {round}: image {} reused (newest seen {})", photo.id, seen.attachment);
+        let (photo_msg, photo) = hub.send_photo(&bt, geral.into_inner(), 10 + round as u8, "foto nova").await;
+        assert!(photo_msg.id > MessageId::from(text));
+        assert!(photo.id > AttachmentId::from(seen.attachment), "round {round}: image {} reused (newest seen {})", photo.id, seen.attachment);
         assert_ne!(photo.hash, newest_photo.hash, "a different file");
         let (code, etag) = hub.thumb_status(&bt, photo.id).await;
         assert_eq!(code, StatusCode::OK);
         assert_ne!(etag, old_etag, "round {round}: the new image is served with its own file");
         let ch = hub.create_channel(&dt, &format!("nova {round}")).await;
-        assert!(ch.id > seen.channel, "round {round}: channel {} reused (newest seen {})", ch.id, seen.channel);
+        assert!(ch.id > ChannelId::from(seen.channel), "round {round}: channel {} reused (newest seen {})", ch.id, seen.channel);
         let empty: Vec<Message> = hub.get(&bt, &format!("/api/channels/{}/messages", ch.id)).await;
         assert!(empty.is_empty(), "a new channel starts empty");
         let line = hub.dm_line(&dt, dm_id, "dm novo").await;
         assert!(line > seen.dm_line, "round {round}: DM line {line} reused (newest seen {})", seen.dm_line);
-        seen.note(photo_msg.id, photo.id, ch.id, line);
+        seen.note(photo_msg.id.into_inner(), photo.id.into_inner(), ch.id.into_inner(), line);
         server.shutdown().await;
     }
     let db = voxhub_server::db::Db::open(&new_dir.join("voxhub.db")).unwrap();
@@ -307,14 +307,14 @@ async fn ids_are_never_reused_on_a_v081_database() {
     let old = run_old(&bin, &new_dir, port).await;
     let hub = Hub::at(&http, port);
     let msgs: Vec<Message> = hub.get(&bt, &format!("/api/channels/{geral}/messages")).await;
-    assert!(msgs.iter().any(|m| m.id == seen.message), "it reads what the new hub wrote");
+    assert!(msgs.iter().any(|m| m.id == MessageId::from(seen.message)), "it reads what the new hub wrote");
     // Its own deletes and inserts work (it may reuse an id here, as it always did).
     let _: OkResponse = hub.ok(&bt, &format!("/api/messages/{}/delete", seen.message), json!({})).await;
-    hub.say(&bt, geral, "de volta ao v0.8.1").await;
-    let (old_msg, old_img) = hub.send_photo(&bt, geral, 99, "foto do v0.8.1 de novo").await;
+    hub.say(&bt, geral.into_inner(), "de volta ao v0.8.1").await;
+    let (old_msg, old_img) = hub.send_photo(&bt, geral.into_inner(), 99, "foto do v0.8.1 de novo").await;
     let old_ch = hub.create_channel(&dt, "do v0.8.1").await;
     let old_line = hub.dm_line(&dt, dm_id, "dm do v0.8.1 de novo").await;
-    seen.note(old_msg.id, old_img.id, old_ch.id, old_line);
+    seen.note(old_msg.id.into_inner(), old_img.id.into_inner(), old_ch.id.into_inner(), old_line);
     drop(old);
 
     // ---- the new hub again: above everything either hub ever handed out
@@ -322,10 +322,10 @@ async fn ids_are_never_reused_on_a_v081_database() {
     config(&new_dir, port);
     let hub = Hub::at(&http, port);
     let server = start(new_hub(&new_dir)).await.unwrap();
-    let (photo_msg, photo) = hub.send_photo(&bt, geral, 200, "foto final").await;
-    assert!(photo_msg.id > seen.message && photo.id > seen.attachment, "{photo_msg:?} vs {seen:?}");
+    let (photo_msg, photo) = hub.send_photo(&bt, geral.into_inner(), 200, "foto final").await;
+    assert!(photo_msg.id > MessageId::from(seen.message) && photo.id > AttachmentId::from(seen.attachment), "{photo_msg:?} vs {seen:?}");
     let ch = hub.create_channel(&dt, "final").await;
-    assert!(ch.id > seen.channel);
+    assert!(ch.id > ChannelId::from(seen.channel));
     let line = hub.dm_line(&dt, dm_id, "dm final").await;
     assert!(line > seen.dm_line);
     let msgs: Vec<Message> = hub.get(&bt, &format!("/api/channels/{geral}/messages")).await;

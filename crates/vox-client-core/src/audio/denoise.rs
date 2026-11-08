@@ -303,6 +303,10 @@ impl FrameDenoiser {
             self.dfn.run(io, &mut self.dfn_out);
         }
         if level == NoiseLevel::AiMax && self.dfn.overloaded() {
+            tracing::warn!(
+                frame_ms = self.dfn.frame_ns_ms(),
+                "IA máxima caiu para IA leve: quadro acima do orçamento"
+            );
             ctl.fall_back();
             level = ctl.level();
         }

@@ -10,7 +10,7 @@
 //! Silent: no sound (`VOX_NO_PLAYBACK=1`), no microphone, and neither joins voice.
 
 use eframe::egui::Pos2;
-use vox_proto::{Presence, UserId};
+use vox_proto::{ChannelId, Presence, UserId};
 
 use super::Auto;
 use crate::app::{App, Screen};

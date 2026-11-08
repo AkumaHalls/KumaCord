@@ -105,23 +105,23 @@ mod tests {
     #[tokio::test]
     async fn an_older_hub_means_unsupported_not_an_error() {
         let old = client("404 Not Found", "").await;
-        assert_eq!(old.profile(3).await, ProfileReply::Unsupported);
+        assert_eq!(old.profile(UserId(3)).await, ProfileReply::Unsupported);
         let broken = client("500 Internal Server Error", "x").await;
-        assert!(matches!(broken.profile(3).await, ProfileReply::Failed(_)));
+        assert!(matches!(broken.profile(UserId(3)).await, ProfileReply::Failed(_)));
         let junk = client("200 OK", "not json").await;
-        assert!(matches!(junk.profile(3).await, ProfileReply::Failed(_)));
+        assert!(matches!(junk.profile(UserId(3)).await, ProfileReply::Failed(_)));
         let anon = HubClient::new("http://127.0.0.1:1").unwrap();
-        assert!(matches!(anon.profile(3).await, ProfileReply::Failed(_)));
+        assert!(matches!(anon.profile(UserId(3)).await, ProfileReply::Failed(_)));
     }
 
     #[tokio::test]
     async fn a_profile_and_the_edit_calls_round_trip() {
         let body = r##"{"user":{"id":3,"username":"ana","display_name":"Ana"},"bio":"oi","accent":"#112233","presence":"dnd","online":true,"member_since_ms":5}"##;
         let hub = client("200 OK", body).await;
-        let ProfileReply::Ready(p) = hub.profile(3).await else { panic!() };
+        let ProfileReply::Ready(p) = hub.profile(UserId(3)).await else { panic!() };
         assert_eq!((p.user.shown_name(), p.bio.as_str(), p.accent.as_deref(), p.presence, p.online), ("Ana", "oi", Some("#112233"), Presence::Dnd, true));
         let edited = hub.update_profile(&ProfileUpdate { bio: Some("novo".into()), ..Default::default() }).await.unwrap();
-        assert_eq!(edited.user.id, 3);
+        assert_eq!(edited.user.id, UserId(3));
         let presence = client("200 OK", r#"{"presence":"away"}"#).await;
         assert_eq!(presence.set_presence(Presence::Away, true).await.unwrap(), Presence::Away);
         let status = client("200 OK", r#"{"status":{"text":"x"}}"#).await;
