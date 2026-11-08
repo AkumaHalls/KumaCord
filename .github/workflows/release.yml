@@ -71,6 +71,7 @@ jobs:
           body_path: dist/release-body.md
           files: |
             dist/KumaCord-*-setup.exe
+            dist/KumaCord-setup.exe
             dist/KumaCord-*-setup.exe.sig
             dist/KumaCord-*-Windows.zip
             dist/latest.json

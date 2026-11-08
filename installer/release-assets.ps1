@@ -53,6 +53,14 @@ if ($LASTEXITCODE -ne 0) { throw "makensis falhou" }
 if (-not (Test-Path $setup)) { throw "o instalador nao apareceu em $setup" }
 Write-Host "setup.exe pronto: $setup"
 
+# 2b. Uma copia com nome FIXO (sem a versao): a landing page linka
+#     .../releases/latest/download/KumaCord-setup.exe sem precisar saber a versao,
+#     e o mesmo URL serve para sempre. O hash no latest.json continua sendo o que
+#     o app confere - o conteudo e identico.
+$fixed = Join-Path $dist "KumaCord-setup.exe"
+Copy-Item $setup $fixed -Force
+Write-Host "setup.exe de nome fixo pronto: $fixed"
+
 # 2. O zip portatil (exe + a abertura, que o app le do lado do exe).
 $portable = Join-Path $dist "portable-$Version"
 New-Item -ItemType Directory -Force -Path $portable | Out-Null
@@ -102,10 +110,12 @@ if (Test-Path $changelog) {
 if (-not $notes.Trim()) { $notes = "Veja o CHANGELOG.md do projeto para os detalhes desta versao." }
 
 # 6. O feed que o app consulta (o campo `signature` carrega o .sig inteiro).
+#    A URL usa o nome fixo: `releases/latest/download/KumaCord-setup.exe` aponta
+#    para a release mais recente, entao o feed nao carrega a versao no caminho.
 $manifest = [ordered]@{
     version   = $Version
     notes     = $notes.TrimEnd()
-    url       = "https://github.com/AkumaHalls/KumaCord/releases/download/$tag/KumaCord-$Version-setup.exe"
+    url       = "https://github.com/AkumaHalls/KumaCord/releases/latest/download/KumaCord-setup.exe"
     sha256    = $sha
     signature = $signature
 }

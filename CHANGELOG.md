@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.4.0] — 2026-11-08
+
+### Adicionado
+
+- **Landing page em `https://kumacord.akuma-labs.duckdns.org`** (o hub serve em `/`,
+  atrás do Nginx Proxy Manager com certificado): a página que você manda nos links,
+  com o botão "Baixar para Windows" como a do Discord. Tema escuro com céu de
+  tempestade — raios procedurais em canvas, faíscas e clarão —, as três colunas de
+  recursos e os três passos para entrar.
+- **URL de download que nunca muda**: o CI publica, além do instalador versionado,
+  uma cópia de nome fixo `KumaCord-setup.exe`. O link
+  `.../releases/latest/download/KumaCord-setup.exe` aponta sempre para a release mais
+  recente, então a página não precisa ser editada a cada versão.
+- **`GET /api/update` no hub**: espelha o `latest.json` do GitHub com cache de 10
+  minutos e devolve apenas versão e notas. O browser não consegue ler o GitHub direto
+  (os assets de release não mandam CORS), então a landing pergunta aqui — mesma
+  origem, sem proxy externo. Se o GitHub não responder, devolve o último conhecido; se
+  nunca houve, `503`, e a página mostra "a versão mais recente no GitHub" com o botão
+  funcionando (ele aponta para o GitHub, não para o hub).
+
+### Servidor
+
+- **A VPS foi atualizada da 1.0.6 para a 1.3.0**: o código estava 22 commits atrás.
+  Rebuild da imagem, troca do container com backup do banco antes, e a migração
+  (`user_version` 4 → 5) confirmida. Downtime de ~15 s; o app reconectou sozinho.
+
 ## [1.3.2] — 2026-11-08
 
 ### Corrigido (atualização automática)

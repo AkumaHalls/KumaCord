@@ -95,6 +95,12 @@ pub fn router(state: AppState) -> Router {
         .route("/ws", get(ws::handler))
         .layer(middleware::from_fn(log_request))
         .layer(middleware::from_fn(move |req, next| crate::serve::timeout_layer(limits.clone(), req, next)))
+        // A landing page e o feed de atualização, colados direto no router principal:
+        // são rotas sem estado (o cache do feed é um por processo), então entram aqui
+        // como qualquer outra rota — sem router à parte para dar merge.
+        .route("/", get(crate::landing::page))
+        .route("/favicon.ico", get(crate::landing::favicon))
+        .route("/api/update", get(crate::landing::update_feed))
         .with_state(state)
 }
 

@@ -17,6 +17,7 @@ pub mod ids;
 pub mod invites;
 pub mod ipv6;
 pub mod job;
+pub mod landing;
 pub mod listen;
 pub mod livekit;
 pub mod livekit_admin;
