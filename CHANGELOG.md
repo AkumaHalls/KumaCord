@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.3.2] — 2026-11-08
+
+### Corrigido (atualização automática)
+
+- **A janela de atualização ficava muda quando o download falhava** (rede, hash, disco):
+  mostrava o título e as notas, mas nenhum botão e nenhum motivo. Agora diz o que
+  aconteceu e oferece "Tentar de novo". É o mesmo buraco das fases sem branch que
+  quebrou a 1.3.0 — fechado nas fases `Pending` e `Failed`, que eram as duas que
+  sobravam.
+
 ## [1.3.1] — 2026-11-08
 
 ### Corrigido (atualização automática)

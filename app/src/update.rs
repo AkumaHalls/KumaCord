@@ -576,6 +576,12 @@ impl App {
             Phase::Pending { manifest, .. } => Some(manifest.version.clone()),
             _ => None,
         };
+        // Deu errado (rede, hash, disco): a janela não pode ficar muda — o mesmo buraco
+        // das fases sem branch, agora com o motivo e uma saída.
+        let failed: Option<String> = match &self.update.phase {
+            Phase::Failed => self.update.manual_status.clone(),
+            _ => None,
+        };
         let blink = self.update.blink;
         let mut open = true;
         let accent = if mandatory { WARN } else { GOLD };
@@ -698,6 +704,16 @@ impl App {
                     ui.add_space(8.0);
                     if ui_kit::button_sized(ui, Kind::Primary, ui_kit::Size::Large, Some(ph::DOWNLOAD_SIMPLE), "Instalar agora").clicked() {
                         self.update_apply_start();
+                    }
+                } else if let Some(motivo) = &failed {
+                    ui.label(
+                        egui::RichText::new(format!("Não deu para atualizar: {motivo}"))
+                            .font(theme::body(12.5))
+                            .color(WARN),
+                    );
+                    ui.add_space(8.0);
+                    if ui_kit::button_sized(ui, Kind::Primary, ui_kit::Size::Large, Some(ph::ARROWS_CLOCKWISE), "Tentar de novo").clicked() {
+                        self.update_check_start(true);
                     }
                 }
             });
