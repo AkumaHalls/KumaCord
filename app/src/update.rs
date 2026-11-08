@@ -220,6 +220,12 @@ fn badge_of(phase: &Phase) -> Option<BadgeState> {
     }
 }
 
+/// A largura que o cabeçalho do centro ocupa à direita — os botões de modo e o de membros.
+/// O badge do canto **não pode** cobri-los: a skill de UI/UX chisa isso de "não empilhar
+/// elementos fixos descuidadamente", e foi exatamente a reclamação (o badge tapava 4
+/// botões). Se o cabeçalho ganhar outro botão, este número tem de crescer junto.
+const HEADER_TOOLS_W: f32 = 150.0;
+
 impl App {
     // ------------------------------------------------------------ acessores (o Sobre usa)
 
@@ -516,6 +522,20 @@ impl App {
         }
     }
 
+    /// O texto curto do pill, por fase.
+    fn pill_texto(&self) -> String {
+        match self.update_badge_state() {
+            Some(BadgeState::Ready(v)) => format!("v{v} pronta"),
+            Some(BadgeState::Downloading { version: v, done, total }) => match total {
+                Some(t) if t > 0 => format!("v{v} · {:.0}%", done as f64 / t as f64 * 100.0),
+                _ => format!("v{v} · {:.0} MB", done as f64 / 1e6),
+            },
+            Some(BadgeState::Verifying(v)) => format!("conferindo v{v}"),
+            Some(BadgeState::Available(v)) => format!("v{v} encontrada"),
+            None => String::new(),
+        }
+    }
+
     /// A seta no canto superior direito, como o "update ready" do Discord.
     ///
     /// Presente sempre que há uma atualização em curso — encontrada, baixando,
@@ -532,59 +552,71 @@ impl App {
         };
         let hover = state.hover();
         let ready = state.ready();
-        // Só a seta "pronta" chama atenção com o anel (é a única que espera o clique); as
+        let texto = self.pill_texto();
+        if texto.is_empty() {
+            return;
+        }
+        // Só a seta "pronta" chama atenção com o brilho (é a única que espera o clique); as
         // outras ficam quietas, porque o usuário não tem o que fazer enquanto trabalham.
         let calling = ready && {
             let now = ctx.input(|i| i.time);
             let first = *self.update.badge_seen.get_or_insert(now);
             let age = (now - first).max(0.0);
+            if age < BADGE_CALL_SECS {
+                self.update.badge_pulse = Some((((age * 2.4).sin() * 0.5 + 0.5).powf(0.7)) as f32);
+            } else {
+                self.update.badge_pulse = None;
+            }
             age < BADGE_CALL_SECS
         };
-        // Um balanço curto e lento (cerca de 1,2 s por ciclo), de no máximo 3 px.
-        let bounce: f32 = if calling {
-            let now = ctx.input(|i| i.time);
-            let first = *self.update.badge_seen.get_or_insert(now);
-            (((now - first).max(0.0) * 2.6).sin() as f32) * 3.0
-        } else {
-            0.0
-        };
-        // Foreground, e não Tooltip: é a ordem que o resto do app usa para o que precisa
-        // aparecer por cima (o painel de conexão, os avisos, as imagens).
+        // Foreground (a ordem do resto do app para o que passa por cima) e ancorado à
+        // ESQUERDA dos botões do cabeçalho do centro: um elemento fixo não pode tapar
+        // outro — foi a reclamação, e a skill de UI/UX chama isso de não empilhar elementos
+        // fixos descuidadamente.
         let r = egui::Area::new(egui::Id::new("update_badge"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0 - bounce))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-(10.0 + HEADER_TOOLS_W), 10.0))
             .interactable(true)
             .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(theme::ABAJUR)
-                    .corner_radius(egui::CornerRadius::same(17))
-                    .inner_margin(egui::Margin::symmetric(11, 11))
-                    .shadow(egui::epaint::Shadow {
-                        offset: [0, 2],
-                        blur: 8,
-                        spread: 0,
-                        color: Color32::from_black_alpha(90),
-                    })
-                    .show(ui, |ui| {
-                        crate::ui_kit::icon_button(ui, ph::DOWNLOAD_SIMPLE, &hover, crate::ui_kit::IconState::Normal).clicked()
-                    })
-                    .inner
+                // Um pill: ícone + texto, medido aqui dentro (nada de largura chutada).
+                let fonte = theme::semibold(12.5);
+                let g_txt = ui.painter().layout_no_wrap(texto.clone(), fonte.clone(), theme::GIZ);
+                let g_ico = ui.painter().layout_no_wrap(ph::DOWNLOAD_SIMPLE.to_owned(), theme::body(15.0), theme::GIZ);
+                let pad = egui::vec2(12.0, 6.0);
+                let gap = 7.0;
+                let w = pad.x * 2.0 + g_ico.size().x + gap + g_txt.size().x;
+                let h = (g_txt.size().y + pad.y * 2.0).max(30.0);
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+                let painter = ui.painter();
+                // Fundo e borda: um pill de verdade, não um quadrado com raio grande.
+                painter.rect_filled(rect, egui::CornerRadius::same(h as u8 / 2), theme::ABAJUR);
+                painter.rect_stroke(
+                    rect,
+                    egui::CornerRadius::same(h as u8 / 2),
+                    egui::Stroke::new(1.0, theme::GIZ.linear_multiply(0.18)),
+                    egui::StrokeKind::Inside,
+                );
+                let cy = rect.center().y;
+                let ico_w = g_ico.size().x;
+                let mut x = rect.left() + pad.x;
+                painter.galley(egui::pos2(x, cy - g_ico.size().y / 2.0), g_ico, theme::GIZ);
+                x += ico_w + gap;
+                painter.galley(egui::pos2(x, cy - g_txt.size().y / 2.0), g_txt, theme::GIZ);
+                resp.on_hover_text(&hover).clicked()
             });
-        // O anel que pulsa em volta: some e volta, chamando atenção sem piscar texto.
+        // O brilho que pulsa em volta: some e volta, sem mover o pill do lugar.
         if calling {
-            let now = ctx.input(|i| i.time);
-            let first = *self.update.badge_seen.get_or_insert(now);
-            let pulse = ((((now - first).max(0.0) * 2.2).sin() * 0.5 + 0.5).powf(0.6)) as f32;
-            self.update.badge_pulse = Some(pulse);
-            let grow = 3.0 + 7.0 * pulse;
+            let pulse = self.update.badge_pulse.unwrap_or(0.0);
+            let grow = 2.0 + 5.0 * pulse;
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("update_badge_ring")));
             painter.rect_stroke(
                 r.response.rect.expand(grow),
-                egui::CornerRadius::same((19.0 + grow).round() as u8),
-                egui::Stroke::new(2.0, theme::GIZ.linear_multiply(0.15 + 0.55 * pulse)),
+                egui::CornerRadius::same((r.response.rect.height() / 2.0 + grow).round() as u8),
+                egui::Stroke::new(1.5, theme::GIZ.linear_multiply(0.10 + 0.55 * pulse)),
                 egui::StrokeKind::Outside,
             );
-            ctx.request_repaint_after(Duration::from_millis(60));
+            // 30 fps: o bastante para o brilho deslizar sem parecer travado.
+            ctx.request_repaint_after(Duration::from_millis(33));
         } else {
             self.update.badge_pulse = None;
         }

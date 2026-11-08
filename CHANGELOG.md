@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.4.2] — 2026-11-08
+
+### Melhorado (o aviso de atualização na tela inicial)
+
+Duas reclamações diretas, as duas corrigidas com a orientação da skill de UI/UX:
+
+- **O aviso ficava em cima de outros botões.** Ele era ancorado no canto superior direito
+  sem contar os elementos fixos que já estavam lá — exatamente os botões de modo e o de
+  membros do cabeçalho do centro (4 botões). A regra da skill é não empilhar elementos
+  fixos descuidadamente; agora o aviso é ancorado à esquerda deles.
+- **O botão era feio e a animação parecia travada.** O quadrado mudo de 52×52 virou um
+  pill com texto — "v9.9.9 pronta", "v9.9.9 · 45%", "conferindo v9.9.9" — medido pelo
+  próprio conteúdo, com borda e cantos totalmente redondos. E a animação, que mexia o
+  botão de lugar a 16 fps (por isso o lag), agora é só um brilho pulsando em volta, a
+  30 fps, sem mover nada.
+
 ## [1.4.1] — 2026-11-08
 
 ### Corrigido (atualização automática — o bug que deixou todo mundo preso)
