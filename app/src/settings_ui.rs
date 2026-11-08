@@ -612,7 +612,7 @@ impl App {
         ui.add_space(space::S);
         let busy = self.update_busy();
         ui.horizontal(|ui| {
-            if ui_kit::button(ui, Kind::Secondary, Some(ph::ARROWS_CLOCKWISE), "Verificar atualizações").clicked() && !busy {
+            if ui_kit::button(ui, Kind::Secondary, Some(ph::ARROWS_CLOCKWISE), "Verificar atualizações").clicked() {
                 self.update_check_start(true);
             }
             if self.update_available_version().is_some() {
@@ -620,6 +620,8 @@ impl App {
                 // convite: o botão instala, em vez de abrir uma janela que não faz nada.
                 let (label, icon) = if self.update_pending() {
                     ("Instalar agora", ph::DOWNLOAD_SIMPLE)
+                } else if busy {
+                    ("Ver o progresso", ph::ARROWS_CLOCKWISE)
                 } else {
                     ("Ver a nova versão", ph::SPARKLE)
                 };
@@ -630,14 +632,26 @@ impl App {
         });
         // O que está acontecendo de fato: baixar 72 MB em segunda plano levava minutos
         // e o Sobre ficava calado sobre isso — parecia que o botão tinha morrido.
-        if let Some((done, total)) = self.update_progress_bytes() {
-            let pct = total.map(|t| if t > 0 { done as f64 / t as f64 } else { 0.0 }).unwrap_or(0.0);
-            let text = match total {
-                Some(t) => format!("Baixando a atualização… {:.0}% ({:.1} de {:.1} MB)", pct * 100.0, done as f64 / 1e6, t as f64 / 1e6),
-                None => format!("Baixando a atualização… {:.1} MB", done as f64 / 1e6),
-            };
-            let bar = egui::ProgressBar::new(pct as f32).text(text);
-            ui.add(bar);
+        if let Some(state) = self.update_badge_state() {
+            match state {
+                crate::update::BadgeState::Downloading { done, total, .. } => {
+                    let pct = total.map(|t| if t > 0 { done as f64 / t as f64 } else { 0.0 }).unwrap_or(0.0);
+                    let text = match total {
+                        Some(t) => format!("Baixando a atualiza\u{00e7}\u{00e3}o\u{2026} {:.0}% ({:.1} de {:.1} MB)", pct * 100.0, done as f64 / 1e6, t as f64 / 1e6),
+                        None => format!("Baixando a atualiza\u{00e7}\u{00e3}o\u{2026} {:.1} MB", done as f64 / 1e6),
+                    };
+                    ui.add(egui::ProgressBar::new(pct as f32).text(text));
+                }
+                crate::update::BadgeState::Verifying(v) => {
+                    ui.label(RichText::new(format!("Conferindo a assinatura da v{v}\u{2026}")).size(theme::size::SMALL + 0.5).color(theme::NEVOA));
+                }
+                crate::update::BadgeState::Available(v) => {
+                    ui.label(RichText::new(format!("Vers\u{00e3}o v{v} encontrada, baixando em segundo plano\u{2026}")).size(theme::size::SMALL + 0.5).color(theme::NEVOA));
+                }
+                crate::update::BadgeState::Ready(v) => {
+                    ui.label(RichText::new(format!("v{v} baixada e conferida \u{2014} clique em \"Instalar agora\".")).size(theme::size::SMALL + 0.5).color(theme::GIZ));
+                }
+            }
         } else if busy {
             ui.label(RichText::new("Verificando…").size(theme::size::SMALL + 0.5).color(theme::NEVOA));
         }

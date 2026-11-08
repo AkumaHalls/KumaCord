@@ -102,7 +102,7 @@ fn is_newer(v: &str) -> bool {
 // ---------------------------------------------------------------- estado
 
 /// O que a UI mostra.
-#[derive(Default)]
+#[derive(Debug, Default)]
 enum Phase {
     #[default]
     Idle,
@@ -161,6 +161,8 @@ pub struct UpdateUi {
     /// atenção roda por [`BADGE_CALL_SECS`] a partir daqui e depois silencia —
     /// um badge não pode custar repaint a sessão inteira.
     badge_seen: Option<f64>,
+    /// O brilho do anel da seta (0 a 1), calculado no quadro em que ele é pedido.
+    badge_pulse: Option<f32>,
 }
 
 impl UpdateUi {
@@ -168,6 +170,53 @@ impl UpdateUi {
     /// campos ficam privados ao módulo e nascem no default.
     pub fn with_first_seen(first_seen: Option<(String, u64)>) -> Self {
         Self { first_seen, ..Default::default() }
+    }
+}
+
+/// O que a seta do canto está dizendo, por fase. `None`: não há atualização nenhuma em
+/// curso, e a seta não aparece.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BadgeState {
+    /// Detectou a versão nova, ainda não baixou.
+    Available(String),
+    /// Baixando: bytes prontos, total quando o servidor diz.
+    Downloading { version: String, done: u64, total: Option<u64> },
+    /// Baixou: conferindo hash e assinatura.
+    Verifying(String),
+    /// Conferida e pronta: basta o clique para instalar.
+    Ready(String),
+}
+
+impl BadgeState {
+    /// O texto do balão (o que o mouse mostra).
+    pub fn hover(&self) -> String {
+        match self {
+            Self::Available(v) => format!("Atualização v{v} encontrada — baixando"),
+            Self::Downloading { version: v, done, total } => match total {
+                Some(t) if *t > 0 => format!("Baixando a v{v}… {:.0}%", *done as f64 / *t as f64 * 100.0),
+                _ => format!("Baixando a v{v}… {:.1} MB", *done as f64 / 1e6),
+            },
+            Self::Verifying(v) => format!("Conferindo a assinatura da v{v}…"),
+            Self::Ready(v) => format!("Atualização v{v} pronta — clique para instalar"),
+        }
+    }
+
+    /// Só a fase "pronta" espera o clique do usuário; as outras estão trabalhando.
+    pub fn ready(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+}
+
+/// O estado da seta do canto para uma fase. Puro, para o teste poder percorrer todas as
+/// fases sem uma janela — foi uma fase sem dono na interface que quebrou o atualizador.
+fn badge_of(phase: &Phase) -> Option<BadgeState> {
+    match phase {
+        Phase::Available(m) => Some(BadgeState::Available(m.version.clone())),
+        Phase::Downloading { manifest: m, done, total } => {
+            Some(BadgeState::Downloading { version: m.version.clone(), done: *done, total: *total })
+        }
+        Phase::Pending { manifest: m, .. } => Some(BadgeState::Ready(m.version.clone())),
+        _ => None,
     }
 }
 
@@ -220,13 +269,17 @@ impl App {
         self.update.manual_status.clone()
     }
 
-    /// O Sobre (ou o banner) pediu para ver a versão nova. Com o instalador já
-    /// conferido esperando o clique, o pedido é "instalar" — o mesmo da seta.
-    /// Antes disso (só detectou a versão), abre a janela de informações.
+    /// O Sobre (ou a seta) pediu para ver a atualização. Qualquer fase tem uma resposta:
+    /// com o instalador pronto, o pedido é "instalar"; se ainda está trabalhando, abre a
+    /// janela para o trabalho ficar visível em vez de sumir num clique sem resposta.
     pub fn update_open_window(&mut self) {
         match &self.update.phase {
             Phase::Available(_) => self.update.window_open = true,
             Phase::Pending { .. } => self.update_apply_start(),
+            Phase::Downloading { .. } | Phase::Verifying | Phase::Checking => {
+                tracing::info!("update: o Sobre pediu a atualização enquanto ela está em curso");
+                self.update.window_open = true;
+            }
             _ => {}
         }
     }
@@ -289,7 +342,17 @@ impl App {
             return;
         }
         if !matches!(self.update.phase, Phase::Idle | Phase::UpToDate | Phase::Failed) {
-            return; // já há algo em voo (ou uma versão esperando decisão)
+            // Já há algo em voo. Antes o clique caía no vazio e o botão parecia morto:
+            // agora ele diz o que está acontecendo (e abre a janela com o progresso).
+            if manual {
+                let msg = match self.update_badge_state() {
+                    Some(s) => format!("Já estou cuidando disso: {}", s.hover()),
+                    None => "Já estou verificando.".into(),
+                };
+                self.update.manual_status = Some(msg);
+                self.update.window_open = true;
+            }
+            return;
         }
         if manual {
             self.update.manual_status = Some("Verificando…".into());
@@ -393,8 +456,13 @@ impl App {
         } else {
             // Available (sem thread em voo): nada a consumir; descarta o canal.
         }
-        if let Some(rx) = keep {
-            self.update.rx = Some(rx);
+        // Um handler pode ter aberto um canal novo — o download automático começa dentro
+        // do `Msg::Available`, aqui dentro deste mesmo laço. Regravar o antigo por cima
+        // destruiria o novo, e a thread em vôo ficaria mandando o "pronto, esperando o
+        // clique" para um canal que ninguém lê. Foi assim que a barra de progresso travou:
+        // a fase parava em `Downloading` para sempre, sem seta e com os botões mortos.
+        if self.update.rx.is_none() {
+            self.update.rx = keep;
         }
         // Reinício: dá um instante para a mensagem pintar e sai — o instalador
         // (já lançado com um atraso de 1 s) substitui os arquivos e reabre o app.
@@ -433,24 +501,55 @@ impl App {
         ctx.request_repaint_after(Duration::from_secs(AUTO_CHECK_MINUTES * 60));
     }
 
-    /// A seta no canto superior direito, como o "update ready" do Discord: aparece só
-    /// quando há um instalador já conferido (hash + assinatura) esperando o clique, e
-    /// Instala na hora. Nos primeiros segundos ela balanca e pulsa um anel, para o olho
-    /// achar; depois fica quieta (nada de repaint a sessão inteira por causa dela).
+    /// O estado da seta do canto agora. `None`: nada de atualização em curso.
+    ///
+    /// Antes ela só aparecia em `Pending` (instalador pronto). Como o app baixa sozinho
+    /// em segundo plano, a fase passava a maior parte do tempo em `Downloading` — e o
+    /// usuário não via nada. Agora a seta está presente em toda fase em que exista uma
+    /// atualização, que é o que o "update ready" do Discord faz: um sinal na tela
+    /// principal, do começo ao fim.
+    pub fn update_badge_state(&self) -> Option<BadgeState> {
+        // `Verifying` não carrega o manifest; a versão vem do resto do estado.
+        match &self.update.phase {
+            Phase::Verifying => self.update_available_version().map(BadgeState::Verifying),
+            fase => badge_of(fase),
+        }
+    }
+
+    /// A seta no canto superior direito, como o "update ready" do Discord.
+    ///
+    /// Presente sempre que há uma atualização em curso — encontrada, baixando,
+    /// conferindo ou pronta —, mostrando em que ponto está. Clicar na pronta instala na
+    /// hora; nas outras fases abre a janela com o detalhe (a barra de progresso, o que
+    /// está sendo conferido), para o trabalho nunca ser invisível.
+    ///
+    /// Nos primeiros segundos a seta "pronta" balança e pulsa um anel; depois fica
+    /// quieta, para não custar repaint a sessão inteira.
     pub fn update_badge(&mut self, ctx: &egui::Context) {
-        if !self.update_pending() {
+        let Some(state) = self.update_badge_state() else {
             self.update.badge_seen = None;
             return;
-        }
-        let version = self.update_available_version().unwrap_or_default();
-        let now = ctx.input(|i| i.time);
-        let first = *self.update.badge_seen.get_or_insert(now);
-        let age = (now - first).max(0.0);
-        let calling = age < BADGE_CALL_SECS;
+        };
+        let hover = state.hover();
+        let ready = state.ready();
+        // Só a seta "pronta" chama atenção com o anel (é a única que espera o clique); as
+        // outras ficam quietas, porque o usuário não tem o que fazer enquanto trabalham.
+        let calling = ready && {
+            let now = ctx.input(|i| i.time);
+            let first = *self.update.badge_seen.get_or_insert(now);
+            let age = (now - first).max(0.0);
+            age < BADGE_CALL_SECS
+        };
         // Um balanço curto e lento (cerca de 1,2 s por ciclo), de no máximo 3 px.
-        let bounce: f32 = if calling { (age * 2.6).sin() as f32 * 3.0 } else { 0.0 };
-        // Foreground, e não Tooltip: é a ordem que o resto do app usa para o que
-        // precisa aparecer por cima (o painel de conexão, os avisos, as imagens).
+        let bounce: f32 = if calling {
+            let now = ctx.input(|i| i.time);
+            let first = *self.update.badge_seen.get_or_insert(now);
+            (((now - first).max(0.0) * 2.6).sin() as f32) * 3.0
+        } else {
+            0.0
+        };
+        // Foreground, e não Tooltip: é a ordem que o resto do app usa para o que precisa
+        // aparecer por cima (o painel de conexão, os avisos, as imagens).
         let r = egui::Area::new(egui::Id::new("update_badge"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0 - bounce))
@@ -467,19 +566,16 @@ impl App {
                         color: Color32::from_black_alpha(90),
                     })
                     .show(ui, |ui| {
-                        crate::ui_kit::icon_button(
-                            ui,
-                            ph::DOWNLOAD_SIMPLE,
-                            &format!("Atualização v{version} pronta — clique para instalar"),
-                            crate::ui_kit::IconState::Normal,
-                        )
-                        .clicked()
+                        crate::ui_kit::icon_button(ui, ph::DOWNLOAD_SIMPLE, &hover, crate::ui_kit::IconState::Normal).clicked()
                     })
                     .inner
             });
         // O anel que pulsa em volta: some e volta, chamando atenção sem piscar texto.
         if calling {
-            let pulse = (((age * 2.2).sin() * 0.5 + 0.5).powf(0.6)) as f32;
+            let now = ctx.input(|i| i.time);
+            let first = *self.update.badge_seen.get_or_insert(now);
+            let pulse = ((((now - first).max(0.0) * 2.2).sin() * 0.5 + 0.5).powf(0.6)) as f32;
+            self.update.badge_pulse = Some(pulse);
             let grow = 3.0 + 7.0 * pulse;
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("update_badge_ring")));
             painter.rect_stroke(
@@ -489,9 +585,18 @@ impl App {
                 egui::StrokeKind::Outside,
             );
             ctx.request_repaint_after(Duration::from_millis(60));
+        } else {
+            self.update.badge_pulse = None;
         }
+        tracing::debug!(estado = ?state, "update: seta do canto");
         if r.response.clicked() {
-            self.update_apply_start();
+            if ready {
+                self.update_apply_start();
+            } else {
+                // Nas outras fases o clique abre a janela, que mostra o progresso — o
+                // trabalho nunca fica invisível.
+                self.update.window_open = true;
+            }
         }
     }
 
@@ -853,13 +958,20 @@ fn feed_url() -> String {
     std::env::var(FEED_ENV).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| FEED_URL.to_string())
 }
 
-fn http_get(url: &str) -> reqwest::Result<reqwest::blocking::Response> {
+/// O feed é pequeno: 30 s bastam para 2 KB.
+const FEED_TIMEOUT: Duration = Duration::from_secs(30);
+/// O instalador tem ~72 MB. O `timeout` do reqwest cobre o download INTEIRO, então 30 s
+/// exigia 2,4 MB/s de quem baixa — qualquer conexão mais modesta estourava com "o
+/// download parou no meio". Dez minutos dão folga até para 1 MB/s.
+const SETUP_TIMEOUT: Duration = Duration::from_secs(600);
+
+fn http_get(url: &str, timeout: Duration) -> reqwest::Result<reqwest::blocking::Response> {
     reqwest::blocking::Client::builder()
         .user_agent(concat!("KumaCord/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
         .build()?
         .get(url)
-        .timeout(Duration::from_secs(30))
+        .timeout(timeout)
         .send()
 }
 
@@ -867,7 +979,7 @@ fn check_thread(tx: Sender<Msg>) {
     let url = feed_url();
     tracing::info!(%url, "update: verificando");
     let result = (|| -> Result<Msg, String> {
-        let body = http_get(&url).map_err(|e| format!("sem conexão com o GitHub ({e})"))?;
+        let body = http_get(&url, FEED_TIMEOUT).map_err(|e| format!("sem conexão com o GitHub ({e})"))?;
         let body = body.text().map_err(|e| format!("resposta ilegível ({e})"))?;
         let manifest: Manifest = serde_json::from_str(&body).map_err(|_| "o feed de atualização está em formato desconhecido".to_string())?;
         if !is_newer(&manifest.version) {
@@ -894,7 +1006,7 @@ fn install_thread(tx: Sender<Msg>, manifest: Manifest) {
     let result = (|| -> Result<(), String> {
         // Baixa para o temp, conferindo o hash na stream.
         let dest = std::env::temp_dir().join(format!("KumaCord-{}-setup.exe", manifest.version));
-        let mut rsp = http_get(&manifest.url).map_err(|e| format!("o download não começou ({e})"))?;
+        let mut rsp = http_get(&manifest.url, SETUP_TIMEOUT).map_err(|e| format!("o download não começou ({e})"))?;
         let total = rsp.content_length();
         let mut file = std::fs::File::create(&dest).map_err(|e| format!("não deu para criar o arquivo temporário ({e})"))?;
         use sha2::{Digest as _, Sha256};
@@ -967,4 +1079,110 @@ fn launch_installer(path: &std::path::Path) -> Result<(), String> {
 fn public_key() -> Option<minisign_verify::PublicKey> {
     let body = PUBLIC_KEY.lines().find(|l| l.starts_with("RW"))?;
     minisign_verify::PublicKey::from_base64(body).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Um manifest de mentira, para as fases que carregam um.
+    fn manifest(v: &str) -> Manifest {
+        Manifest {
+            version: v.into(),
+            notes: None,
+            url: "https://exemplo/x.exe".into(),
+            sha256: "abc".into(),
+            signature: "assinado".into(),
+            grace_hours: None,
+        }
+    }
+
+    /// A fase `Downloading` (o app baixa em segundo plano).
+    fn downloading(v: &str, done: u64, total: Option<u64>) -> Phase {
+        Phase::Downloading { manifest: Box::new(manifest(v)), done, total }
+    }
+
+    /// A regressão que importa: nenhuma fase em que exista uma atualização pode ficar sem
+    /// seta. Foi exatamente isso que quebrou — a seta só aparecia em `Pending`, e o app
+    /// passava quase todo o tempo baixando, sem nenhum sinal na tela principal.
+    #[test]
+    fn toda_fase_com_atualizacao_tem_seta() {
+        for (fase, quer) in [
+            (Phase::Available(Box::new(manifest("9.9.9"))), true),
+            (downloading("9.9.9", 1024, Some(72_800_000)), true),
+            (Phase::Pending { manifest: Box::new(manifest("9.9.9")), path: "/tmp/x".into() }, true),
+            // Sem atualização nenhuma: nada de seta.
+            (Phase::Idle, false),
+            (Phase::Checking, false),
+            (Phase::UpToDate, false),
+            (Phase::Failed, false),
+            (Phase::Restarting, false),
+        ] {
+            assert_eq!(badge_of(&fase).is_some(), quer, "fase {fase:?}: seta deveria existir? {quer}");
+        }
+    }
+
+    #[test]
+    fn so_a_fase_pronta_espera_o_clique() {
+        let pronta = badge_of(&Phase::Pending { manifest: Box::new(manifest("1.0.0")), path: "/tmp/x".into() }).unwrap();
+        assert!(pronta.ready(), "pronta é a única que instala no clique");
+        for fase in [Phase::Available(Box::new(manifest("1.0.0"))), downloading("1.0.0", 10, Some(100))] {
+            assert!(!badge_of(&fase).unwrap().ready(), "{fase:?} está trabalhando: não instala no clique");
+        }
+    }
+
+    #[test]
+    fn o_balao_diz_em_que_ponto_esta() {
+        let metade = badge_of(&downloading("1.2.3", 36_400_000, Some(72_800_000))).unwrap();
+        assert!(metade.hover().contains("50%"), "metade baixada: {}", metade.hover());
+        let sem_total = badge_of(&downloading("1.2.3", 1_000_000, None)).unwrap();
+        assert!(sem_total.hover().contains("1.0 MB"), "sem total, mostra os MB: {}", sem_total.hover());
+        let pronta = badge_of(&Phase::Pending { manifest: Box::new(manifest("1.2.3")), path: "/tmp/x".into() }).unwrap();
+        assert!(pronta.hover().contains("clique para instalar"), "{}", pronta.hover());
+    }
+
+    /// `Verifying` não carrega o manifest, então a fase pura não sabe a versão — quem
+    /// preenche é `update_badge_state`, que olha o resto do estado.
+    #[test]
+    fn verifying_nao_tem_versao_na_fase_pura() {
+        assert!(badge_of(&Phase::Verifying).is_none(), "a versão vem de outro lugar");
+    }
+
+    /// O bug raiz: o `poll` regravava o canal antigo por cima do novo, e a thread do
+    /// download ficava mandando "pronto, esperando o clique" para um canal que ninguém
+    /// lia — a fase parava em `Downloading` para sempre, sem seta e com os botões mortos.
+    ///
+    /// O contrato: quando um handler abriu um canal novo durante o laço, o antigo **não**
+    /// pode ser regravado por cima. A regra é "só regrava se não há canal nenhum".
+    #[test]
+    fn um_canal_novo_sobrevive_ao_quadro() {
+        let esquecer = |rx: Option<std::sync::mpsc::Receiver<Msg>>, keep: Option<std::sync::mpsc::Receiver<Msg>>| {
+            if rx.is_none() {
+                keep
+            } else {
+                rx
+            }
+        };
+        // (a) o handler abriu um canal novo: ele fica, e `keep` (o antigo) é descartado.
+        let (_tx, rx_novo): (std::sync::mpsc::Sender<Msg>, std::sync::mpsc::Receiver<Msg>) = std::sync::mpsc::channel();
+        assert!(esquecer(Some(rx_novo), None).is_some(), "o canal novo tem de sobreviver");
+        // (b) ninguém abriu canal novo: `keep` (o antigo) é o que fica.
+        let (_tx2, rx_antigo): (std::sync::mpsc::Sender<Msg>, std::sync::mpsc::Receiver<Msg>) = std::sync::mpsc::channel();
+        assert!(esquecer(None, Some(rx_antigo)).is_some(), "sem canal novo, o antigo continua");
+    }
+
+    #[test]
+    fn o_manifest_le_so_o_que_o_app_usa() {
+        let raw = "{\"version\":\"9.9.9\",\"notes\":\"ola\",\"url\":\"https://exemplo/x.exe\",\"sha256\":\"abc\",\"signature\":\"x\",\"grace_hours\":3}";
+        let m: Manifest = serde_json::from_str(raw).unwrap();
+        assert_eq!(m.version, "9.9.9");
+        assert_eq!(m.grace_hours(), 3, "a carência vem do feed");
+    }
+
+    #[test]
+    fn sem_carencia_no_feed_vale_o_padrao() {
+        let raw = "{\"version\":\"9.9.9\",\"notes\":null,\"url\":\"https://exemplo/x.exe\",\"sha256\":\"abc\",\"signature\":\"x\"}";
+        let m: Manifest = serde_json::from_str(raw).unwrap();
+        assert_eq!(m.grace_hours(), DEFAULT_GRACE_HOURS, "sem o campo, o padrão");
+    }
 }

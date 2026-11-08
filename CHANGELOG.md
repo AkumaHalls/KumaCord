@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.4.1] — 2026-11-08
+
+### Corrigido (atualização automática — o bug que deixou todo mundo preso)
+
+**A atualização não instalava de jeito nenhum, e agora instala.** A causa raiz era um
+ canal sobrescrito: quando o app achava uma versão nova, ele começava a baixar *dentro* do
+ laço que estava consumindo as mensagens — e no fim do quadro o canal antigo era regravado
+ por cima do novo. A thread do download ficava mandando "pronto, esperando o clique" para
+ um canal que ninguém lia. Resultado: a fase parava em **`Downloading` para sempre**, com a
+ barra travada, sem seta nenhuma e com os dois botões do "Sobre" mortos.
+
+- **O canal novo sobrevive ao quadro** (`update_poll` só regrava quando não há outro).
+- **A seta aparece em toda fase em que exista atualização**, não só quando está pronta:
+  encontrada, baixando (com a porcentagem), conferindo a assinatura, ou pronta para
+  instalar. Antes ela só existia em `Pending`, e o app passava quase todo o tempo
+  baixando — por isso ninguém via nada.
+- **Clicar na seta em qualquer fase faz algo**: na pronta, instala; nas outras, abre a
+  janela com o progresso. Antes o clique simplesmente não existia.
+- **Os botões do "Sobre" nunca mais ficam mudos**: "Verificar atualizações" agora diz o
+  que está acontecendo ("Já estou cuidando disso: baixando… 50%"), e o segundo botão muda
+  de texto conforme a fase — "Instalar agora", "Ver o progresso" ou "Ver a nova versão".
+- **O timeout do download era de 30 s para 72 MB** — exigia 2,4 MB/s de quem baixa, e
+  qualquer conexão mais modessa morria com "o download parou no meio". Agora são 10
+  minutos.
+
+### Testes
+
+- Sete testes novos em `update.rs`, incluindo um que percorre **todas as fases** e exige
+  que nenhuma fique sem seta — foi uma fase sem dono na interface que causou o estrago.
+
 ## [1.4.0] — 2026-11-08
 
 ### Adicionado
