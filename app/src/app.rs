@@ -308,6 +308,8 @@ pub struct VoiceUi {
     pub conn_graph: Vec<u32>,
     /// Perda de pacotes do nosso uplink de áudio (%), do LiveKit.
     pub conn_loss_pct: f32,
+    /// O ping de mídia real (RTT do par ICE), quando o LiveKit informa.
+    pub conn_rtt_ms: Option<u32>,
     pub conn_packets_sent: i64,
     pub conn_packets_lost: i64,
     /// Última vez que a voz mandou stats de rede.
@@ -1948,7 +1950,23 @@ impl App {
                 self.voice.conn_packets_sent = sent;
                 self.voice.conn_packets_lost = lost;
                 self.voice.conn_rtc_at = Some(std::time::Instant::now());
-                let _ = rtt_ms;
+                // O ping de mídia de verdade, quando o LiveKit informa. Sem ele (sem chamada
+                // ativa, ou antes do primeiro relatório), a medição TCP continua valendo.
+                if let Some(ms) = rtt_ms {
+                    self.voice.conn_rtt_ms = Some(ms);
+                    // O histograma e a média passam a usar o ping real.
+                    let g = &mut self.voice.conn_graph;
+                    g.push(ms);
+                    if g.len() > 40 {
+                        g.remove(0);
+                    }
+                    let h = &mut self.voice.conn_ping_hist;
+                    h.push(ms);
+                    if h.len() > 20 {
+                        h.remove(0);
+                    }
+                    self.voice.conn_ping_ms = Some(ms);
+                }
             }
             VoiceEvent::EncoderSwitched { camera, label, backend } => {
                 tracing::warn!(camera, %label, %backend, "own video switched encoder (unstable video)");

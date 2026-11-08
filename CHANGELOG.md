@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.2.2] — 2026-11-08
+
+### Corrigido
+
+- **Cargos criados no servidor não apareciam no perfil**: o cartão de perfil mostrava só o
+  cargo do sistema (Dono/Admin/Moderador/Membro) e ignorava `User::role_ids`. Um membro com
+  cargos customizados aparecia igual a um sem nenhum. O perfil agora desenha os cargos do
+  servidor como pills coloridas, cada um com a cor que o cargo tem.
+- **Ping da chamada era aproximação**: o card de conexão media o tempo de resposta de uma
+  conexão TCP com o hub, que não é o caminho da voz. O RTT de verdade (do par ICE
+  selecionado pelo LiveKit) agora é lido a cada 2 s e alimenta o "Ping médio", o "Último
+  ping" e o gráfico. A medição TCP continua como reserva, e só roda quando o RTT de mídia
+  não vem.
+
+### Corrigido (desempenho)
+
+- **A "IA máxima" caía sozinha por um falso positivo**: o primeiro quadro depois de carregar
+  o DeepFilterNet é lento (aquecimento do modelo) e entrava na média de tempo por quadro.
+  Com a carência de só 50 quadros, a média ainda estava envenenada quando o orçamento de
+  5 ms era verificado, então a supressão mais pesada caía mesmo em máquinas que davam
+  conta. Os 20 primeiros quadros de cada carregamento (e de cada reset) agora ficam fora
+  da média, e a queda passou a registrar no log *quanto* o quadro levou — assim dá para
+  distinguir defeito de máquina lenta.
+
 ## [1.2.1] — 2026-11-06
 
 ### Corrigido

@@ -140,13 +140,16 @@ impl App {
                 Err(_) => self.voice.conn_rx = Some(rx),
             }
         }
+        // O RTT de dentro da chamada manda; a medição TCP só entra quando ele não vem.
+        let already = self.voice.conn_rtc_at.is_some_and(|t| t.elapsed() < Duration::from_secs(6));
+
         if self.voice.conn_open {
             let due = self.voice.conn_ping_at.is_none_or(|t| t.elapsed() >= PING_GRAPH);
             if due && !self.voice.conn_measuring {
                 self.conn_measure_start();
             }
             ctx.request_repaint_after(PING_GRAPH);
-        } else {
+        } else if !already {
             let due = self.voice.conn_ping_at.is_none_or(|t| t.elapsed() >= PING_EVERY);
             if due && !self.voice.conn_measuring {
                 self.conn_measure_start();

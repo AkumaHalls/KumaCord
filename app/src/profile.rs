@@ -874,10 +874,19 @@ impl App {
                         }
                         if roles_on {
                             heading(ui, "Cargo");
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                                 let color = crate::roles::role_color(role).unwrap_or(theme::NEVOA);
                                 let icon = crate::roles::role_icon(role).map(|i| format!("{i}  ")).unwrap_or_default();
                                 ui_kit::pill(ui, &format!("{icon}{}", crate::roles::role_label(role)), theme::MOVEL, color);
+                                // v1.1: os cargos criados no servidor (role_ids). Antes o perfil
+                                // só mostrava o cargo do sistema, então um membro com cargos
+                                // customizados aparecia igual a um sem nenhum.
+                                for rid in &user.role_ids {
+                                    let Some(cr) = self.roles.custom.iter().find(|c| c.id == *rid) else { continue };
+                                    let colour = Color32::from_hex(cr.color.get(1..).unwrap_or("5865F2")).unwrap_or(theme::NEVOA);
+                                    ui_kit::pill(ui, &cr.name, theme::MOVEL, colour);
+                                }
                             });
                             ui.add_space(space::S);
                         }

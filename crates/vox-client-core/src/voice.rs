@@ -619,6 +619,21 @@ impl VoiceSession {
                     let mut sent: u64 = 0;
                     let mut lost: i64 = 0;
                     let mut fraction: f64 = 0.0;
+                    // O RTT do par ICE selecionado: é o ping de mídia de verdade, não uma
+                    // aproximação por conexão TCP.
+                    let mut rtt: Option<u32> = None;
+                    for s in st.publisher_stats.iter().chain(st.subscriber_stats.iter()) {
+                        if let livekit::webrtc::stats::RtcStats::CandidatePair(p) = s {
+                            if p.candidate_pair.state == Some(livekit::webrtc::stats::IceCandidatePairState::Succeeded)
+                                && p.candidate_pair.nominated
+                            {
+                                let ms = p.candidate_pair.current_round_trip_time * 1000.0;
+                                if ms > 0.0 {
+                                    rtt = Some(ms.round() as u32);
+                                }
+                            }
+                        }
+                    }
                     for s in st.publisher_stats.iter().chain(st.subscriber_stats.iter()) {
                         match s {
                             livekit::webrtc::stats::RtcStats::OutboundRtp(o)
@@ -641,7 +656,7 @@ impl VoiceSession {
                         fraction.min(1.0) * 100.0
                     };
                     let _ = stats_inner.events.send(VoiceEvent::RtcStats {
-                        rtt_ms: None,
+                        rtt_ms: rtt,
                         loss_pct: loss_pct as f32,
                         sent: sent as i64,
                         lost,
