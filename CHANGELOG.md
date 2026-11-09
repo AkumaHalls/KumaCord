@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.4.5] — 2026-11-08
+
+### Corrigido (atualizador)
+
+**Instalar não mudava a versão — e o aviso voltava, num loop.** A causa raiz: a
+tag `v1.4.4` foi publicada sem o bump do `Cargo.toml`, então o binário dentro
+dela continuava se anunciando como `1.4.3` (`env!("CARGO_PKG_VERSION")`). Depois
+de instalar, o app comparava `1.4.4 (feed) > 1.4.3 (ele mesmo)` e achava que
+havia versão nova de novo — o pill "pronta" reaparecia e cada clique instalava a
+mesma coisa. O instalador em si estava certo; o número é que não mudava.
+
+Agora a versão é `1.4.5` de verdade: instalar troca o número e o aviso para.
+
+## [1.4.4] — 2026-11-08
+
+### Corrigido (atualizador)
+
+O clique no aviso da tela inicial não instalava: o closure da `Area` devolvia
+`.clicked()` (um `bool`), e o clique era lido no response da área inteira — que
+nunca registrava nada, porque o widget de dentro consumia o evento. O aviso
+"Atualização pronta" era um enfeite. Agora o closure devolve o `Response` do
+próprio pill e o clique é lido nele; o log registra `clique na seta do canto`.
+
+> Obs.: esta release foi publicada com o `Cargo.toml` ainda em 1.4.3 — o que
+> causou o loop corrigido na 1.4.5. Baixe a 1.4.5 direto.
+
 ## [1.4.3] — 2026-11-08
 
 ### Melhorado (landing page)
