@@ -47,6 +47,9 @@
   /* Scanlines finas: dá ao templo o ar de santuário eletrônico. */
   #linhas{position:fixed; inset:0; z-index:1; pointer-events:none; opacity:.35;
     background:repeating-linear-gradient(180deg, rgba(255,255,255,.028) 0 1px, transparent 1px 3px);}
+  /* Vigneta: as bordas caem pro preto puro — o centro é onde a luz vive. */
+  #vigneta{position:fixed; inset:0; z-index:1; pointer-events:none;
+    background:radial-gradient(125% 95% at 50% 36%, transparent 38%, rgba(0,0,0,.55) 68%, rgba(0,0,0,.94) 100%);}
   .wrap{position:relative; z-index:2; max-width:1120px; margin:0 auto; padding:0 24px}
 
   /* ---------- topo ---------- */
@@ -71,7 +74,18 @@
   @keyframes pulsa{0%,100%{opacity:1; transform:scale(1)} 50%{opacity:.45; transform:scale(.78)}}
 
   /* ---------- herói ---------- */
-  .heroi{padding:64px 0 44px; text-align:center; position:relative}
+  .heroi{padding:34px 0 44px; text-align:center; position:relative}
+  /* O selo: a logo em tamanho de altar, com a aura (Satsui no Hado) atrás dela. */
+  .selo{position:relative; display:flex; justify-content:center; margin:6px 0 30px}
+  .selo::before{content:""; position:absolute; top:50%; left:50%; width:340px; height:340px;
+    transform:translate(-50%,-50%); border-radius:50%; z-index:-1; filter:blur(10px);
+    background:radial-gradient(closest-side, rgba(168,85,247,.42), rgba(124,58,237,.16) 52%, rgba(255,45,85,.07) 68%, transparent 78%);
+    animation:aura 3.4s ease-in-out infinite}
+  .logo-grande{width:clamp(128px,24vw,188px); height:auto; border-radius:28px; display:block;
+    filter:drop-shadow(0 0 24px rgba(168,85,247,.8)) drop-shadow(0 0 80px rgba(124,58,237,.5)) drop-shadow(0 6px 30px rgba(0,0,0,.9));
+    animation:flutua 5.2s ease-in-out infinite}
+  @keyframes aura{0%,100%{opacity:.7; transform:translate(-50%,-50%) scale(1)} 50%{opacity:1; transform:translate(-50%,-50%) scale(1.08)}}
+  @keyframes flutua{0%,100%{transform:translateY(0)} 50%{transform:translateY(-9px)}}
   .olho{font-size:11.5px; letter-spacing:.36em; text-transform:uppercase; color:var(--eletrico);
     margin-bottom:22px; display:inline-flex; align-items:center; gap:11px}
   .olho::before,.olho::after{content:""; width:38px; height:1px; background:linear-gradient(90deg,transparent,var(--akuma))}
@@ -141,6 +155,7 @@
 <div id="colunas"></div>
 <div id="nevoa"></div>
 <div id="linhas"></div>
+<div id="vigneta"></div>
 
 <div class="wrap">
   <header>
@@ -159,6 +174,9 @@
   </header>
 
   <section class="heroi">
+    <div class="selo">
+      <img class="logo-grande" src="/logo-512.png" alt="KumaCord" width="188" height="188">
+    </div>
     <div class="olho">O templo do aprendizado</div>
     <h1>Voz, tela e chat<br><span class="chama">para a sua turma.</span></h1>
     <p class="sub">O KumaCord é o lugar onde a sua galera se junta: canais de texto, salas de voz com

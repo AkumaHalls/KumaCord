@@ -74,8 +74,18 @@ impl Landing {
 static CACHE: std::sync::LazyLock<Landing> = std::sync::LazyLock::new(Landing::new);
 
 /// `GET /` — a landing page.
+///
+/// `no-cache`: a página muda do lado do servidor (rebranding, copy) e o navegador
+/// não pode ficar servindo uma versão velha da memória — foi exatamente isso que
+/// fez parecer que "nada mudou" depois do deploy.
 pub async fn page() -> impl IntoResponse {
-    ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], LANDING_HTML)
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+        ],
+        LANDING_HTML,
+    )
 }
 
 /// `GET /favicon.ico` — o ícone da aba.
@@ -168,7 +178,30 @@ mod tests {
         assert!(LANDING_HTML.contains("/api/update"), "a página pergunta a versão ao hub");
         assert!(LANDING_HTML.contains("KumaCord-setup.exe"), "o link é o de nome fixo");
         assert!(LANDING_HTML.contains("lang=\"pt-BR\""), "a página é em português");
-        assert!(LANDING_HTML.contains("/logo-256.png"), "a logo é servida pelo hub");
+        assert!(LANDING_HTML.contains("/logo-256.png"), "a logo pequena (marca) é servida pelo hub");
+        assert!(LANDING_HTML.contains("/logo-512.png"), "a logo grande (herói) é servida pelo hub");
+        assert!(LANDING_HTML.contains("logo-grande"), "a logo do herói não fica pequena/escondida");
+        assert!(LANDING_HTML.contains("vigneta"), "a escuridão das bordas existe");
+    }
+
+    /// A página sai com `no-cache`: se o navegador guardasse a versão antiga, o
+    /// rebranding parecia "não ter acontecido" — foi exatamente essa reclamação.
+    #[tokio::test]
+    async fn a_pagina_nao_fica_em_cache_do_navegador() {
+        use axum::response::IntoResponse;
+        let resp = page().await.into_response();
+        let cache = resp
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(cache.contains("no-cache"), "GET / manda no-cache, achou: {cache:?}");
+        let ct = resp
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.contains("text/html"), "é HTML, achou: {ct:?}");
     }
 
     /// O rebranding: o código fechou e o servidor não roda mais no PC de ninguém.
