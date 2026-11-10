@@ -38,13 +38,15 @@ Na primeira subida o servidor **gera uma senha e imprime no console** (`docker l
 
 ```toml
 server_name = "AkumaLabs"
-server_password = "uma senha forte"   # a senha gerada já serve; vazio = servidor aberto (opt-in)
+server_password = "uma senha forte"   # gerada na 1a subida; VAZIO = servidor aberto (opt-in)
 public_host = "SEU.IP.PUBLICO"         # como o client alcança o LiveKit
 owner = "Akuma"                        # nickname fixo como Dono (recomendado em VPS)
 
 [livekit]
 use_external_ip = true                  # atrás de NAT (VPS em nuvem), deixe true
 ```
+
+**Grupo fechado de amigos (o caso padrão do KumaCord):** deixe `server_password = ""` — servidor *aberto*. Quem instala o app só digita o **nome** e clica em entrar; ninguém precisa saber senha nenhuma. Depois: `docker compose restart`. (Se um dia quiser trancar de novo, escreva uma senha aí e o app passa a pedi-la na entrada.)
 
 Depois: `docker compose restart`. Os dados (config, `voxhub.db`, `livekit.yaml`, imagens) ficam em `./data` — **nunca compartilhe essa pasta** (e o `.gitignore` já a mantém fora do git).
 
@@ -90,7 +92,7 @@ cargo build --release -p voxhub-app
 
 Build (macOS, Apple Silicon): `cargo build --release -p voxhub-app` → `target/release/KumaCord` (veja `tools/package-mac.sh`).
 
-Entrar: **nome + senha do servidor**, ou colar um **convite** `vox1-...` (o convite carrega só o token — o endereço continua sendo o fixo; convite de outro servidor simplesmente não autentica). Admins criam convites dentro do app (*Convidar*), com expiração, limite de usos e revogação.
+Entrar: **só o nome** (servidor aberto — o caso padrão do KumaCord; não existe campo de senha no fluxo) ou colar um **convite** `vox1-...` (o convite carrega só o token — o endereço continua sendo o fixo; convite de outro servidor simplesmente não autentica). Se o dono **colocar** uma `server_password` no servidor, o app passa a pedi-la na entrada (e só aí o campo aparece). Admins criam convites dentro do app (*Convidar*), com expiração, limite de usos e revogação.
 
 ## Segurança (leia antes de expor na internet)
 

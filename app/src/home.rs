@@ -163,6 +163,8 @@ impl App {
                     .min_size(Vec2::new(0.0, 40.0));
                 if self.password_hint.is_some() {
                     field = field.hint_text("a senha que combinaram com você");
+                } else {
+                    field = field.hint_text("a senha do servidor (peça ao organizador)");
                 }
                 pw = Some(ui.add(field));
                 let eye = ui_kit::button_sized(ui, Kind::Ghost, Size::Normal, Some(if revealed { theme::ph::EYE_SLASH } else { theme::ph::EYE }), "");

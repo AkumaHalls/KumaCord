@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.5.0] — 2026-11-09
+
+### Mudado (entrada sem senha)
+
+- **Entrar no servidor agora é só o nome**: nenhuma senha é pedida no fluxo. O
+  servidor oficial roda **aberto** (`server_password = ""` no `config.toml` do
+  hub), que é a configuração certa para um grupo fechado de amigos — quem
+  instala o app digita o nome e clica em entrar.
+- O texto do instalador (`LEIA-ME.txt`) e o README não mandam mais "digite a
+  senha do servidor"; explicam que não precisa e o que fazer se um dia o
+  organizador colocar uma senha (o campo aparece na hora, com o aviso).
+- O campo de senha, quando aparecer, agora traz uma dica clara:
+  "a senha do servidor (peça ao organizador)" — antes aparecia sem explicação
+  nenhuma para quem não sabia o que era.
+
+**Para o dono do servidor:** edite `data/config.toml`, deixe
+`server_password = ""` e reinicie (`docker compose restart` / reiniciar o
+container `kumacord` no Portainer). O hub avisa no log que o servidor está
+aberto — é o esperado. Se preferir manter uma senha, o app continua pedindo;
+convites `vox1-...` entram sem senha de qualquer forma.
+
 ## [1.4.5] — 2026-11-08
 
 ### Corrigido (atualizador)

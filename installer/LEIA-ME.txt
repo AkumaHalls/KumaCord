@@ -20,10 +20,13 @@ por engano: instalador portátil (.zip) não tem atualização automática.
 COMO ENTRAR
 -----------
 - Digite seu nome (como os outros vão te ver).
-- Digite a SENHA DO SERVIDOR que a organização divulgou
-  (ou cole um CONVITE vox1-... recebido, se te enviarem um).
 - Clique em Entrar no servidor. Pronto: voz, vídeo, chat e
   compartilhamento de tela.
+- NÃO precisa de senha: o servidor da comunidade está aberto
+  (só o nome). Se um dia o organizador colocar uma senha, o
+  campo aparece na própria tela de entrada, com um aviso.
+- Tem um CONVITE vox1-...? Também pode: cole no campo de
+  convite (convite entra sem senha de servidor de qualquer forma).
 
 Este app conecta apenas ao servidor oficial da AkumaLabs: não há campo
 de endereço nem opção de hospedar pelo app.
