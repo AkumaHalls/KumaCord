@@ -18,6 +18,7 @@ mod clipboard;
 mod context_menu;
 mod filedlg;
 mod forms;
+mod games;
 mod host;
 mod layout;
 mod launcher;

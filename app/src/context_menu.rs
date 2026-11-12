@@ -438,15 +438,27 @@ pub struct OpenMenu {
     seq: u64,
 }
 
+/// The channel's (or category's) menu that is open.
+#[derive(Clone, Debug)]
+pub struct OpenChanMenu {
+    pub target: ChanTarget,
+    pub pos: Pos2,
+    seq: u64,
+}
+
 #[derive(Default)]
 pub struct CtxMenuUi {
     pub open: Option<OpenMenu>,
+    /// The channel's (or category's) menu, which never opens at the same time as a person's.
+    pub chan_open: Option<OpenChanMenu>,
     seq: u64,
     pub confirm: Option<Confirm>,
     /// Cameras I chose to hide for myself this session (voice identity = user id).
     pub hidden_cams: HashSet<UserId>,
     /// The rows of the menu as drawn last (autotest).
     pub last_rows: Vec<Row>,
+    /// The rows of the channel menu as drawn last (autotest).
+    pub last_chan_rows: Vec<ChanRow>,
     /// Menus opened and actions run so far (autotest).
     pub opened: u32,
     pub actions: u32,
@@ -492,6 +504,7 @@ impl App {
         }
         // (A card of the stage sets its own right after: `call::card_menu_hit`.)
         self.call.menu_card = None;
+        self.cmenu.chan_open = None;
         let m = &mut self.cmenu;
         m.seq += 1;
         m.opened += 1;
@@ -999,6 +1012,289 @@ impl App {
     pub fn camera_hidden_for_me(&self, id: UserId) -> bool {
         self.cmenu.hidden_cams.contains(&id)
     }
+
+    // ------------------------------------------------------------ the channel's / category's menu
+
+    /// A secondary click on a channel row or a category header opens its menu at the pointer.
+    pub(crate) fn chan_menu_hit(&mut self, resp: &egui::Response, target: ChanTarget) {
+        if resp.secondary_clicked() {
+            let pos = resp.ctx.pointer_interact_pos().or_else(|| resp.ctx.pointer_latest_pos()).unwrap_or(resp.rect.center());
+            self.open_chan_menu(&resp.ctx, target, pos);
+        }
+    }
+
+    pub(crate) fn open_chan_menu(&mut self, ctx: &egui::Context, target: ChanTarget, pos: Pos2) {
+        if self.screen != crate::app::Screen::Main {
+            return;
+        }
+        self.cmenu.open = None;
+        let m = &mut self.cmenu;
+        m.seq += 1;
+        m.opened += 1;
+        let seq = m.seq;
+        m.chan_open = Some(OpenChanMenu { target, pos, seq });
+        egui::Popup::open_id(ctx, egui::Id::new(("chan_menu", seq)));
+        ctx.request_repaint();
+    }
+
+    /// Draw the open channel menu (once per frame, after the panels so it is on top).
+    pub fn channel_menu_layer(&mut self, ctx: &egui::Context) {
+        let Some(open) = self.cmenu.chan_open.clone() else { return };
+        let id = egui::Id::new(("chan_menu", open.seq));
+        let shown = egui::Popup::new(id, ctx.clone(), egui::PopupAnchor::Position(open.pos), egui::LayerId::background())
+            .kind(egui::PopupKind::Menu)
+            .layout(Layout::top_down_justified(Align::Min))
+            .frame(ui_kit::popup_frame(&ctx.global_style()))
+            .style(ui_kit::menu_style)
+            .gap(0.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .open_memory(None)
+            .show(|ui| self.channel_menu_ui(ui, &open.target, open.pos));
+        if shown.is_none() || !egui::Popup::is_id_open(ctx, id) {
+            self.cmenu.chan_open = None;
+        }
+    }
+
+    /// Everything the menu for this target depends on, from the app's state.
+    pub(crate) fn chan_menu_facts(&self, target: &ChanTarget) -> ChanFacts {
+        let can_manage = self.my_role().can_manage_channels();
+        match target {
+            ChanTarget::Channel(c) => ChanFacts {
+                can_manage,
+                voice: c.kind == ChannelKind::Voice,
+                category: false,
+                unread: c.kind == ChannelKind::Text && self.unread.get(&c.id).copied().unwrap_or(0) > 0,
+            },
+            ChanTarget::Category(_) => ChanFacts { can_manage, voice: false, category: true, unread: false },
+        }
+    }
+
+    fn channel_menu_ui(&mut self, ui: &mut egui::Ui, target: &ChanTarget, pos: Pos2) {
+        let f = self.chan_menu_facts(target);
+        let list = chan_rows(&f);
+        ui.set_min_width(200.0);
+        ui.set_max_width(240.0);
+        ui.spacing_mut().item_spacing.y = 1.0;
+        self.chan_menu_header(ui, target);
+        ui_kit::menu_separator(ui);
+        self.cmenu.last_chan_rows = list.clone();
+        let mut act: Option<ChanId> = None;
+        for row in list {
+            match row {
+                ChanRow::Sep => ui_kit::menu_separator(ui),
+                ChanRow::Label(t) => ui_kit::menu_heading(ui, t),
+                ChanRow::Item(id, why) => {
+                    let (icon, text, danger) = self.chan_item_looks(&f, id);
+                    if ui_kit::menu_item(ui, icon, text, danger, why) {
+                        act = Some(id);
+                    }
+                }
+            }
+        }
+        if let Some(id) = act {
+            let ctx = ui.ctx().clone();
+            close_menu(ui);
+            self.cmenu.chan_open = None;
+            self.run_chan_act(&ctx, target, id, pos);
+        }
+    }
+
+    /// The menu's head: the channel's (or category's) icon, its name and the kind under it.
+    fn chan_menu_header(&mut self, ui: &mut egui::Ui, target: &ChanTarget) {
+        let (icon, name, sub) = match target {
+            ChanTarget::Channel(c) => {
+                let icon = if c.private.is_some() { crate::app::ICON_PRIVATE } else if c.kind == ChannelKind::Voice { ph::SPEAKER_HIGH } else { ph::HASH };
+                let sub = if c.kind == ChannelKind::Voice { "Canal de voz" } else { "Canal de texto" };
+                (icon, c.name.clone(), sub)
+            }
+            ChanTarget::Category(c) => (ph::SQUARES_FOUR, c.name.clone(), "Categoria"),
+        };
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::M;
+            ui.add_space(space::S);
+            ui.add(egui::Label::new(RichText::new(icon).font(theme::body(theme::size::ICON)).color(theme::NEVOA)));
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.add(egui::Label::new(RichText::new(name).font(theme::semibold(14.0)).color(theme::GIZ)).truncate().selectable(false));
+                ui.label(RichText::new(sub).font(theme::body(12.0)).color(theme::NEVOA));
+            });
+        });
+    }
+
+    /// The icon, the text and whether the item is destructive.
+    fn chan_item_looks(&self, f: &ChanFacts, id: ChanId) -> (&'static str, &'static str, bool) {
+        match id {
+            ChanId::MarkRead => (ph::CHECK_CIRCLE, "Marcar como lido", false),
+            ChanId::InvitePeople => (ph::USERS_THREE, "Convidar pessoas", false),
+            ChanId::CopyChannelId => (ph::CLIPBOARD_TEXT, "Copiar ID do canal", false),
+            ChanId::CopyCategoryId => (ph::CLIPBOARD_TEXT, "Copiar ID da categoria", false),
+            ChanId::EditChannel => (ph::PENCIL_SIMPLE, "Editar canal", false),
+            ChanId::EditCategory => (ph::PENCIL_SIMPLE, "Editar categoria", false),
+            ChanId::CreateText => (ph::HASH, "Criar canal de texto", false),
+            ChanId::CreateVoice => (ph::SPEAKER_HIGH, "Criar canal de voz", false),
+            ChanId::DeleteChannel => (ph::TRASH, if f.voice { "Excluir sala..." } else { "Excluir canal..." }, true),
+            ChanId::DeleteCategory => (ph::TRASH, "Excluir categoria...", true),
+        }
+    }
+
+    fn run_chan_act(&mut self, ctx: &egui::Context, target: &ChanTarget, id: ChanId, _pos: Pos2) {
+        self.cmenu.actions += 1;
+        match target {
+            ChanTarget::Channel(c) => match id {
+                ChanId::MarkRead => self.mark_channel_read(c.id),
+                ChanId::InvitePeople => self.open_invites(),
+                ChanId::CopyChannelId => {
+                    ctx.copy_text(c.id.to_string());
+                    self.toast(format!("Copiado: {}", c.id));
+                }
+                ChanId::EditChannel => self.edit_channel(c.id),
+                ChanId::CreateText => self.create_channel_in(c.category_id, false),
+                ChanId::CreateVoice => self.create_channel_in(c.category_id, true),
+                ChanId::DeleteChannel => self.roles.confirm_delete = Some(c.id),
+                ChanId::EditCategory | ChanId::DeleteCategory | ChanId::CopyCategoryId => {}
+            },
+            ChanTarget::Category(cat) => match id {
+                ChanId::InvitePeople => self.open_invites(),
+                ChanId::CopyCategoryId => {
+                    ctx.copy_text(cat.id.to_string());
+                    self.toast(format!("Copiado: {}", cat.id));
+                }
+                ChanId::EditCategory => self.edit_category(cat.id, &cat.name, &cat.color),
+                ChanId::CreateText => self.create_channel_in(Some(cat.id), false),
+                ChanId::CreateVoice => self.create_channel_in(Some(cat.id), true),
+                ChanId::DeleteCategory => self.roles.confirm_delete_category = Some(cat.id),
+                ChanId::MarkRead | ChanId::CopyChannelId | ChanId::EditChannel | ChanId::DeleteChannel => {}
+            },
+        }
+    }
+
+    /// "Marcar como lido": the channel's unread counters go away (the hub keeps its own).
+    fn mark_channel_read(&mut self, id: ChannelId) {
+        self.unread.remove(&id);
+        self.chatx.mention_unread.remove(&id);
+        self.chatx.unread_ids.remove(&id);
+    }
+
+    /// "Convidar pessoas": the server window's invite page (only an admin may generate one).
+    fn open_invites(&mut self) {
+        self.roles.tab = crate::roles::ServerTab::Invites;
+        self.open_server_settings();
+    }
+
+    /// "Editar canal": the server window's channels page, with this channel's name being renamed.
+    fn edit_channel(&mut self, id: ChannelId) {
+        let Some(c) = self.channels.iter().find(|c| c.id == id).cloned() else { return };
+        self.roles.tab = crate::roles::ServerTab::Channels;
+        self.open_server_settings();
+        self.roles.renaming = Some((c.id, c.name));
+    }
+
+    /// "Editar categoria": the same page, with this category's name and colour being edited.
+    fn edit_category(&mut self, id: ChannelId, name: &str, color: &str) {
+        self.roles.tab = crate::roles::ServerTab::Channels;
+        self.open_server_settings();
+        self.roles.editing_category = Some((id, name.to_string()));
+        self.roles.editing_category_color = color.to_string();
+    }
+
+    /// "Criar canal de texto/voz": the channels page's "Novo canal" form, already set to this
+    /// kind and to the category it was opened from (standalone when there is none). The sidebar's
+    /// "+" (a category's header and the server menu) opens the same form.
+    pub(crate) fn create_channel_in(&mut self, category: Option<ChannelId>, voice: bool) {
+        self.roles.tab = crate::roles::ServerTab::Channels;
+        self.open_server_settings();
+        self.roles.new_voice = voice;
+        self.roles.new_channel.clear();
+        self.roles.new_channel_category = category;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The channel's / category's menu (pure model)
+// ---------------------------------------------------------------------------------------------
+
+/// What the menu is about: a channel (text or voice) or a category of them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChanTarget {
+    Channel(vox_proto::Channel),
+    Category(vox_proto::ChannelCategory),
+}
+
+/// An item of the channel menu. One id, one action, wherever it was opened from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChanId {
+    /// "Marcar como lido" (text channel with something unread).
+    MarkRead,
+    /// "Convidar pessoas" (the server window's invite page).
+    InvitePeople,
+    /// "Copiar ID do canal".
+    CopyChannelId,
+    /// "Copiar ID da categoria".
+    CopyCategoryId,
+    /// "Editar canal" (the server window's channels page, renaming this one).
+    EditChannel,
+    /// "Criar canal de texto" inside this category (or standalone).
+    CreateText,
+    /// "Criar canal de voz" inside this category (or standalone).
+    CreateVoice,
+    /// "Excluir canal...".
+    DeleteChannel,
+    /// "Editar categoria".
+    EditCategory,
+    /// "Excluir categoria...".
+    DeleteCategory,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChanRow {
+    Sep,
+    Label(&'static str),
+    /// An item; `Some(reason)` = shown disabled with that tooltip.
+    Item(ChanId, Option<&'static str>),
+}
+
+/// Everything the channel menu depends on. The app fills it in ([`App::chan_menu_facts`]); the
+/// tests build it by hand.
+#[derive(Clone, Debug, Default)]
+pub struct ChanFacts {
+    /// I may create, edit and delete channels and categories here.
+    pub can_manage: bool,
+    /// The target is a voice channel (no unread, no "marcar como lido").
+    pub voice: bool,
+    /// The target is a category.
+    pub category: bool,
+    /// The text channel has something unread.
+    pub unread: bool,
+}
+
+/// The rows of the menu, in Discord's order: read it, share it, copy its id; then the admin work.
+pub fn chan_rows(f: &ChanFacts) -> Vec<ChanRow> {
+    let mut v: Vec<ChanRow> = Vec::new();
+    if !f.category && f.unread {
+        v.push(ChanRow::Item(ChanId::MarkRead, None));
+    }
+    v.push(ChanRow::Item(ChanId::InvitePeople, (!f.can_manage).then_some(NEED_ADMIN)));
+    v.push(ChanRow::Item(if f.category { ChanId::CopyCategoryId } else { ChanId::CopyChannelId }, None));
+    if f.can_manage {
+        v.push(ChanRow::Sep);
+        if f.category {
+            v.push(ChanRow::Item(ChanId::EditCategory, None));
+        } else {
+            v.push(ChanRow::Item(ChanId::EditChannel, None));
+        }
+        v.push(ChanRow::Item(ChanId::CreateText, None));
+        v.push(ChanRow::Item(ChanId::CreateVoice, None));
+        v.push(ChanRow::Item(if f.category { ChanId::DeleteCategory } else { ChanId::DeleteChannel }, None));
+    }
+    v
+}
+
+/// The ids of the rows (the autotest compares lists of these).
+pub fn chan_ids(rows: &[ChanRow]) -> Vec<ChanId> {
+    rows.iter().filter_map(|r| match r {
+        ChanRow::Item(id, _) => Some(*id),
+        _ => None,
+    }).collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1305,5 +1601,70 @@ mod tests {
         let r = rows(&f);
         assert!(!matches!(r.first(), Some(Row::Sep)) && !matches!(r.last(), Some(Row::Sep)));
         assert!(r.windows(2).all(|w| !(w[0] == Row::Sep && w[1] == Row::Sep)));
+    }
+
+    // --------------------------------------------- the channel's / category's menu
+
+    fn chan_has(f: &ChanFacts, id: ChanId) -> bool {
+        chan_ids(&chan_rows(f)).contains(&id)
+    }
+
+    /// A member reading a text channel with something unread.
+    fn member_text() -> ChanFacts {
+        ChanFacts { voice: false, unread: true, ..Default::default() }
+    }
+
+    #[test]
+    fn a_member_gets_read_copy_and_invite_on_a_text_channel() {
+        let f = member_text();
+        assert_eq!(chan_ids(&chan_rows(&f)), vec![ChanId::MarkRead, ChanId::InvitePeople, ChanId::CopyChannelId]);
+        // Nothing that manages the channel: no admin, no create, no delete.
+        for id in [ChanId::EditChannel, ChanId::CreateText, ChanId::CreateVoice, ChanId::DeleteChannel] {
+            assert!(!chan_has(&f, id), "{id:?}");
+        }
+        // "Convidar pessoas" is the admin's (the hub's invite generator is).
+        assert_eq!(chan_rows(&f)[1], ChanRow::Item(ChanId::InvitePeople, Some(NEED_ADMIN)));
+    }
+
+    #[test]
+    fn an_admin_gets_the_whole_channel_menu() {
+        let f = ChanFacts { can_manage: true, ..member_text() };
+        assert_eq!(chan_ids(&chan_rows(&f)), vec![
+            ChanId::MarkRead, ChanId::InvitePeople, ChanId::CopyChannelId,
+            ChanId::EditChannel, ChanId::CreateText, ChanId::CreateVoice, ChanId::DeleteChannel,
+        ]);
+        // Nothing disabled: an admin's own menu (the separator is not an item, so it is not one).
+        assert!(chan_rows(&f).iter().all(|r| !matches!(r, ChanRow::Item(_, Some(_)))));
+    }
+
+    #[test]
+    fn a_voice_channel_has_no_mark_as_read() {
+        let f = ChanFacts { can_manage: true, voice: true, ..Default::default() };
+        assert!(!chan_has(&f, ChanId::MarkRead));
+        assert_eq!(chan_ids(&chan_rows(&f))[0], ChanId::InvitePeople);
+    }
+
+    #[test]
+    fn a_read_text_channel_has_no_mark_as_read_either() {
+        let f = ChanFacts { can_manage: true, ..Default::default() };
+        assert!(!chan_has(&f, ChanId::MarkRead));
+        assert!(chan_has(&f, ChanId::EditChannel));
+    }
+
+    #[test]
+    fn a_category_menu_edits_the_category_and_creates_inside_it() {
+        let f = ChanFacts { can_manage: true, category: true, ..Default::default() };
+        assert_eq!(chan_ids(&chan_rows(&f)), vec![
+            ChanId::InvitePeople, ChanId::CopyCategoryId,
+            ChanId::EditCategory, ChanId::CreateText, ChanId::CreateVoice, ChanId::DeleteCategory,
+        ]);
+        // Never the channel's own items.
+        for id in [ChanId::MarkRead, ChanId::CopyChannelId, ChanId::EditChannel, ChanId::DeleteChannel] {
+            assert!(!chan_has(&f, id), "{id:?}");
+        }
+        // A member only copies its id (and may not even invite).
+        let m = ChanFacts { category: true, ..Default::default() };
+        assert_eq!(chan_ids(&chan_rows(&m)), vec![ChanId::InvitePeople, ChanId::CopyCategoryId]);
+        assert_eq!(chan_rows(&m)[0], ChanRow::Item(ChanId::InvitePeople, Some(NEED_ADMIN)), "a member's invite is refused with a reason");
     }
 }

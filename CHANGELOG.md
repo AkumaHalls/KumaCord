@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.6.0] — 2026-11-12
+
+### Corrigido (estrutura de canais e categorias)
+
+**Categoria no meio dos canais finalmente funciona.** O servidor já escrevia uma
+única sequência de `position` para categorias e canais soltos, mas o cliente
+jogava essa ordem fora: a sidebar desenhava todos os canais soltos primeiro e
+todas as categorias depois. Arrastar uma categoria para o meio da lista não
+grudava em lugar nenhum — era a reclamação. Agora existe uma lista só
+(`TopItem`), ordenada pela mesma sequência do servidor, e o arrastar aceita os
+dois sentidos:
+
+- soltar um **canal solto sobre o header** de uma categoria → ele fica solto
+  naquele slot (antes não havia como tirar um canal de categoria pela sidebar);
+- soltar sobre um **canal dentro** da categoria → continua entrando nela, que é
+  o gesto de sempre.
+
+Tudo continua indo num lote único (`POST /api/admin/structure`), então as
+categorias não pulam mais quando você mexe só nos canais.
+
+### Adicionado
+
+- **"Colapsar todas as categorias" / "Expandir todas as categorias"** no menu do
+  servidor (o atalho do Discord): um clique em vez de um por categoria.
+
+### Corrigido (estética)
+
+- **As superfícies estavam invertidas.** A sidebar e a lista de membros eram mais
+  claras que o chat; no Discord é o contrário — o chat é o cinza claro e os
+  painéis em volta são os escuros. `CHAT` (#313338) no centro, `PAINEL` (#2B2D31)
+  em volta, `NOITE` (#1E1F22) no rail.
+- **Raios de canto medidos no bundle do cliente:** linha de canal e header de
+  categoria 12 (`CHANNEL_ITEM_RADIUS`), caixa de digitar 24
+  (`CHAT_INPUT_BORDER_RADIUS`), controles (checkbox/select/botão) 8
+  (`CONTROL_CHECKBOX_BORDER_RADIUS`) — antes o checkbox herdava o raio da linha
+  e virava círculo.
+
+### Verificação
+
+- `cargo test -p voxhub-app --bin KumaCord` = 325 passed, 0 failed (7 testes
+  novos cobrindo a intercalação, o arrastar de categoria e o lote).
+
 ## [1.5.0] — 2026-11-09
 
 ### Mudado (entrada sem senha)

@@ -60,10 +60,10 @@ const SPAN_CACHE_MAX: usize = 3000;
 const MENTION_BG: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x22);
 const MENTION_BAR: Color32 = crate::theme::ABAJUR;
 /// A chip's colours: a mention of me in the lamp's colours, of somebody else quiet.
-const CHIP_BG: Color32 = Color32::from_rgb(0x22, 0x33, 0x48);
+const CHIP_BG: Color32 = crate::theme::CHIP_BG;
 const CHIP_TEXT: Color32 = crate::theme::LINK;
-const CHIP_ME_BG: Color32 = crate::theme::ABAJUR_FUNDO;
-const CHIP_ME_TEXT: Color32 = crate::theme::ABAJUR;
+const CHIP_ME_BG: Color32 = crate::theme::CHIP_ME_BG;
+const CHIP_ME_TEXT: Color32 = crate::theme::CHIP_ME_TEXT;
 
 // ---------------------------------------------------------------- pure rules (unit tested)
 
@@ -327,6 +327,12 @@ struct Picker {
 pub struct ChatUi {
     /// What the hub knows (none on an older hub: replies, reactions and the list stay hidden).
     pub features: ChatFeatures,
+    /// v1.2: what this hub can do beyond chat — the game detection ("Jogando X"), the channel
+    /// extras (topic, bitrate, limit) and the sidebar's one-batch reorder. An older hub's
+    /// `Ready` carries no `features`, which reads as every flag off (the proto is
+    /// `#[serde(default)]`), so each of those stays hidden rather than calling something that
+    /// would answer 404.
+    pub server_features: vox_proto::ServerFeatures,
     /// Everybody on the server I know of (the member list, online people, message authors).
     pub people: HashMap<UserId, User>,
     /// The mention list's order (sorted by name), rebuilt when `people` changes.
@@ -799,9 +805,16 @@ fn mention_row(ui: &mut egui::Ui, c: &Candidate, selected: bool) -> egui::Respon
 // ---------------------------------------------------------------- the app side
 
 impl App {
-    /// A hub snapshot: what its chat knows, and the member list for mentions.
-    pub(super) fn chat_on_ready(&mut self, chat: Option<ChatFeatures>, online: &[User]) {
+    /// A hub snapshot: what its chat knows, what the hub itself can do beyond chat, and the
+    /// member list for mentions.
+    pub(super) fn chat_on_ready(
+        &mut self,
+        chat: Option<ChatFeatures>,
+        server: Option<vox_proto::ServerFeatures>,
+        online: &[User],
+    ) {
         self.chatx.features = chat.unwrap_or_default();
+        self.chatx.server_features = server.unwrap_or_default();
         if let Some(me) = self.me.clone() {
             self.chatx.note_user(&me);
         }

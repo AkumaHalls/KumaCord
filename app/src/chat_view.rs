@@ -516,9 +516,10 @@ impl App {
     }
 }
 
-/// The input's frame: the field look of `ui_kit` (raised, radius 8), 44 high.
+/// The input's frame: the raised field look of `ui_kit` at the composer's radius (Discord's
+/// `CHAT_INPUT_BORDER_RADIUS:24` — theirs is a pill, ours was an 8-point box), 44 high.
 fn input_frame() -> egui::Frame {
-    egui::Frame::new().fill(theme::MOVEL).corner_radius(theme::radius::BUTTON).inner_margin(egui::Margin::symmetric(6, 7))
+    egui::Frame::new().fill(theme::MOVEL).corner_radius(theme::radius::COMPOSER).inner_margin(egui::Margin::symmetric(6, 7))
 }
 
 /// A frameless text box for inside [`input_frame`].

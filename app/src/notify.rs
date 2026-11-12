@@ -682,7 +682,7 @@ mod tests {
                     ("# lido", 0, 0),
                 ] {
                     let name = label.trim_start_matches("# ");
-                    let row = crate::ui_kit::Row { icon: crate::theme::ph::HASH, name, label, selected: false, unread: unread > 0, count: unread, mentions, hover: None };
+                    let row = crate::ui_kit::Row { icon: crate::theme::ph::HASH, name, label, selected: false, unread: unread > 0, count: unread, mentions, hover: None, id: None };
                     drawn.push(crate::ui_kit::sidebar_row(ui, row).1);
                 }
             });

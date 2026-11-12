@@ -9,7 +9,7 @@ use vox_proto::ChannelKind;
 use super::{App, Center, JOIN_UI_LIMIT_SECS};
 use crate::backend::Cmd;
 use crate::layout::{CenterMode, Open};
-use crate::theme::{self, ph};
+use crate::theme::{self, ph, space};
 use crate::ui_kit::{self, IconState};
 
 /// Height of the center header and of the dock's header.
@@ -17,15 +17,19 @@ pub const HEADER_H: f32 = 52.0;
 /// Width of the member list.
 const MEMBERS_W: f32 = 232.0;
 
-/// The frame of a header bar: the night background, side padding.
+/// The frame of a header bar: the chat's own grey (Discord paints a header over the chat, not
+/// over a darker rail), side padding.
 fn header_frame() -> egui::Frame {
-    egui::Frame::new().fill(theme::NOITE).inner_margin(Margin::symmetric(16, 0))
+    egui::Frame::new().fill(theme::CHAT).inner_margin(Margin::symmetric(16, 0))
 }
 
-/// A header's title: an icon, then the name in the display font.
+/// A header's title: an icon, then the name. Discord writes a channel header in the semibold
+/// body face, not in the display face — theirs is a label, not a logo.
 fn header_title(ui: &mut egui::Ui, icon: &str, name: &str) -> egui::Response {
+    ui.add_space(2.0);
     ui.label(RichText::new(icon).font(theme::body(19.0)).color(theme::NEVOA));
-    ui.add(egui::Label::new(RichText::new(name).font(theme::display(17.0)).color(theme::GIZ)).truncate().selectable(false))
+    ui.add_space(6.0);
+    ui.add(egui::Label::new(RichText::new(name).font(theme::semibold(16.0)).color(theme::GIZ)).truncate().selectable(false))
 }
 
 impl App {
@@ -54,7 +58,7 @@ impl App {
         egui::Panel::left("left")
             .default_size(248.0)
             .size_range(200.0..=380.0)
-            .frame(egui::Frame::new().fill(theme::PAREDE))
+            .frame(egui::Frame::new().fill(theme::PAINEL))
             .show(ui, |ui| self.left_panel(ui));
         match self.effective_mode() {
             CenterMode::Chat => self.chat_center(ui),
@@ -76,7 +80,7 @@ impl App {
         }
         if let Some(msg) = self.notice.clone() {
             let mut dismiss = false;
-            egui::Panel::top("notice").resizable(false).frame(bar(theme::PAREDE)).show(ui, |ui| {
+            egui::Panel::top("notice").resizable(false).frame(bar(theme::PAINEL)).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         dismiss = ui_kit::button_sized(ui, ui_kit::Kind::Secondary, ui_kit::Size::Small, None, "OK").clicked();
@@ -108,8 +112,10 @@ impl App {
     }
 
     /// The mode buttons (right to left: the rightmost first): only chat, only cards, cards with
-    /// the chat docked. The ones with cards need a call.
+    /// the chat docked. The ones with cards need a call. Eight points between them, the spacing
+    /// Discord gives a header's icon buttons (ours was 2, so the three read as one block).
     fn mode_buttons(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.x = space::M;
         let in_call = self.call_channel().is_some();
         let now = self.effective_mode();
         let buttons = [
@@ -158,22 +164,40 @@ impl App {
                             if channel.as_ref().is_some_and(|c| c.private.is_some()) {
                                 t.on_hover_text(super::PRIVATE_HOVER);
                             }
+                            // v1.2: the channel's topic, grey and cut short, right of the name —
+                            // Discord's own place for it. Nothing when unset (or no room left).
+                            let topic = channel.as_ref().map(|c| c.topic.trim()).filter(|t| !t.is_empty());
+                            if let Some(topic) = topic {
+                                let room = ui.available_width() - 22.0;
+                                if room > 90.0 {
+                                    let cy = ui.max_rect().center().y;
+                                    let p = ui.painter();
+                                    let line = egui::Rect::from_min_size(egui::pos2(ui.cursor().min.x + 4.0, cy - 8.0), egui::vec2(1.0, 16.0));
+                                    p.rect_filled(line, 0.0, theme::RISCO);
+                                    let g = crate::app::notify::fit_name(p, topic, theme::body(12.5), theme::NEVOA, room);
+                                    let top = ui.cursor().min.y + (ui.max_rect().height() - g.size().y) / 2.0;
+                                    let r = egui::Rect::from_min_size(egui::pos2(ui.cursor().min.x + 12.0, top), g.size());
+                                    p.galley(r.min, g.clone(), theme::NEVOA);
+                                    ui.advance_cursor_after_rect(r.expand(2.0));
+                                    ui.interact(r, egui::Id::new(("channel_topic", ch)), egui::Sense::hover()).on_hover_text(topic);
+                                }
+                            }
                         });
                     });
                 });
                 if self.settings.layout.show_members {
                     egui::Panel::right("members").resizable(false)
                         .exact_size(MEMBERS_W)
-                        .frame(egui::Frame::new().fill(theme::PAREDE).inner_margin(Margin { left: 8, right: 8, top: 12, bottom: 8 }))
+                        .frame(egui::Frame::new().fill(theme::PAINEL).inner_margin(Margin { left: 8, right: 8, top: 12, bottom: 8 }))
                         .show(ui, |ui| self.online_panel(ui));
                 }
-                egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::NOITE)).show(ui, |ui| self.channel_chat(ui, ch));
+                egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CHAT)).show(ui, |ui| self.channel_chat(ui, ch));
             }
             Open::Nothing | Open::Stage(_) => {
                 egui::Panel::top("center_head").resizable(false).exact_size(HEADER_H).frame(header_frame()).show(ui, |ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.mode_buttons(ui));
                 });
-                egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::NOITE)).show(ui, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CHAT)).show(ui, |ui| {
                     ui.centered_and_justified(|ui| {
                         let text = if self.ready { "Escolha um canal de texto." } else { "Carregando..." };
                         ui.label(RichText::new(text).color(theme::NEVOA));
@@ -187,7 +211,7 @@ impl App {
     /// where the messages are kept, the lines and the input.
     fn dm_center(&mut self, ui: &mut egui::Ui, dm: vox_proto::DmId) {
         let Some(conv) = self.dms.conv(dm).cloned() else {
-            egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::NOITE)).show(ui, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CHAT)).show(ui, |ui| {
                 ui.centered_and_justified(|ui| ui.label(RichText::new("Carregando...").color(theme::NEVOA)));
             });
             return;
@@ -209,10 +233,10 @@ impl App {
         });
         let name = conv.peer.shown_name().to_string();
         egui::Panel::bottom(egui::Id::new("dm_input_panel")).resizable(false)
-            .frame(egui::Frame::new().fill(theme::NOITE).inner_margin(Margin { left: 12, right: 12, top: 4, bottom: 12 }))
+            .frame(egui::Frame::new().fill(theme::CHAT).inner_margin(Margin { left: 12, right: 12, top: 4, bottom: 12 }))
             .show_separator_line(false)
             .show(ui, |ui| self.dm_input_box(ui, dm, &name, conv.blocked));
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::NOITE)).show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CHAT)).show(ui, |ui| {
             let ui = &mut ui.new_child(egui::UiBuilder::new().max_rect(ui.max_rect().shrink2(egui::vec2(12.0, 0.0))));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -253,7 +277,7 @@ impl App {
                     .default_size(width)
                     .size_range(280.0..=640.0)
                     .resizable(true)
-                    .frame(egui::Frame::new().fill(theme::NOITE))
+                    .frame(egui::Frame::new().fill(theme::CHAT))
                     .show(ui, |ui| self.dock(ui, ch));
                 // Remember the width once the drag is over.
                 let w = r.response.rect.width();
@@ -286,14 +310,14 @@ impl App {
                 });
             });
         });
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::NOITE)).show(ui, |ui| self.call_stage_ui(ui));
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CHAT)).show(ui, |ui| self.call_stage_ui(ui));
     }
 
     /// The chat docked beside the cards: its header (the channel, a picker of the text channels,
     /// hide) and the chat itself. It never takes the sidebar's "open" highlight.
     fn dock(&mut self, ui: &mut egui::Ui, ch: vox_proto::ChannelId) {
         let channel = self.channels.iter().find(|c| c.id == ch).cloned();
-        egui::Panel::top("dock_head").resizable(false).exact_size(HEADER_H).frame(egui::Frame::new().fill(theme::NOITE).inner_margin(Margin::symmetric(12, 0))).show(ui, |ui| {
+        egui::Panel::top("dock_head").resizable(false).exact_size(HEADER_H).frame(egui::Frame::new().fill(theme::CHAT).inner_margin(Margin::symmetric(12, 0))).show(ui, |ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui_kit::icon_button(ui, ph::CARET_RIGHT, "Esconder o chat (só os cards)", IconState::Normal).clicked() {
                     self.set_center_mode(CenterMode::Cards);

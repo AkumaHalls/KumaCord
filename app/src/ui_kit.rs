@@ -58,7 +58,10 @@ pub fn button_colors(kind: Kind, hovered: bool, pressed: bool) -> (Color32, Colo
         Kind::Primary => (pick(theme::ABAJUR, theme::ABAJUR_HOVER, theme::ABAJUR_PRESSED), theme::ABAJUR_TINTA),
         Kind::Secondary => (pick(theme::MOVEL, theme::MOVEL_HOVER, theme::MOVEL_PRESSED), theme::GIZ),
         Kind::Ghost => (pick(Color32::TRANSPARENT, theme::MOVEL, theme::MOVEL_PRESSED), if hovered || pressed { theme::GIZ } else { theme::NEVOA }),
-        Kind::Danger => (pick(theme::AO_VIVO, theme::AO_VIVO_HOVER, theme::AO_VIVO_PRESSED), Color32::WHITE),
+        // Discord's destructive ladder (see `theme::DANGER_IDLE`): white on the old idle red
+        // measured 3.77:1 — a fail for text. Each step below the idle is darker, so hover and
+        // pressed only gain contrast. `AO_VIVO` stays for icons, dots and outlines, where 3:1 is enough.
+        Kind::Danger => (pick(theme::DANGER_IDLE, theme::AO_VIVO_PRESSED, theme::PERIGO_FUNDO), Color32::WHITE),
     }
 }
 
@@ -103,7 +106,7 @@ pub fn button_sized(ui: &mut Ui, kind: Kind, sz: Size, icon: Option<&str>, text:
         }
     }
     resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), text));
-    resp
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// How an icon button looks besides hover.
@@ -132,14 +135,16 @@ pub fn icon_button(ui: &mut Ui, icon: &str, hover: &str, state: IconState) -> Re
         };
         let fg = if ui.is_enabled() { fg } else { fg.gamma_multiply(0.5) };
         let painter = ui.painter();
-        painter.rect_filled(rect, radius::ROW, fill);
+        // A square button keeps the button's radius, not the row's: 12 points on a 30 × 30
+        // glyph would read as a lozenge, and Discord's own icon buttons are `sm`.
+        painter.rect_filled(rect, radius::BUTTON, fill);
         if resp.has_focus() {
-            painter.rect_stroke(rect, radius::ROW, Stroke::new(stroke::FOCUS, theme::GIZ), StrokeKind::Inside);
+            painter.rect_stroke(rect, radius::BUTTON, Stroke::new(stroke::FOCUS, theme::GIZ), StrokeKind::Inside);
         }
         painter.text(rect.center(), Align2::CENTER_CENTER, icon, theme::body(18.0), fg);
     }
     resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), hover));
-    resp.on_hover_text(hover)
+    resp.on_hover_text(hover).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 // ---------------------------------------------------------------- sidebar rows
@@ -169,6 +174,13 @@ pub struct Row<'a> {
     /// Unread mentions (an "@" before the counter).
     pub mentions: u32,
     pub hover: Option<&'a str>,
+    /// 2026-11-11: an EXPLICIT id for the row, so its clicks never depend on how many widgets were
+    /// allocated before it in the same frame. Without it egui mints the id from an automatic
+    /// counter, and that counter moves whenever a DM arrives or somebody joins/leaves a voice room
+    /// above the row: the press then lands on one id and the release on another, and egui swallows
+    /// the click without a trace. `None` keeps the automatic id — fine only for rows in a list
+    /// whose length never changes (a settings page list, a mockup).
+    pub id: Option<egui::Id>,
 }
 
 /// The counter pill's width for `unread`.
@@ -189,15 +201,30 @@ pub fn sidebar_row_drag(ui: &mut Ui, row: Row<'_>) -> (Response, DrawnRow) {
 }
 
 fn sidebar_row_sense(ui: &mut Ui, row: Row<'_>, sense: Sense) -> (Response, DrawnRow) {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), sense);
+    let size = Vec2::new(ui.available_width(), ROW_H);
+    let (rect, resp) = match row.id {
+        // An explicit id (see [`Row::id`]): the same rect egui would have allocated, but the
+        // interaction is keyed on a stable id instead of the frame's widget counter.
+        Some(id) => {
+            let rect = Rect::from_min_size(ui.cursor().min, size);
+            let resp = ui.interact(rect, id, sense);
+            ui.advance_cursor_after_rect(rect);
+            (rect, resp)
+        }
+        None => ui.allocate_exact_size(size, sense),
+    };
     let count_w = (row.count > 0).then(|| count_width(ui, row.count));
     let icon_x = rect.left() + space::M;
     let layout = notify::row_layout(rect, icon_x + 18.0 + space::M, count_w, row.count > 0 && row.mentions > 0, 0.0);
     let painter = ui.painter_at(rect);
     if row.selected {
         painter.rect_filled(rect, radius::ROW, theme::ROW_SELECTED);
-    } else if resp.hovered() {
+    } else if resp.hovered() || resp.is_pointer_button_down_on() {
         painter.rect_filled(rect, radius::ROW, theme::ROW_HOVER);
+    }
+    // Keyboard focus: without it every row here is reachable by Tab and invisible while focused.
+    if resp.has_focus() {
+        painter.rect_stroke(rect, radius::ROW, Stroke::new(stroke::FOCUS, theme::GIZ), StrokeKind::Inside);
     }
     let strong = row.selected || row.unread || resp.hovered();
     let color = if strong { theme::GIZ } else { theme::NEVOA };
@@ -218,6 +245,9 @@ fn sidebar_row_sense(ui: &mut Ui, row: Row<'_>, sense: Sense) -> (Response, Draw
         (false, Some(h)) => resp.on_hover_text(h),
         (false, None) => resp,
     };
+    // A row is clickable: the pointer says so. Without this the arrow cursor over a channel name
+    // reads as "text", which is the presence-menu bug all over again.
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     (resp, DrawnRow { label: row.label.to_string(), layout, text_right, elided, selected: row.selected })
 }
 
@@ -419,9 +449,12 @@ pub fn menu_row_ex(ui: &mut Ui, icon: &str, icon_color: Option<Color32>, text: &
         if caret {
             p.text(Pos2::new(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, ph::CARET_RIGHT, theme::body(14.0), theme::NEVOA);
         }
+        if resp.has_focus() {
+            p.rect_stroke(rect, radius::TAG, Stroke::new(stroke::FOCUS, theme::GIZ), StrokeKind::Inside);
+        }
     }
     resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), text));
-    resp
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// A menu item that may be off: `why` (the reason, shown on hover) disables it. True when clicked.
@@ -627,7 +660,7 @@ pub fn info_row<R>(ui: &mut Ui, label_w: f32, label: &str, value: impl FnOnce(&m
 pub fn nav_list(ui: &mut Ui, pages: &[(&str, &str)], open: usize) -> Option<usize> {
     let mut picked = None;
     for (i, (icon, name)) in pages.iter().enumerate() {
-        let (r, _) = sidebar_row(ui, Row { icon, name, label: name, selected: i == open, unread: false, count: 0, mentions: 0, hover: None });
+        let (r, _) = sidebar_row(ui, Row { icon, name, label: name, selected: i == open, unread: false, count: 0, mentions: 0, hover: None, id: Some(egui::Id::new(("nav_list_row", i))) });
         if r.clicked() {
             picked = Some(i);
         }
@@ -810,14 +843,14 @@ pub fn gallery(ui: &mut Ui, g: &mut Gallery) {
                     (ph::LOCK_SIMPLE, "administração", "# administração", false, 0, 0),
                 ];
                 for (i, (icon, name, label, unread, count, mentions)) in rows.into_iter().enumerate() {
-                    let (r, _) = sidebar_row(ui, Row { icon, name, label, selected: g.selected == i, unread, count, mentions, hover: None });
+                    let (r, _) = sidebar_row(ui, Row { icon, name, label, selected: g.selected == i, unread, count, mentions, hover: None, id: Some(egui::Id::new(("kit_row", i))) });
                     if r.clicked() {
                         g.selected = i;
                     }
                 }
                 section(ui, "Voz");
-                sidebar_row(ui, Row { icon: ph::SPEAKER_HIGH, name: "Sala principal", label: "Sala principal", selected: false, unread: false, count: 0, mentions: 0, hover: None });
-                sidebar_row(ui, Row { icon: ph::SPEAKER_HIGH, name: "Sala do foco", label: "Sala do foco", selected: false, unread: false, count: 0, mentions: 0, hover: None });
+                sidebar_row(ui, Row { icon: ph::SPEAKER_HIGH, name: "Sala principal", label: "Sala principal", selected: false, unread: false, count: 0, mentions: 0, hover: None, id: Some(egui::Id::new(("kit_row", "voz-principal"))) });
+                sidebar_row(ui, Row { icon: ph::SPEAKER_HIGH, name: "Sala do foco", label: "Sala do foco", selected: false, unread: false, count: 0, mentions: 0, hover: None, id: Some(egui::Id::new(("kit_row", "voz-foco"))) });
             });
             ui.add_space(space::L);
             section(ui, "Cards de vídeo");

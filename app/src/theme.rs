@@ -30,16 +30,28 @@ use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontF
 
 // ---------------------------------------------------------------- colours
 
-// The Discord dark palette (v1.1.1, "the mirror"): every value below is the official
-// client's. Chat #313338, sidebar #2B2D31, rail #1E1F22, text #DBDEE1/#949BA4,
-// interactive #4E5058, and the brand blurple #5865F2 (hover #4752C4, pressed
-// #3C45A5) extracted from the client bundle, next to the green #23A559 and the
-// red #F23F43. The old night-lamp navy/gold lives in git history.
+// The Discord dark palette (v1.1.1, "the mirror"; surfaces re-derived from the installed
+// client's bundle on 2026-11-11): every value below is the official client's. The three
+// surfaces are DISTINCT in Discord and were collapsed into two here — the sidebar came out
+// LIGHTER than the chat, the exact inverse of the original. Chat #313338 (PRIMARY_600),
+// sidebar and member list #2B2D31 (PRIMARY_630), rail #1E1F22 (PRIMARY_700), text
+// #DBDEE1/#949BA4, interactive #4E5058, and the brand blurple #5865F2 (hover #4752C4,
+// pressed #3C45A5), next to the green #23A559 and the red #F23F43. The old night-lamp
+// navy/gold lives in git history.
 
-/// Background of the window (Discord's rail: the darkest surface).
+/// The darkest surface: the server rail, the call stage (Discord's PRIMARY_700).
 pub const NOITE: Color32 = Color32::from_rgb(0x1E, 0x1F, 0x22);
-/// Panels (the sidebar, the chat) and dialog windows (Discord's "chat" and "sidebar" grays).
+/// Raised surfaces that sit ON the chat: dialog windows, the profile popout, the incoming-call
+/// modal, a reaction pill floating over the lines (Discord's PRIMARY_600, its "chat" grey).
 pub const PAREDE: Color32 = Color32::from_rgb(0x31, 0x33, 0x38);
+/// The chat itself: the centre of the screen, its headers and the dock beside the cards
+/// (Discord's PRIMARY_600 — the same grey as a dialog, and the reason the two are one token
+/// apart: [`PAINEL`] is the darker one that frames it).
+pub const CHAT: Color32 = Color32::from_rgb(0x31, 0x33, 0x38);
+/// The channel sidebar, the member list and the notice bar (Discord's PRIMARY_630). Was
+/// [`PAREDE`] here, which put the sidebar a shade LIGHTER than the chat — the inverse of
+/// Discord, where the panels around the chat are the darker grey.
+pub const PAINEL: Color32 = Color32::from_rgb(0x2B, 0x2D, 0x31);
 /// Raised things: buttons, fields, the selected row, video cards, menus (Discord's
 /// interactive normal).
 pub const MOVEL: Color32 = Color32::from_rgb(0x4E, 0x50, 0x58);
@@ -68,8 +80,10 @@ pub const MOVEL_HOVER: Color32 = Color32::from_rgb(0x6D, 0x6F, 0x78);
 pub const MOVEL_PRESSED: Color32 = Color32::from_rgb(0x3F, 0x41, 0x47);
 /// A list row under the pointer (quieter than the selected one).
 pub const ROW_HOVER: Color32 = Color32::from_rgb(0x35, 0x37, 0x3C);
-/// The selected / open row.
-pub const ROW_SELECTED: Color32 = MOVEL;
+/// The selected / open row. Was [`MOVEL`] (`#4E5058`) — the *button* grey, 1.97× heavier than
+/// Discord's selected row and carrying less text contrast than Discord's (GIZ over it: 7.24:1,
+/// over Discord's: 10.4:1). This is Discord's row fill.
+pub const ROW_SELECTED: Color32 = Color32::from_rgb(0x37, 0x39, 0x3F);
 /// [`ABAJUR`] under the pointer / pressed (Discord's blurple steps).
 pub const ABAJUR_HOVER: Color32 = Color32::from_rgb(0x47, 0x52, 0xC4);
 pub const ABAJUR_PRESSED: Color32 = Color32::from_rgb(0x3C, 0x45, 0xA5);
@@ -92,8 +106,10 @@ pub const CAIXA_HOVER: Color32 = Color32::from_rgb(0x3D, 0x52, 0x68);
 pub const FUNDO: Color32 = Color32::from_rgb(0x0E, 0x15, 0x1D);
 /// The translucent strip behind a name on a video card.
 pub const ETIQUETA: Color32 = Color32::from_rgba_premultiplied(11, 17, 23, 204);
-/// Offline / switched-off dot.
-pub const DESLIGADO: Color32 = Color32::from_rgb(0x4A, 0x5B, 0x6B);
+/// Offline / switched-off dot. Was `#4A5B6B`, which measured 1.81:1 over `PAREDE` — it failed
+/// even the 3:1 a graphical component needs, so a switched-off mic or an offline presence was
+/// nearly invisible. This one is 3.26:1 over `PAREDE` and 4.26:1 over `NOITE`.
+pub const DESLIGADO: Color32 = Color32::from_rgb(0x7A, 0x82, 0x90);
 /// Links in the chat.
 pub const LINK: Color32 = Color32::from_rgb(0x7F, 0xB4, 0xE6);
 
@@ -103,6 +119,16 @@ pub const SELECAO: Color32 = Color32::from_rgba_premultiplied(62, 71, 78, 115);
 /// Warnings and "working on it" states (a notice's icon and outline, a hint that needs
 /// attention): chalk, never the lamp. Danger keeps [`AO_VIVO`].
 pub const AVISO: Color32 = GIZ;
+
+/// A mention chip's background: of somebody else quiet, of me in the lamp's colours.
+pub const CHIP_BG: Color32 = Color32::from_rgb(0x22, 0x33, 0x48);
+pub const CHIP_ME_BG: Color32 = ABAJUR_FUNDO;
+/// The text of a mention of ME. Was `ABAJUR` (`#5865F2`) on `CHIP_ME_BG` — **2.05:1**, the worst
+/// contrast in the app, on the chip that matters most to read. Discord writes `#DCDDFC`.
+pub const CHIP_ME_TEXT: Color32 = Color32::from_rgb(0xC6, 0xCF, 0xFF);
+/// The idle fill of a destructive button. Discord's own red: white on it is 4.55:1, where white on
+/// the plain `AO_VIVO` lamp was 3.77:1 — a fail for text.
+pub const DANGER_IDLE: Color32 = Color32::from_rgb(0xDA, 0x37, 0x3C);
 
 // ---------------------------------------------------------------- spacing, radii, strokes
 
@@ -116,14 +142,20 @@ pub mod space {
     pub const XXL: f32 = 24.0;
 }
 
-/// Corner radii: video cards and popups 10, buttons 8, rows 6, small tags 4, pills round,
-/// panels square.
+/// Corner radii. Discord's own scale, read out of the installed client's bundle:
+/// `none:0, xs:4, sm:8, md:12, lg:16, xl:24, xxl:32, round` — so a list row is 12
+/// (`CHANNEL_ITEM_RADIUS:12`), a checkbox 8 (`CONTROL_CHECKBOX_BORDER_RADIUS:8`) and the
+/// chat's input 24 (`CHAT_INPUT_BORDER_RADIUS:24`). Ours was 6 for a row, which read as a
+/// near-square block next to theirs.
 pub mod radius {
     pub const CARD: u8 = 10;
     pub const POPUP: u8 = 10;
     pub const BUTTON: u8 = 8;
-    pub const ROW: u8 = 6;
+    /// A list row (a channel, a member, a DM) and a category header: Discord's `md`.
+    pub const ROW: u8 = 12;
     pub const TAG: u8 = 4;
+    /// The composer at the foot of the chat: Discord's `CHAT_INPUT_BORDER_RADIUS:24`.
+    pub const COMPOSER: u8 = 24;
     /// Fully round at any height a pill can have.
     pub const PILL: u8 = 255;
     pub const PANEL: u8 = 0;
@@ -137,8 +169,8 @@ pub mod stroke {
     pub const SPEAKING: f32 = 2.0;
     /// The gap (in the background colour) between an avatar and its speaking ring.
     pub const RING_GAP: f32 = 2.0;
-    /// Keyboard focus.
-    pub const FOCUS: f32 = 1.5;
+    /// Keyboard focus. Was 1.5, below the 2px a focus ring needs to be seen at all.
+    pub const FOCUS: f32 = 2.0;
 }
 
 // ---------------------------------------------------------------- fonts
@@ -267,12 +299,14 @@ fn widget(fill: Color32, stroke: Stroke, fg: Color32, r: u8) -> egui::style::Wid
 pub fn visuals() -> egui::Visuals {
     let mut v = egui::Visuals::dark();
     let hair = Stroke::new(stroke::HAIRLINE, RISCO);
-    v.widgets.noninteractive = widget(PAREDE, hair, TEXTO, radius::ROW);
-    // (egui's own buttons, checkboxes and combo boxes: 6, so a 16-point checkbox stays a square.)
-    v.widgets.inactive = widget(MOVEL, Stroke::NONE, GIZ, radius::ROW);
-    v.widgets.hovered = widget(MOVEL_HOVER, Stroke::new(stroke::HAIRLINE, Color32::from_rgb(0x3B, 0x50, 0x66)), GIZ, radius::ROW);
-    v.widgets.active = widget(MOVEL_PRESSED, hair, GIZ, radius::ROW);
-    v.widgets.open = widget(PAREDE, hair, GIZ, radius::ROW);
+    v.widgets.noninteractive = widget(PAREDE, hair, TEXTO, radius::BUTTON);
+    // egui's own buttons, checkboxes and combo boxes: 8, not the row's 12 — Discord's
+    // `CONTROL_CHECKBOX_BORDER_RADIUS` is 8, and a 16-point checkbox with 12-point corners
+    // stops being a checkbox and becomes a circle.
+    v.widgets.inactive = widget(MOVEL, Stroke::NONE, GIZ, radius::BUTTON);
+    v.widgets.hovered = widget(MOVEL_HOVER, Stroke::new(stroke::HAIRLINE, Color32::from_rgb(0x3B, 0x50, 0x66)), GIZ, radius::BUTTON);
+    v.widgets.active = widget(MOVEL_PRESSED, hair, GIZ, radius::BUTTON);
+    v.widgets.open = widget(PAREDE, hair, GIZ, radius::BUTTON);
     v.widgets.open.weak_bg_fill = MOVEL;
     // A checkbox's or radio's box and a slider's rail use `bg_fill` (buttons and combo boxes use
     // `weak_bg_fill`): a step lighter than the raised colour, so an empty box still reads on the
@@ -298,7 +332,7 @@ pub fn visuals() -> egui::Visuals {
     v.popup_shadow = Shadow { offset: [0, 8], blur: 22, spread: 0, color: Color32::from_black_alpha(120) };
     v.window_fill = PAREDE;
     v.window_stroke = hair;
-    v.panel_fill = NOITE;
+    v.panel_fill = CHAT;
     v.text_cursor.stroke = Stroke::new(2.0, GIZ);
     // No repaint timer while a text box has focus (an idle app draws nothing).
     v.text_cursor.blink = false;
@@ -349,6 +383,47 @@ pub fn apply(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WCAG relative luminance of an opaque `Color32` (sRGB → linear, then the Rec.709 weights).
+    fn lum(c: Color32) -> f32 {
+        let ch = |v: u8| { let s = v as f32 / 255.0; if s <= 0.03928 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) } };
+        0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
+    }
+
+    /// WCAG contrast ratio between two opaque colours (1:1 identical, 21:1 black on white).
+    fn ratio(a: Color32, b: Color32) -> f32 {
+        let (hi, lo) = if lum(a) > lum(b) { (lum(a), lum(b)) } else { (lum(b), lum(a)) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// The tokens that were carrying unreadable text or an invisible component, pinned so they
+    /// cannot drift back. Each line is a combination the app actually draws.
+    #[test]
+    fn the_colours_that_carry_text_are_readable() {
+        // A mention of ME was 2.05:1 — the worst in the app, on the chip that matters most.
+        assert!(ratio(CHIP_ME_TEXT, CHIP_ME_BG) >= 4.5, "mention-of-me chip: {}", ratio(CHIP_ME_TEXT, CHIP_ME_BG));
+        // Body and secondary text on every surface they are drawn on.
+        for bg in [NOITE, PAREDE, RISCO, MOVEL, ROW_HOVER, ROW_SELECTED, MENU, FUNDO] {
+            assert!(ratio(TEXTO, bg) >= 4.5, "TEXTO on {bg:?}: {}", ratio(TEXTO, bg));
+            assert!(ratio(GIZ, bg) >= 4.5, "GIZ on {bg:?}: {}", ratio(GIZ, bg));
+        }
+        assert!(ratio(NEVOA, NOITE) >= 4.5, "NEVOA on NOITE: {}", ratio(NEVOA, NOITE));
+        assert!(ratio(NEVOA, PAREDE) >= 4.5, "NEVOA on PAREDE: {}", ratio(NEVOA, PAREDE));
+        // The chat field's placeholder is NEVOA over MOVEL: the one combination that cannot be
+        // fixed by moving the token (the field's own fill), so it is stated as known, not passed.
+        println!("placeholder (NEVOA over MOVEL): {:.2} — below 4.5, as in Discord", ratio(NEVOA, MOVEL));
+    }
+
+    /// A graphical component (a dot, an icon, a focus ring) needs 3:1, not 4.5:1 — but it does need
+    /// 3:1. The offline dot used to be 1.81:1 and was effectively invisible.
+    /// (The presence colours live in `profile.rs`, next to the dots that use them.)
+    #[test]
+    fn the_graphical_components_are_visible() {
+        assert!(ratio(DESLIGADO, PAREDE) >= 3.0, "offline dot on PAREDE: {}", ratio(DESLIGADO, PAREDE));
+        assert!(ratio(DESLIGADO, NOITE) >= 3.0, "offline dot on NOITE: {}", ratio(DESLIGADO, NOITE));
+        assert!(ratio(Color32::WHITE, ABAJUR) >= 4.5, "primary button: {}", ratio(Color32::WHITE, ABAJUR));
+        assert!(ratio(Color32::WHITE, DANGER_IDLE) >= 4.5, "danger button: {}", ratio(Color32::WHITE, DANGER_IDLE));
+    }
 
     #[test]
     fn every_family_starts_with_a_text_font_and_has_the_icons_next() {

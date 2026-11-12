@@ -926,7 +926,7 @@ impl App {
         });
         let convs: Vec<DmConversation> = self.dms.convs.clone();
         if convs.is_empty() {
-            let r = crate::ui_kit::sidebar_row(ui, crate::ui_kit::Row { icon: crate::theme::ph::PLUS, name: "Nova mensagem", label: "Nova mensagem", selected: false, unread: false, count: 0, mentions: 0, hover: None }).0;
+            let r = crate::ui_kit::sidebar_row(ui, crate::ui_kit::Row { icon: crate::theme::ph::PLUS, name: "Nova mensagem", label: "Nova mensagem", selected: false, unread: false, count: 0, mentions: 0, hover: None, id: Some(egui::Id::new("sidebar_new_dm")) }).0;
             if r.clicked() {
                 self.open_dm_picker();
             }
@@ -935,7 +935,14 @@ impl App {
         for c in convs {
             let selected = open == crate::layout::Open::Dm(c.id);
             let calling = self.dms.call.as_ref().is_some_and(|k| k.dm_id == c.id);
-            let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), egui::Sense::click());
+            // 2026-11-11: an explicit id per conversation, not egui's automatic counter: the rows
+            // above this one (the channel list, the voice members) change length while the app runs,
+            // and then the press and the release of a click could land on different ids — egui
+            // swallows the click and the conversation simply does not open. Keyed on the
+            // conversation's own id, the click always lands.
+            let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), ROW_H));
+            let resp = ui.interact(rect, egui::Id::new(("dm_row", c.id)), egui::Sense::click());
+            ui.advance_cursor_after_rect(rect);
             if ui.is_rect_visible(rect) {
                 if selected {
                     ui.painter().rect_filled(rect, crate::theme::radius::ROW, crate::theme::ROW_SELECTED);

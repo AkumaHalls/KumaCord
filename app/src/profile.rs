@@ -102,7 +102,9 @@ pub fn presence_hint(p: Presence) -> &'static str {
 pub fn presence_color(p: Presence) -> Color32 {
     match p {
         Presence::Online => GREEN,
-        Presence::Away => theme::NEVOA,
+        // Discord's idle is amber, not the grey of secondary text: "Ausente" has to be a presence
+        // of its own, not a quieter version of online. 6.43:1 over `PAREDE`.
+        Presence::Away => Color32::from_rgb(0xFA, 0xA8, 0x1A),
         Presence::Dnd => RED,
         Presence::Invisible => OFFLINE_COLOR,
     }
@@ -120,6 +122,41 @@ pub fn status_line(s: &CustomStatus) -> String {
         (false, true) => s.emoji.clone(),
         _ => s.text.clone(),
     }
+}
+
+/// v1.2: the "Jogando X" line — the name as the hub was told it. A blank one (a hub that
+/// accepted an empty PUT) shows nothing rather than a bare "Jogando".
+pub fn activity_line(a: &vox_proto::Activity) -> String {
+    let name = a.name.trim();
+    if name.is_empty() {
+        String::new()
+    } else {
+        format!("Jogando {name}")
+    }
+}
+
+/// v1.2: how long they have been playing, the way Discord writes it under the game's name —
+/// "há 5 min", "há 1 h 23 min", "há 2 h", "há 3 d". Nothing under a minute: a game that just
+/// started has no elapsed line yet.
+pub fn activity_elapsed(a: &vox_proto::Activity, now_ms: i64) -> Option<String> {
+    // No stamp: the hub writes it, and an older one may not — saying "há 20000 d" would be a lie
+    // built from the epoch. No time is shown until there is a real one to count from.
+    if a.started_at_ms <= 0 {
+        return None;
+    }
+    let mins = (now_ms.saturating_sub(a.started_at_ms)).max(0) / 60_000;
+    if mins < 1 {
+        return None;
+    }
+    if mins < 60 {
+        return Some(format!("há {mins} min"));
+    }
+    let hours = mins / 60;
+    if hours < 24 {
+        let rest = mins % 60;
+        return Some(if rest == 0 { format!("há {hours} h") } else { format!("há {hours} h {rest} min") });
+    }
+    Some(format!("há {} d", hours / 24))
 }
 
 /// "Limpar em": when a status clears itself.
@@ -249,6 +286,9 @@ pub enum ProfileCmd {
     Update(ProfileUpdate),
     SetPresence { presence: Presence, auto: bool },
     SetStatus(StatusUpdate),
+    /// v1.2: "Jogando X" — the game the detector found (`Some`) or nothing at all now (`None`,
+    /// the game was closed). The hub stamps `started_at_ms` and tells everybody.
+    SetActivity(Option<String>),
     /// A moderator clears parts of somebody else's profile.
     ModClear { user: UserId, what: ModClearProfileRequest },
 }
@@ -259,6 +299,8 @@ pub enum ProfileEv {
     Updated(Result<UserProfile, String>),
     PresenceSet { asked: Presence, auto: bool, result: Result<Presence, String> },
     StatusSet(Result<Option<CustomStatus>, String>),
+    /// v1.2: the answer to [`ProfileCmd::SetActivity`] — the name now playing, if any.
+    ActivitySet(Result<Option<String>, String>),
     ModCleared { user: UserId, result: Result<(), String> },
 }
 
@@ -271,6 +313,7 @@ impl ProfileCmd {
             ProfileCmd::Update(_) => ProfileEv::Updated(Err(msg)),
             ProfileCmd::SetPresence { presence, auto } => ProfileEv::PresenceSet { asked: presence, auto, result: Err(msg) },
             ProfileCmd::SetStatus(_) => ProfileEv::StatusSet(Err(msg)),
+            ProfileCmd::SetActivity(_) => ProfileEv::ActivitySet(Err(msg)),
             ProfileCmd::ModClear { user, .. } => ProfileEv::ModCleared { user, result: Err(msg) },
         }
     }
@@ -284,6 +327,13 @@ pub async fn run(hub: &HubClient, cmd: ProfileCmd) -> ProfileEv {
             ProfileEv::PresenceSet { asked: presence, auto, result: hub.set_presence(presence, auto).await.map_err(|e| error_text(&e)) }
         }
         ProfileCmd::SetStatus(u) => ProfileEv::StatusSet(hub.set_status(&u).await.map_err(|e| error_text(&e))),
+        ProfileCmd::SetActivity(name) => {
+            let r = match name {
+                Some(name) => hub.set_activity(&name).await.map(|()| Some(name)),
+                None => hub.clear_activity().await.map(|()| None::<String>),
+            };
+            ProfileEv::ActivitySet(r.map_err(|e| error_text(&e)))
+        }
         ProfileCmd::ModClear { user, what } => ProfileEv::ModCleared { user, result: hub.mod_clear_profile(user, what).await.map_err(|e| error_text(&e)) },
     }
 }
@@ -323,6 +373,9 @@ pub fn error_text(e: &anyhow::Error) -> String {
 pub struct PresenceInfo {
     pub presence: Presence,
     pub status: Option<CustomStatus>,
+    /// v1.2: what this person is playing ("Jogando X"), if anything. Ephemeral like the
+    /// presence itself: it comes in the same `PresenceChanged` and dies with the connection.
+    pub activity: Option<vox_proto::Activity>,
 }
 
 struct Cached {
@@ -402,6 +455,11 @@ pub struct ProfileUi {
     /// "Ausente" was set by idle detection (and so is undone by it).
     pub auto_away_sent: bool,
     last_idle_check: Option<Instant>,
+    /// v1.2: "Jogando X" — the game the detector last saw running (what the hub was last told),
+    /// and when it was last polled. `None` = nothing running, which is also what an older hub
+    /// gets: without the feature flag the loop never starts.
+    pub playing: Option<String>,
+    last_game_check: Option<Instant>,
 }
 
 impl ProfileUi {
@@ -432,6 +490,17 @@ impl App {
     pub fn status_of(&self, id: UserId) -> Option<CustomStatus> {
         let now = now_ms();
         live_status(self.profile.presence.get(&id).and_then(|i| i.status.as_ref()), now).cloned()
+    }
+
+    /// v1.2: what the hub says they are playing, if anything — the "Jogando X" line. Nobody
+    /// playing has no entry, and an older hub never sends one at all.
+    pub fn activity_of(&self, id: UserId) -> Option<&vox_proto::Activity> {
+        self.profile.presence.get(&id).and_then(|i| i.activity.as_ref())
+    }
+
+    /// The "Jogando X" line as Discord writes it, or `None` when they are not playing.
+    pub fn activity_line(&self, id: UserId) -> Option<String> {
+        self.activity_of(id).map(|a| activity_line(a))
     }
 
     /// The freshest `User` the app has for `id`.
@@ -483,12 +552,14 @@ impl App {
         }
     }
 
-    pub fn on_presence_changed(&mut self, user_id: UserId, presence: Presence, status: Option<CustomStatus>) {
+    pub fn on_presence_changed(&mut self, user_id: UserId, presence: Presence, status: Option<CustomStatus>, activity: Option<vox_proto::Activity>) {
         self.profile.supported.get_or_insert(true);
-        if presence == Presence::Online && status.is_none() {
+        // Somebody playing something keeps an entry even when they are plain "online, no status":
+        // "Jogando X" is what the sidebar shows, and there is nothing else to show it.
+        if presence == Presence::Online && status.is_none() && activity.is_none() {
             self.profile.presence.remove(&user_id);
         } else {
-            self.profile.presence.insert(user_id, PresenceInfo { presence, status: status.clone() });
+            self.profile.presence.insert(user_id, PresenceInfo { presence, status: status.clone(), activity: activity.clone() });
         }
         if let Some(c) = self.profile.cache.get_mut(&user_id) {
             c.profile.presence = presence;
@@ -552,7 +623,8 @@ impl App {
                     if let Some(id) = self.my_id() {
                         // The hub's PresenceChanged says the same; this keeps my own screen right if it is late.
                         let status = self.profile.presence.get(&id).and_then(|i| i.status.clone());
-                        self.on_presence_changed(id, p, status);
+                        let activity = self.profile.presence.get(&id).and_then(|i| i.activity.clone());
+                        self.on_presence_changed(id, p, status, activity);
                     }
                 }
                 Err(e) => {
@@ -575,10 +647,20 @@ impl App {
                         }
                         if let Some(id) = self.my_id() {
                             let presence = self.my_presence();
-                            self.on_presence_changed(id, presence, status);
+                            let activity = self.profile.presence.get(&id).and_then(|i| i.activity.clone());
+                            self.on_presence_changed(id, presence, status, activity);
                         }
                     }
                     Err(e) => f.status_msg = Some((false, e)),
+                }
+            }
+            // v1.2: the hub's answer to "I am playing X". The hub's own `PresenceChanged`
+            // follows with the same name (that is what the sidebar draws); this only logs a
+            // refusal, because a failed PUT means nobody sees the game — never a toast in the
+            // middle of the screen every 5 seconds.
+            ProfileEv::ActivitySet(result) => {
+                if let Err(e) = result {
+                    tracing::warn!(error = %e, "setting the activity failed");
                 }
             }
             ProfileEv::ModCleared { user, result } => match result {
@@ -685,6 +767,44 @@ impl App {
         ctx.request_repaint_after(IDLE_CHECK);
     }
 
+    // ------------------------------------------------------------ "Jogando X" (the game detection)
+
+    /// The game the hub says I am playing, if any (the sidebar and the cards read this).
+    pub fn my_activity(&self) -> Option<&vox_proto::Activity> {
+        self.my_id().and_then(|id| self.profile.presence.get(&id)).and_then(|i| i.activity.as_ref())
+    }
+
+    /// Called every frame: poll the running processes and tell the hub what I am playing. Only
+    /// when the detection is on AND this hub accepts it (`Ready.features.activity`): an older
+    /// hub would answer 404 to every PUT, so it is never asked.
+    pub fn game_tick(&mut self, ctx: &egui::Context) {
+        if !self.settings.detect_game || !self.ready {
+            return;
+        }
+        // An older hub has no activity endpoint at all: every PUT would be a 404, so it is
+        // never asked.
+        if !self.chatx.server_features.activity {
+            return;
+        }
+        let now = Instant::now();
+        if self.profile.last_game_check.is_some_and(|t| now.duration_since(t) < crate::games::POLL_INTERVAL) {
+            return;
+        }
+        self.profile.last_game_check = Some(now);
+        let found = crate::games::detect();
+        // Only a CHANGE is sent: the hub announces the activity to everybody, and a PUT with the
+        // same name every 5 seconds would be a rate-limited no-op for nothing.
+        if found == self.profile.playing.as_deref() {
+            return;
+        }
+        self.profile.playing = found.map(str::to_string);
+        let name = self.profile.playing.clone();
+        tracing::info!(?name, "game detection: activity");
+        self.backend.send(Cmd::Profile(ProfileCmd::SetActivity(name)));
+        // The next poll is one interval away; waking for it keeps the detection instant.
+        ctx.request_repaint_after(crate::games::POLL_INTERVAL);
+    }
+
     // ------------------------------------------------------------ the popout
 
     /// Left click on a person: open their card next to the pointer.
@@ -739,6 +859,8 @@ impl App {
         let presence = if me { self.my_presence() } else { self.presence_of(user.id) };
         // An online person's live status; an offline one's is whatever the hub last served.
         let status = if online { self.status_of(user.id) } else { cached.as_ref().and_then(|c| live_status(c.status.as_ref(), now).cloned()) };
+        // v1.2: what the hub says they are playing (nobody playing: nothing to show).
+        let activity = self.activity_of(user.id).cloned();
         let accent = cached.as_ref().and_then(|c| accent_color(c.accent.as_deref()));
         let banner_color = accent.unwrap_or_else(|| name_color(user.id).gamma_multiply(0.55));
         let roles_on = self.roles.supported;
@@ -847,6 +969,21 @@ impl App {
                             ui.set_width(ui.available_width());
                             ui.add(egui::Label::new(RichText::new(status_line(s)).color(theme::TEXTO)).wrap());
                         });
+                    }
+                    // v1.2: "Jogando X", the game's own line under the status (Discord puts the
+                    // elapsed time under the name; the art next to it is the game's, not ours).
+                    if let Some(a) = &activity {
+                        let line = activity_line(a);
+                        if !line.is_empty() {
+                            ui.add_space(2.0);
+                            egui::Frame::new().fill(theme::MOVEL).corner_radius(theme::radius::BUTTON).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.add(egui::Label::new(RichText::new(line).color(theme::TEXTO)).wrap());
+                                if let Some(el) = activity_elapsed(a, now) {
+                                    ui.label(RichText::new(el).font(theme::body(11.5)).color(theme::NEVOA));
+                                }
+                            });
+                        }
                     }
                     ui.add_space(space::M);
                     // The inner card: about, role, member since.
@@ -1261,6 +1398,62 @@ mod tests {
         assert_eq!(status_line(&s), "🎮 jogando");
         assert_eq!(status_line(&CustomStatus { emoji: "🎮".into(), ..Default::default() }), "🎮");
         assert_eq!(status_line(&forever), "x");
+    }
+
+    /// v1.2: the "Jogando X" line and its elapsed time.
+    fn playing(name: &str, started_ms_ago: i64) -> vox_proto::Activity {
+        vox_proto::Activity { name: name.into(), started_at_ms: 1_791_991_800_000 - started_ms_ago }
+    }
+
+    #[test]
+    fn the_game_is_named_the_way_discord_writes_it() {
+        let a = playing("Rocket League", 0);
+        assert_eq!(activity_line(&a), "Jogando Rocket League");
+        // A hub that accepted a blank name shows nothing rather than a bare "Jogando".
+        assert!(activity_line(&playing("   ", 0)).is_empty());
+    }
+
+    /// WCAG contrast of two opaque colours (the same formula `theme`'s own test uses).
+    fn ratio(a: Color32, b: Color32) -> f32 {
+        let ch = |v: u8| { let s = v as f32 / 255.0; if s <= 0.03928 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) } };
+        let lum = |c: Color32| 0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b());
+        let (hi, lo) = if lum(a) > lum(b) { (lum(a), lum(b)) } else { (lum(b), lum(a)) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// A presence dot is a graphical component: 3:1, not 4.5:1 — but 3:1 for real. The offline dot
+    /// was 1.81:1 over the chat surface, i.e. not there.
+    #[test]
+    fn every_presence_dot_is_visible_on_both_surfaces() {
+        for p in [Presence::Online, Presence::Away, Presence::Dnd, Presence::Invisible] {
+            let c = presence_color(p);
+            assert!(ratio(c, theme::PAREDE) >= 3.0, "{p:?} on PAREDE: {:.2}", ratio(c, theme::PAREDE));
+            assert!(ratio(c, theme::NOITE) >= 3.0, "{p:?} on NOITE: {:.2}", ratio(c, theme::NOITE));
+        }
+    }
+
+    /// "Ausente" is amber of its own, not the grey of secondary text: it has to read as a presence.
+    #[test]
+    fn away_is_a_colour_of_its_own() {
+        assert_ne!(presence_color(Presence::Away), theme::NEVOA, "away was indistinguishable from secondary text");
+        assert_ne!(presence_color(Presence::Away), presence_color(Presence::Invisible));
+        assert_ne!(presence_color(Presence::Away), presence_color(Presence::Online));
+        assert_eq!(presence_color(Presence::Away), Color32::from_rgb(0xFA, 0xA8, 0x1A));
+    }
+
+    #[test]
+    fn how_long_they_have_been_playing() {
+        let at = 1_791_991_800_000;
+        assert_eq!(activity_elapsed(&playing("X", 30_000), at), None, "nothing under a minute");
+        assert_eq!(activity_elapsed(&playing("X", 5 * 60_000), at).as_deref(), Some("há 5 min"));
+        assert_eq!(activity_elapsed(&playing("X", 60 * 60_000), at).as_deref(), Some("há 1 h"), "a whole hour drops the minutes");
+        assert_eq!(activity_elapsed(&playing("X", 60 * 60_000 + 23 * 60_000), at).as_deref(), Some("há 1 h 23 min"));
+        assert_eq!(activity_elapsed(&playing("X", 26 * 60 * 60_000), at).as_deref(), Some("há 1 d"));
+        // A clock that ran backwards (another machine's hub) reads as just started, not negative.
+        assert_eq!(activity_elapsed(&playing("X", -90_000), at), None);
+        // No stamp at all (an older hub, or one that does not write it): no time is shown, rather
+        // than "há 20000 d" counted from the epoch.
+        assert_eq!(activity_elapsed(&playing("X", 0), at), None);
     }
 
     #[test]

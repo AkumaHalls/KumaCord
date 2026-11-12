@@ -25,8 +25,10 @@ use crate::layout::Open;
 use crate::theme::{self, ph, radius};
 use crate::ui_kit::{self, IconState, Kind, Size};
 
-/// The bottom panels' background (a shade under the sidebar).
-const PANEL_BG: Color32 = Color32::from_rgb(0x17, 0x22, 0x2D);
+/// The bottom panels' background: the sidebar's own grey. Was a hard-coded `#17222D`, a
+/// leftover of the v1.0 night-lamp navy that no token in `theme` carried any more — so the
+/// "você" and voice panels read as a blue slab under a grey list.
+const PANEL_BG: Color32 = theme::PAINEL;
 /// A person in a voice room.
 const MEMBER_H: f32 = 28.0;
 const MEMBER_INDENT: f32 = 30.0;
@@ -69,25 +71,211 @@ struct ChannelMove {
 }
 
 /// v1.2: the order the sidebar is drawn in — the single place that decides it, so a drag &
-/// drop rebuilds exactly what the screen shows and sends that back. Text always comes before
-/// voice rooms, loose channels before categories (like Discord).
+/// drop rebuilds exactly what the screen shows and sends that back.
+///
+/// v1.6: ONE interleaved list, the way Discord draws it. A standalone channel and a category
+/// header share a single `position` sequence (which is exactly what
+/// `POST /api/admin/structure` writes: `db::reorder_structure` numbers `top` `0..n` across
+/// both tables), so the order on screen is that sequence and nothing else. Before this the
+/// plan carried two lists — every loose channel first, then every category — which threw the
+/// interleaving away: a category could never sit between two loose channels, no matter what
+/// the server said.
 struct SidebarPlan {
-    /// Channels in no category, in the order drawn.
-    loose: Vec<vox_proto::Channel>,
-    /// Categories in the order drawn, each with its channels (text, then voice).
-    categories: Vec<(ChannelCategory, Vec<vox_proto::Channel>, Vec<vox_proto::Channel>)>,
+    /// The top level in the order drawn: standalone channels and categories interleaved.
+    top: Vec<TopItem>,
+}
+
+/// v1.6: one entry of the top level — a standalone channel, or a category header with the
+/// channels inside it (text first, then voice, the order Discord draws them).
+#[derive(Debug, Clone)]
+enum TopItem {
+    Channel(vox_proto::Channel),
+    Category {
+        cat: ChannelCategory,
+        text: Vec<vox_proto::Channel>,
+        voice: Vec<vox_proto::Channel>,
+    },
+}
+
+impl TopItem {
+    /// The id a drag names this row by (a channel's or the category's).
+    fn key(&self) -> Top {
+        match self {
+            TopItem::Channel(c) => Top::Channel(c.id),
+            TopItem::Category { cat, .. } => Top::Category(cat.id),
+        }
+    }
+}
+
+/// v1.6: which kind of row a drag is over — the two id spaces are separate (the hub mints a
+/// category and a channel from one counter, but a drag says which table it means).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Top {
+    Channel(ChannelId),
+    Category(ChannelId),
 }
 
 impl SidebarPlan {
     /// Every channel, in the order drawn: the flat truth behind `Channel::position`.
     fn flat(&self) -> Vec<vox_proto::Channel> {
-        let mut all = self.loose.clone();
-        for (_, text, voice) in &self.categories {
-            all.extend(text.iter().cloned());
-            all.extend(voice.iter().cloned());
+        let mut all = Vec::new();
+        for item in &self.top {
+            match item {
+                TopItem::Channel(c) => all.push(c.clone()),
+                TopItem::Category { text, voice, .. } => {
+                    all.extend(text.iter().cloned());
+                    all.extend(voice.iter().cloned());
+                }
+            }
         }
         all
     }
+
+    /// The whole order as ONE batch (what a drag & drop sends). Positions are densest first
+    /// (0, 1, 2...), which is what the hub writes back — it ignores what it is sent and
+    /// renumbers, so what matters here is the ORDER of the lists, not the numbers.
+    fn request(&self) -> vox_proto::StructureReorderRequest {
+        let mut top = Vec::with_capacity(self.top.len());
+        for (pos, item) in self.top.iter().enumerate() {
+            let id = match item {
+                TopItem::Channel(c) => c.id,
+                TopItem::Category { cat, .. } => cat.id,
+            };
+            top.push(vox_proto::StructureItem { id, position: pos as i32 });
+        }
+        // A category with no channel keeps an empty list: the batch must cover every category
+        // exactly once, so an empty one is said so instead of being left out.
+        let groups = self
+            .top
+            .iter()
+            .filter_map(|item| match item {
+                TopItem::Category { cat, text, voice } => Some(vox_proto::StructureGroup {
+                    category_id: cat.id,
+                    ids: text.iter().chain(voice).map(|c| c.id).collect(),
+                }),
+                TopItem::Channel(_) => None,
+            })
+            .collect();
+        vox_proto::StructureReorderRequest { top, groups }
+    }
+}
+
+/// v1.6: the order the sidebar is drawn in, from the channels and the categories as the app
+/// knows them right now. Pure, so a test can build one without a whole `App`.
+///
+/// Text comes before voice inside every group, and a standalone channel wins a tie against a
+/// category at the same `position` — which is the order an old server (two separate position
+/// sequences, both starting at 0) was drawn in before the unified endpoint existed.
+fn plan_of(channels: &[vox_proto::Channel], categories: &[ChannelCategory]) -> SidebarPlan {
+    let mut by_category: HashMap<Option<ChannelId>, Vec<vox_proto::Channel>> = HashMap::new();
+    for c in channels {
+        by_category.entry(c.category_id).or_default().push(c.clone());
+    }
+    let known: HashMap<ChannelId, ChannelCategory> = categories.iter().map(|c| (c.id, c.clone())).collect();
+    // A channel whose `category_id` names a category that is not in the list counts as loose:
+    // that is the shape of a category just deleted (the hub leaves its channels standalone and
+    // broadcasts `ChannelsChanged`, which may not have landed yet). Left out of both lists it
+    // would fall out of the batch entirely, and the hub refuses a batch that misses a channel.
+    let mut loose: Vec<vox_proto::Channel> = Vec::new();
+    let mut groups: HashMap<ChannelId, Vec<vox_proto::Channel>> = HashMap::new();
+    for (cat, mut chans) in by_category {
+        chans.sort_by_key(|c| (c.kind == ChannelKind::Voice, c.position, c.id));
+        match cat {
+            Some(id) if known.contains_key(&id) => {
+                groups.insert(id, chans);
+            }
+            _ => loose.extend(chans),
+        }
+    }
+    loose.sort_by_key(|c| (c.kind == ChannelKind::Voice, c.position, c.id));
+    let mut items: Vec<TopItem> = loose.into_iter().map(TopItem::Channel).collect();
+    let mut cats: Vec<ChannelCategory> = categories.to_vec();
+    cats.sort_by_key(|c| (c.position, c.id));
+    for cat in cats {
+        let (mut text, mut voice) = (Vec::new(), Vec::new());
+        for c in groups.remove(&cat.id).unwrap_or_default() {
+            if c.kind == ChannelKind::Voice {
+                voice.push(c);
+            } else {
+                text.push(c);
+            }
+        }
+        items.push(TopItem::Category { cat, text, voice });
+    }
+    // ONE sequence: the position a category and a standalone channel share. The kind breaks a
+    // tie (channel first, the order an old server was drawn in), then the id, so the sort is
+    // total and the drawing is the same in every frame.
+    items.sort_by_key(|item| match item {
+        TopItem::Channel(c) => (c.position, 0, c.id),
+        TopItem::Category { cat, .. } => (cat.position, 1, cat.id),
+    });
+    SidebarPlan { top: items }
+}
+
+/// v1.6: the plan after a channel was dropped at `target`: the top level keeps the slots it had
+/// (a channel move never moves a category), the channels that stayed loose are re-ordered to
+/// `flat`'s drawn order, and a channel that just became loose is inserted next to the row it was
+/// dropped on. `flat` is every channel with the moved channel's new group already written in.
+///
+/// The server's `position`s still describe the OLD order here, so the plan is rebuilt from the
+/// order the drag produced rather than re-derived from them — re-deriving would undo the move.
+fn plan_after_channel_drop(old: &[TopItem], flat: &[vox_proto::Channel], moved: ChannelId, target: Top, after: bool) -> SidebarPlan {
+    let by_id: HashMap<ChannelId, &vox_proto::Channel> = flat.iter().map(|c| (c.id, c)).collect();
+    let loose = |id: ChannelId| by_id.get(&id).is_some_and(|c| c.category_id.is_none());
+    let mut out: Vec<TopItem> = Vec::with_capacity(old.len() + 1);
+    let mut slots: Vec<usize> = Vec::new();
+    for item in old {
+        match item {
+            TopItem::Category { cat, .. } => {
+                let mut text = Vec::new();
+                let mut voice = Vec::new();
+                for c in flat.iter().filter(|c| c.category_id == Some(cat.id)) {
+                    if c.kind == ChannelKind::Voice {
+                        voice.push(c.clone());
+                    } else {
+                        text.push(c.clone());
+                    }
+                }
+                out.push(TopItem::Category { cat: cat.clone(), text, voice });
+            }
+            // A channel that moved into a category is no longer a top-level slot.
+            TopItem::Channel(c) if loose(c.id) => {
+                slots.push(out.len());
+                out.push(TopItem::Channel(c.clone()));
+            }
+            TopItem::Channel(_) => {}
+        }
+    }
+    // The surviving slots, re-ordered to the drawn order: a swap between two loose channels
+    // changes the top level, not only the group.
+    let kept: Vec<ChannelId> = slots.iter().filter_map(|i| match &out[*i] { TopItem::Channel(c) => Some(c.id), _ => None }).collect();
+    let ordered: Vec<vox_proto::Channel> = flat.iter().filter(|c| c.category_id.is_none() && kept.contains(&c.id)).cloned().collect();
+    for (slot, c) in slots.into_iter().zip(ordered) {
+        out[slot] = TopItem::Channel(c);
+    }
+    // A channel that just became loose is a NEW slot, next to the row it was dropped on.
+    if let Some(c) = by_id.get(&moved).copied().filter(|c| c.category_id.is_none() && !kept.contains(&moved)) {
+        match out.iter().position(|it| it.key() == target) {
+            Some(i) => out.insert(if after { i + 1 } else { i }, TopItem::Channel(c.clone())),
+            None => out.push(TopItem::Channel(c.clone())),
+        }
+    }
+    SidebarPlan { top: out }
+}
+
+/// v1.6: the top level with `id` moved into `at`'s slot — the same before/after arithmetic
+/// [`moved_slot`] does for a list of channel ids, over the interleaved list.
+fn moved_top(items: &[TopItem], id: Top, at: Top, after: bool) -> Option<Vec<TopItem>> {
+    let keys: Vec<Top> = items.iter().map(TopItem::key).collect();
+    let moved = moved_slot(&keys, id, at, after)?;
+    // `moved` is a permutation of `keys`: take each row out of the pool in the new order.
+    let mut pool: Vec<Option<TopItem>> = items.to_vec().into_iter().map(Some).collect();
+    let mut out = Vec::with_capacity(items.len());
+    for k in moved {
+        let i = pool.iter().position(|s| s.as_ref().is_some_and(|it| it.key() == k))?;
+        out.push(pool[i].take()?);
+    }
+    Some(out)
 }
 
 /// v1.2: `order` with `id` moved into `at`'s slot — the before/after arithmetic, once.
@@ -95,7 +283,10 @@ impl SidebarPlan {
 ///
 /// This is where the off-by-one lives: taking `id` out shifts every later slot left, so `at`
 /// moves one step closer when it came after `id`; and "after" means one slot further still.
-fn moved_slot(order: &[ChannelId], id: ChannelId, at: ChannelId, after: bool) -> Option<Vec<ChannelId>> {
+///
+/// Generic over the row's key, so the same arithmetic serves a list of channel ids, a list of
+/// category ids and the interleaved top level.
+fn moved_slot<T: PartialEq + Copy>(order: &[T], id: T, at: T, after: bool) -> Option<Vec<T>> {
     let from = order.iter().position(|x| *x == id)?;
     let to = order.iter().position(|x| *x == at)?;
     if from == to {
@@ -139,24 +330,69 @@ fn moved_order(flat: &[vox_proto::Channel], id: ChannelId, at: ChannelId, after:
     Some((ids, target.category_id))
 }
 
-/// v1.2: the categories in their new order (same arithmetic, one list).
-fn moved_category_order(cats: &[ChannelCategory], id: ChannelId, at: ChannelId, after: bool) -> Option<Vec<ChannelId>> {
-    let order: Vec<ChannelId> = cats.iter().map(|c| c.id).collect();
-    moved_slot(&order, id, at, after)
+/// v1.2: what a collapsed category's header carries: the number of unread mentions inside it
+/// (the pill) and whether anything at all inside is unread (the name is drawn bright).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CollapsedBadge {
+    pub mentions: u32,
+    pub unread: bool,
+}
+
+/// v1.2: the badge of category `cat` from the counters — only its own channels, and only the text
+/// ones (a voice room has nothing unread). `None` when nothing inside is waiting: a quiet closed
+/// category looks exactly like a quiet open one.
+pub(crate) fn collapsed_counts_of(
+    cat: ChannelId,
+    text_channels: &[vox_proto::Channel],
+    unread: &HashMap<ChannelId, u32>,
+    mentions: &HashMap<ChannelId, u32>,
+) -> Option<CollapsedBadge> {
+    let mut n = 0;
+    let mut any = false;
+    for c in text_channels.iter().filter(|c| c.category_id == Some(cat)) {
+        n += mentions.get(&c.id).copied().unwrap_or(0);
+        any |= unread.get(&c.id).copied().unwrap_or(0) > 0;
+    }
+    (n > 0 || any).then_some(CollapsedBadge { mentions: n, unread: any })
+}
+
+/// v1.2: the colour a collapsed category's name is drawn in — bright when something inside is
+/// unread (a mention or a plain unread line), the category's own colour when everything is read.
+pub(crate) fn badge_name_color(badge: Option<CollapsedBadge>, own: Color32) -> Color32 {
+    match badge {
+        Some(_) => theme::TEXTO,
+        None => own,
+    }
+}
+
+/// v1.2: paint a collapsed category's badge at the right edge of `header` — Discord's white pill
+/// with the mention count, leaving the room the "+" needs (`plus_w`). Pure paint: no `interact`, so
+/// a click on the badge still reaches the header underneath and collapses the category.
+///
+/// Returns the pill's left edge (the name truncates to what is left of it), or `None` when there is
+/// no pill to paint — a plain unread brightens the name and takes no room.
+pub(crate) fn paint_collapsed_badge(painter: &egui::Painter, header: Rect, badge: CollapsedBadge, plus_w: f32) -> Option<f32> {
+    if badge.mentions == 0 {
+        return None;
+    }
+    let text = badge.mentions.to_string();
+    let galley = painter.layout_no_wrap(text, theme::semibold(11.0), theme::NOITE);
+    let pad = Vec2::new(7.0, 2.0);
+    let size = galley.size() + pad * 2.0;
+    // Right edge, then the "+"'s room, then a gap — never over the label and never over the button.
+    let right = header.right() - plus_w - 4.0;
+    let rect = Rect::from_min_size(Pos2::new(right - size.x, header.center().y - size.y / 2.0), size);
+    painter.rect_filled(rect, radius::PILL, theme::TEXTO);
+    painter.galley(Pos2::new(rect.center().x - galley.size().x / 2.0, rect.center().y - galley.size().y / 2.0), galley, theme::NOITE);
+    Some(rect.left())
 }
 
 /// Paint a small icon at the right edge `x` (moving left), returning its rect.
-fn icon_at(painter: &egui::Painter, x: &mut f32, cy: f32, icon: &str, color: Color32) -> Rect {
-    let g = painter.layout_no_wrap(icon.to_owned(), theme::body(14.0), color);
+fn icon_at(painter: &egui::Painter, x: &mut f32, cy: f32, icon: &str, color: Color32) -> Rect {    let g = painter.layout_no_wrap(icon.to_owned(), theme::body(14.0), color);
     let r = Rect::from_min_size(Pos2::new(*x - g.size().x, cy - g.size().y / 2.0), g.size());
     painter.galley(r.min, g, color);
     *x = r.left() - 5.0;
     r
-}
-
-/// Lay out a one-line label (the category header's galley).
-fn header_galley(ui: &egui::Ui, text: &str, font: egui::FontId, color: Color32) -> std::sync::Arc<egui::Galley> {
-    ui.painter().layout_no_wrap(text.to_owned(), font, color)
 }
 
 impl App {
@@ -196,24 +432,33 @@ impl App {
         let open = self.open_in_center();
         self.dm_sidebar(ui);
         // v1.2: only those who may reorder get a grabbable row; a member cannot reorder anyway.
-        let draggable = self.my_role().can_manage_channels();
+        // An older hub has no structure endpoint, so its rows are not grabbable either — dragging
+        // one would be refused with a 404 nobody can act on (the flag gates the whole feature, the
+        // same way `activity` gates "Jogando X" and `channel_extras` the channel's editor).
+        let draggable = self.chatx.server_features.structure_reorder && self.my_role().can_manage_channels();
         // The marker belongs to this frame: every row rewrites it while the pointer is over it.
         self.sidebar_drop = None;
+        // v1.6: ONE interleaved list, so a category can sit between two loose channels exactly
+        // where the server says it does (before this the two were drawn in two blocks).
         let plan = self.sidebar_plan();
-        for c in &plan.loose {
-            if c.kind == ChannelKind::Text {
-                self.category_channel_row(ui, c, open, draggable);
-            } else {
-                self.voice_channel_row(ui, c, open, draggable);
+        for item in &plan.top {
+            match item {
+                TopItem::Channel(c) => {
+                    if c.kind == ChannelKind::Text {
+                        self.category_channel_row(ui, c, open, draggable);
+                    } else {
+                        self.voice_channel_row(ui, c, open, draggable);
+                    }
+                }
+                // An empty category is only drawn for those who can manage channels (a member has
+                // nothing to do in it — Discord hides it too).
+                TopItem::Category { cat, text, voice } => {
+                    if text.is_empty() && voice.is_empty() && !draggable {
+                        continue;
+                    }
+                    self.category_section(ui, cat, text, voice, open, draggable);
+                }
             }
-        }
-        for (cat, text_channels, voice_channels) in &plan.categories {
-            // An empty category is only drawn for those who can manage channels (a member has
-            // nothing to do in it — Discord hides it too).
-            if text_channels.is_empty() && voice_channels.is_empty() && !draggable {
-                continue;
-            }
-            self.category_section(ui, cat, text_channels, voice_channels, open, draggable);
         }
         // The ghost under the pointer and the insertion marker are painted last, over the rows.
         self.sidebar_drag_paint(ui);
@@ -228,26 +473,7 @@ impl App {
     /// v1.2: the order the sidebar is drawn in (see [`SidebarPlan`]). One place decides it, so
     /// the drag & drop and the screen can never disagree.
     fn sidebar_plan(&self) -> SidebarPlan {
-        let mut by_category: HashMap<Option<ChannelId>, Vec<vox_proto::Channel>> = HashMap::new();
-        for c in &self.channels {
-            by_category.entry(c.category_id).or_default().push(c.clone());
-        }
-        // Loose channels (no category): text first, then voice rooms — always drawn.
-        let mut loose: Vec<vox_proto::Channel> = by_category.remove(&None).unwrap_or_default();
-        loose.sort_by_key(|c| (c.kind == ChannelKind::Voice, c.position, c.id));
-        let mut cats: Vec<&ChannelCategory> = self.categories.iter().collect();
-        cats.sort_by_key(|c| (c.position, c.id));
-        let categories = cats
-            .into_iter()
-            .map(|cat| {
-                let mut of: Vec<vox_proto::Channel> = by_category.remove(&Some(cat.id)).unwrap_or_default();
-                of.sort_by_key(|c| (c.kind == ChannelKind::Voice, c.position, c.id));
-                let voice: Vec<vox_proto::Channel> = of.iter().filter(|c| c.kind == ChannelKind::Voice).cloned().collect();
-                let text: Vec<vox_proto::Channel> = of.iter().filter(|c| c.kind == ChannelKind::Text).cloned().collect();
-                (cat.clone(), text, voice)
-            })
-            .collect();
-        SidebarPlan { loose, categories }
+        plan_of(&self.channels, &self.categories)
     }
 
     /// v1.1 (Discord-style): one collapsible category — a thin header in CAPS with the caret on
@@ -264,29 +490,73 @@ impl App {
     ) {
         let is_open = self.category_open.get(&cat.id).copied().unwrap_or(true);
         let caret = if is_open { ph::CARET_DOWN } else { ph::CARET_RIGHT };
+        // v1.2: a closed category keeps its unread count on the header (Discord's white pill), so
+        // nobody has to open every category to find out something is waiting. Counted before the
+        // name is drawn, because the mention makes the name bright too.
+        let badge = (!is_open).then(|| self.collapsed_counts(cat.id, text_channels)).flatten();
+        // v1.2: Discord's "+" on the category's header — a new channel inside THIS category, no
+        // trip to the server window. Only for whoever may create channels; everybody else gets
+        // the plain header (the room the label takes is given back when there is no button).
+        let may_create = self.roles.supported && self.my_role().can_manage_channels();
+        let plus_w = if may_create { 22.0 } else { 0.0 };
 
         // The header: caret + NAME IN CAPS, in the category's colour. Click toggles open/closed.
         let sense = if draggable { Sense::click_and_drag() } else { Sense::click() };
-        let (header_rect, header_resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), sense);
+        // 2026-11-11: an EXPLICIT id, not egui's automatic counter. The auto id depends on how
+        // many widgets were allocated before this header in the same frame, and that count moves
+        // whenever a DM arrives or somebody joins/leaves a voice room above us: the press lands on
+        // one id and the release on another, and egui swallows the click without a trace (the
+        // toggle only worked when the sidebar above was perfectly still). Derived from the
+        // category's own id, it is the same in every frame.
+        let header_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 22.0));
+        let header_resp = ui.interact(header_rect, egui::Id::new(("sidebar_category_header", cat.id)), sense);
+        ui.advance_cursor_after_rect(header_rect);
         if header_resp.hovered() {
             ui.painter().rect_filled(header_rect, radius::ROW, theme::ROW_HOVER);
         }
         if header_resp.clicked() {
-            self.category_open
-                .entry(cat.id)
-                .and_modify(|e| *e = !*e)
-                .or_insert(false);
+            // Remembered across sessions, like Discord's `CategoryCollapseStore`.
+            self.set_category_collapsed(cat.id, is_open);
         }
-        let color = Color32::from_hex(cat.color.get(1..).unwrap_or("5865F2")).unwrap_or(theme::NEVOA);
-        let label = header_galley(ui, &format!("{caret} {}", cat.name.to_uppercase()), theme::semibold(11.5), color);
+        // Unread inside a closed category brightens the name, exactly like a channel row.
+        let own = Color32::from_hex(cat.color.get(1..).unwrap_or("5865F2")).unwrap_or(theme::NEVOA);
+        let color = badge_name_color(badge, own);
+        // The pill is painted before the label so its exact width is known: the name truncates to
+        // the room that is left, never running under the badge.
+        let badge_left = badge.map(|b| paint_collapsed_badge(ui.painter(), header_rect, b, plus_w)).flatten();
+        let room_for_name = badge_left.map_or(header_rect.right(), |l| l - 4.0);
+        let label_w = (room_for_name - 8.0 - plus_w - header_rect.left()).max(24.0);
+        // Too long for the room the "+" leaves: ellipsis, like a truncated row's name.
+        let label = crate::app::notify::fit_name(ui.painter(), &format!("{caret} {}", cat.name.to_uppercase()), theme::semibold(11.5), color, label_w);
         ui.painter().galley(
             Pos2::new(header_rect.left() + 8.0, header_rect.center().y - label.size().y / 2.0),
             label,
             color,
         );
+        if may_create {
+            // The button's own rect: an explicit id again (the header above it is one widget this
+            // frame and another the next, and an automatic id would move with it).
+            let plus = Rect::from_min_size(
+                Pos2::new(header_rect.right() - plus_w + 2.0, header_rect.center().y - 9.0),
+                Vec2::splat(18.0),
+            );
+            let plus_resp = ui.interact(plus, egui::Id::new(("category_plus", cat.id)), Sense::click());
+            let plus_color = if plus_resp.hovered() { theme::GIZ } else { theme::NEVOA };
+            if plus_resp.hovered() {
+                ui.painter().rect_filled(plus, radius::ROW, theme::ROW_HOVER);
+            }
+            ui.painter().text(plus.center(), egui::Align2::CENTER_CENTER, ph::PLUS, theme::semibold(13.0), plus_color);
+            let plus_resp = plus_resp.on_hover_text("Criar um canal nesta categoria").on_hover_cursor(egui::CursorIcon::PointingHand);
+            if plus_resp.clicked() {
+                // A text channel is what the "+" makes (the right click has the voice one).
+                self.create_channel_in(Some(cat.id), false);
+            }
+        }
         if draggable {
             self.sidebar_category_dnd(ui, &header_resp, cat.id);
         }
+        // Discord's right-click on a category: edit it, create a channel inside it, delete it.
+        self.chan_menu_hit(&header_resp, crate::context_menu::ChanTarget::Category(cat.clone()));
 
         if is_open {
             ui.add_space(2.0);
@@ -299,6 +569,11 @@ impl App {
             }
             ui.add_space(4.0);
         }
+    }
+
+    /// v1.2: what a collapsed category shows on its header (see [`collapsed_counts_of`]).
+    fn collapsed_counts(&self, cat: ChannelId, text_channels: &[vox_proto::Channel]) -> Option<CollapsedBadge> {
+        collapsed_counts_of(cat, text_channels, &self.unread, &self.chatx.mention_unread)
     }
 
     /// v1.1: render a single text channel row inside a category (reuses the row logic).
@@ -318,11 +593,15 @@ impl App {
             count: unread,
             mentions,
             hover,
+            id: Some(egui::Id::new(("sidebar_channel_row", c.id))),
         };
         let resp = if draggable { ui_kit::sidebar_row_drag(ui, row) } else { ui_kit::sidebar_row(ui, row) };
         if resp.0.clicked() {
             self.select_text(c.id);
         }
+        // Discord's right-click on a channel: read it, invite, copy its id, and (for an admin)
+        // edit, create inside it and delete it.
+        self.chan_menu_hit(&resp.0, crate::context_menu::ChanTarget::Channel(c.clone()));
         if draggable {
             self.sidebar_channel_dnd(ui, &resp.0, c.id);
         }
@@ -354,11 +633,14 @@ impl App {
             count: 0,
             mentions: 0,
             hover: Some(hover),
+            id: Some(egui::Id::new(("sidebar_channel_row", c.id))),
         };
         let (resp, _drawn) = if draggable { ui_kit::sidebar_row_drag(ui, row) } else { ui_kit::sidebar_row(ui, row) };
         if resp.clicked() {
             self.join_voice(c.id);
         }
+        // The voice room's own menu (the same items a text channel has, minus "marcar como lido").
+        self.chan_menu_hit(&resp, crate::context_menu::ChanTarget::Channel(c.clone()));
         if draggable {
             self.sidebar_channel_dnd(ui, &resp, c.id);
         }
@@ -374,8 +656,9 @@ impl App {
     // ------------------------------------------------------------ reorder by drag & drop (v1.2)
 
     /// v1.2: one channel row's part of the drag: start it, and mark where it would land while a
-    /// channel is dragged. A row never accepts a category, and never a channel of the other
-    /// kind — the sidebar always keeps text and voice apart.
+    /// channel is dragged. A row never accepts a channel of the other kind — the sidebar always
+    /// keeps text and voice apart. v1.6: a category header DOES accept one: it is a slot in the
+    /// top level, and a channel dropped there becomes loose at that slot.
     fn sidebar_channel_dnd(&mut self, ui: &egui::Ui, resp: &egui::Response, id: ChannelId) {
         if resp.drag_started() {
             self.sidebar_drag = Some(SidebarDrag::Channel(id));
@@ -383,7 +666,10 @@ impl App {
         if self.sidebar_drag == Some(SidebarDrag::Channel(id)) {
             return; // over itself: no marker, no move
         }
-        self.sidebar_mark_drop(ui, SidebarDrag::Channel(id), resp.rect);
+        // Only a standalone channel is a top-level slot (a channel inside a category is a child,
+        // and dropping a category "between" two children means nothing).
+        let loose = self.channel_of(id).and_then(|c| c.category_id).is_none();
+        self.sidebar_mark_drop(ui, SidebarDrag::Channel(id), resp.rect, loose);
     }
 
     /// v1.2: a category header's part of the drag: start it, and mark where it would land
@@ -395,22 +681,27 @@ impl App {
         if self.sidebar_drag == Some(SidebarDrag::Category(id)) {
             return;
         }
-        self.sidebar_mark_drop(ui, SidebarDrag::Category(id), resp.rect);
+        self.sidebar_mark_drop(ui, SidebarDrag::Category(id), resp.rect, true);
     }
 
-    /// v1.2: the pointer is over `rect`, a row of the same kind as the drag: that is where it
-    /// would land. The half of the row decides "before" or "after". The hit test is by pointer
+    /// v1.2: the pointer is over `rect`, a row that accepts this drag: that is where it would
+    /// land. The half of the row decides "before" or "after". The hit test is by pointer
     /// position rather than `hovered()`, because a widget that owns the drag reports itself
     /// hovered above everything else.
-    fn sidebar_mark_drop(&mut self, ui: &egui::Ui, kind: SidebarDrag, rect: Rect) {
+    ///
+    /// v1.6: what accepts what. A channel takes a channel of the same kind and a category
+    /// header; a category takes another header and a STANDALONE channel's row. `top_level` says
+    /// whether this row is such a slot.
+    fn sidebar_mark_drop(&mut self, ui: &egui::Ui, kind: SidebarDrag, rect: Rect, top_level: bool) {
         let Some(dragged) = self.sidebar_drag else { return };
-        // Only a row of the same kind accepts the drop (a category header takes only
-        // categories; a channel row takes only channels).
-        let same_kind = matches!(
+        let accepts = matches!(
             (dragged, kind),
-            (SidebarDrag::Channel(_), SidebarDrag::Channel(_)) | (SidebarDrag::Category(_), SidebarDrag::Category(_))
+            (SidebarDrag::Channel(_), SidebarDrag::Channel(_))
+                | (SidebarDrag::Channel(_), SidebarDrag::Category(_))
+                | (SidebarDrag::Category(_), SidebarDrag::Category(_))
+                | (SidebarDrag::Category(_), SidebarDrag::Channel(_)) if top_level
         );
-        if !same_kind {
+        if !accepts {
             return;
         }
         let Some(pos) = ui.input(|i| i.pointer.hover_pos()) else { return };
@@ -450,27 +741,6 @@ impl App {
         ui.ctx().request_repaint();
     }
 
-    /// v1.2: the drag was released — send the new order. A channel that changed groups needs
-    /// its new category first (the hub broadcasts `ChannelsChanged` and the row moves), then
-    /// the whole order; a category only needs its order.
-    fn sidebar_drop_apply(&mut self) {
-        let (Some(drag), Some(drop)) = (self.sidebar_drag, self.sidebar_drop) else { return };
-        match drag {
-            SidebarDrag::Channel(id) => {
-                let Some(moved) = self.sidebar_channel_move(id, drop.at, drop.after) else { return };
-                if self.channel_of(id).and_then(|c| c.category_id) != moved.category {
-                    self.admin(crate::roles::AdminCmd::SetChannelCategory { id, category: moved.category });
-                }
-                self.admin(crate::roles::AdminCmd::ReorderChannels { ids: moved.ids });
-            }
-            SidebarDrag::Category(id) => {
-                if let Some(ids) = self.sidebar_category_move(id, drop.at, drop.after) {
-                    self.admin(crate::roles::AdminCmd::ReorderCategories { ids });
-                }
-            }
-        }
-    }
-
     /// v1.2: move channel `id` to `at` in the drawn order and hand back the whole new order.
     /// `None`: nothing to do — over itself, over the other kind (a text channel never trades
     /// places with a voice room), or over a row that is gone.
@@ -479,11 +749,61 @@ impl App {
         Some(ChannelMove { ids, category })
     }
 
-    /// v1.2: move category `id` to `at` among the other categories (`None`: over itself).
-    fn sidebar_category_move(&self, id: ChannelId, at: ChannelId, after: bool) -> Option<Vec<ChannelId>> {
-        let mut cats: Vec<&ChannelCategory> = self.categories.iter().collect();
-        cats.sort_by_key(|c| (c.position, c.id));
-        moved_category_order(&cats.iter().map(|c| (*c).clone()).collect::<Vec<_>>(), id, at, after)
+    /// v1.2: the drop as ONE batch (`POST /api/admin/structure`) instead of the pair
+    /// reorder-channels + reorder-categories. Those two rewrite their own list's positions
+    /// `0..n`, so moving a standalone channel renumbered every category and the sidebar jumped;
+    /// one transaction carrying the whole state keeps the interleaving by construction.
+    ///
+    /// v1.6: the batch is the whole plan AFTER the move, so what the hub writes back is exactly
+    /// what the screen shows — a category that just landed between two loose channels included.
+    fn sidebar_drop_apply(&mut self) {
+        let (Some(drag), Some(drop)) = (self.sidebar_drag, self.sidebar_drop) else { return };
+        let plan = self.sidebar_plan();
+        // Which table the row under the pointer lives in: a channel id or a category id.
+        let target = if self.channels.iter().any(|c| c.id == drop.at) { Top::Channel(drop.at) } else { Top::Category(drop.at) };
+        let req = match drag {
+            SidebarDrag::Channel(id) => self.channel_drop_plan(&plan, id, target, drop.after).map(|p| p.request()),
+            // A category only ever moves among the top level's slots: its children stay put.
+            SidebarDrag::Category(id) => moved_top(&plan.top, Top::Category(id), target, drop.after).map(|top| SidebarPlan { top }.request()),
+        };
+        if let Some(req) = req {
+            self.admin(crate::roles::AdminCmd::ReorderStructure(req));
+        }
+    }
+
+    /// v1.6: the plan after channel `id` is dropped at `target`.
+    ///
+    /// Over another channel of the same kind: it takes that kind's new order and the target's
+    /// group (dropped on a channel inside a category, it joins it — Discord's gesture,
+    /// unchanged). Over a category HEADER: the channel leaves whatever group it was in and takes
+    /// that slot in the top level, between the rows around the header.
+    fn channel_drop_plan(&mut self, plan: &SidebarPlan, id: ChannelId, target: Top, after: bool) -> Option<SidebarPlan> {
+        if let Top::Channel(at) = target {
+            let moved = self.sidebar_channel_move(id, at, after)?;
+            // A channel that crossed from one group to another needs its new category first
+            // (the hub broadcasts `ChannelsChanged` and the row moves).
+            if self.channel_of(id).and_then(|c| c.category_id) != moved.category {
+                self.admin(crate::roles::AdminCmd::SetChannelCategory { id, category: moved.category });
+            }
+            // `moved.ids` is every channel in the new drawn order; the new group is not in
+            // `self.channels` yet (the hub answers later), so it is written here — otherwise the
+            // batch would send the channel back where it was.
+            let by_id: HashMap<ChannelId, vox_proto::Channel> = self.channels.iter().map(|c| (c.id, c.clone())).collect();
+            let mut flat: Vec<vox_proto::Channel> = moved.ids.iter().filter_map(|i| by_id.get(i).cloned()).collect();
+            if let Some(c) = flat.iter_mut().find(|c| c.id == id) {
+                c.category_id = moved.category;
+            }
+            return Some(plan_after_channel_drop(&plan.top, &flat, id, target, after));
+        }
+        // Over a category header: the channel becomes loose at that slot.
+        let mut flat: Vec<vox_proto::Channel> = self.channels.clone();
+        if let Some(c) = flat.iter_mut().find(|c| c.id == id) {
+            c.category_id = None;
+        }
+        if self.channel_of(id).and_then(|c| c.category_id).is_some() {
+            self.admin(crate::roles::AdminCmd::SetChannelCategory { id, category: None });
+        }
+        Some(plan_after_channel_drop(&plan.top, &flat, id, target, after))
     }
 
     /// A channel we know of (`None`: it was deleted while the menu was open).
@@ -525,6 +845,20 @@ impl App {
         let mut any = false;
         if admin {
             any = true;
+            // v1.2: Discord's quick create, from the sidebar. Both open the same form the server
+            // window has, already set up (a standalone channel / an empty category name).
+            if ui_kit::menu_row(ui, ph::PLUS, "Criar canal...", false).on_hover_text("Um canal de texto ou de voz, solto no topo (escolha a categoria no formulário)").clicked() {
+                self.create_channel_in(None, false);
+                ui.close();
+            }
+            if ui_kit::menu_row(ui, ph::FOLDER_OPEN, "Criar categoria...", false).on_hover_text("Uma categoria nova para organizar os canais").clicked() {
+                self.roles.tab = crate::roles::ServerTab::Channels;
+                self.roles.new_category.clear();
+                self.roles.new_category_color.clear();
+                self.open_server_settings();
+                ui.close();
+            }
+            ui_kit::menu_separator(ui);
             if ui_kit::menu_row(ui, ph::WRENCH, "Configurações do servidor", false).on_hover_text("Membros, cargos, convites e o registro de moderação").clicked() {
                 self.open_server_settings();
                 ui.close();
@@ -555,6 +889,16 @@ impl App {
         if any {
             ui_kit::menu_separator(ui);
         }
+        // Discord's `CATEGORY_COLLAPSE_ALL` / `CATEGORY_EXPAND_ALL`: a server with a dozen
+        // categories should not need a dozen clicks to get out of the way.
+        if !self.categories.is_empty() {
+            let closed = self.all_categories_collapsed();
+            let (icon, label) = if closed { (ph::CARET_UP, "Expandir todas as categorias") } else { (ph::CARET_DOWN, "Colapsar todas as categorias") };
+            if ui_kit::menu_row(ui, icon, label, false).clicked() {
+                self.set_all_categories_collapsed(!closed);
+                ui.close();
+            }
+        }
         if ui_kit::menu_row(ui, ph::GEAR_SIX, "Configurações", false).clicked() {
             self.open_settings();
             ui.close();
@@ -579,7 +923,12 @@ impl App {
         let me = self.my_id() == Some(m.user.id);
         // My own ring follows what is actually sent (gate open), not the room's report.
         let speaking = if me { self.sending_voice() } else { self.voice.speaking.contains(&m.user.id.to_string()) } && !m.muted && !m.server_muted;
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), MEMBER_H), Sense::click());
+        // 2026-11-11: an explicit id, like the category header and the channel rows: the automatic
+        // one moves with the number of rows above, so a click could land on one id at the press and
+        // on another at the release (egui then swallows it). Keyed on the member's own id it cannot.
+        let rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), MEMBER_H));
+        let resp = ui.interact(rect, egui::Id::new(("voice_member_row", m.user.id)), Sense::click());
+        ui.advance_cursor_after_rect(rect);
         if !ui.is_rect_visible(rect) {
             return;
         }
@@ -595,7 +944,7 @@ impl App {
         let center = Pos2::new(rect.left() + MEMBER_INDENT + MEMBER_AVATAR / 2.0, cy);
         crate::avatars::draw_avatar(&mut self.avatars.store, &painter, &ctx, center, MEMBER_AVATAR / 2.0, &m.user, crate::avatars::Surface::Sidebar);
         if speaking {
-            ui_kit::paint_speaking_ring(&painter, center, MEMBER_AVATAR / 2.0, if resp.hovered() { theme::ROW_HOVER } else { theme::PAREDE });
+            ui_kit::paint_speaking_ring(&painter, center, MEMBER_AVATAR / 2.0, if resp.hovered() { theme::ROW_HOVER } else { theme::PAINEL });
         }
         // Right to left: the live tag, then the small icons.
         let mut x = rect.right() - 6.0;
@@ -651,7 +1000,14 @@ impl App {
             None => theme::NEVOA,
         };
         let name = crate::app::notify::fit_name(&painter, m.user.shown_name(), theme::body(13.5), color, x - name_left - 2.0);
-        painter.galley(Pos2::new(name_left, cy - name.size().y / 2.0), name, color);
+        let name_h = name.size().y;
+        painter.galley(Pos2::new(name_left, cy - name_h / 2.0), name, color);
+        // v1.2: "Jogando X" under the name (the row is one line taller than it looks: 13.5 over
+        // 10.5 fits inside MEMBER_H).
+        if let Some(line) = self.activity_line(m.user.id).filter(|l| !l.is_empty()) {
+            let act = crate::app::notify::fit_name(&painter, &line, theme::body(10.5), theme::NEVOA, x - name_left - 2.0);
+            painter.galley(Pos2::new(name_left, cy + name_h / 2.0 - 1.0), act, theme::NEVOA);
+        }
 
         // The parts with their own hover / click, on top of the row's.
         if let Some(r) = local_rect.as_ref() {
@@ -819,7 +1175,9 @@ impl App {
             // The icons take their room first (right to left), the name and status what is left.
             let icons_w = 3.0 * 30.0 + 2.0 * 2.0;
             let text_w = (ui.available_width() - icons_w - 8.0).max(30.0);
-            ui.allocate_ui_with_layout(Vec2::new(text_w, 34.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            // v1.2: a third line ("Jogando X") when a game is on, or the block stays two lines.
+            let text_h = if self.my_id().is_some_and(|id| self.activity_line(id).is_some_and(|l| !l.is_empty())) { 46.0 } else { 34.0 };
+            ui.allocate_ui_with_layout(Vec2::new(text_w, text_h), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_width(text_w);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.horizontal(|ui| {
@@ -844,7 +1202,7 @@ impl App {
     }
 
     /// The status line under my name: the voice room I am in (green), else my presence (a click
-    /// changes it).
+    /// changes it). Under it, v1.2, the game the detector found me in.
     fn me_status(&mut self, ui: &mut egui::Ui) {
         let font = theme::body(12.0);
         if let Some(ch) = self.voice.channel {
@@ -854,30 +1212,36 @@ impl App {
                 format!("na {}", self.channels.iter().find(|c| c.id == ch).map(|c| c.name.as_str()).unwrap_or("voz"))
             };
             ui.add(egui::Label::new(RichText::new(text).font(font).color(theme::ONLINE)).truncate().selectable(false));
-            return;
-        }
-        if self.profile.supported != Some(true) {
+        } else if self.profile.supported != Some(true) {
             ui.label(RichText::new("online").font(font).color(theme::ONLINE));
-            return;
-        }
-        let current = self.my_presence();
-        let r = ui.add(egui::Label::new(RichText::new(format!("{} {}", crate::profile::presence_label(current), ph::CARET_DOWN)).font(font).color(presence_text_color(current))).sense(Sense::click()));
-        let r = r.on_hover_text(format!("{}. Clique para mudar.", crate::profile::presence_label(current)));
-        let mut choose = None;
-        egui::Popup::menu(&r).frame(ui_kit::popup_frame(ui.style())).style(ui_kit::menu_style).show(|ui| {
-            ui.set_min_width(200.0);
-            for p in vox_proto::Presence::ALL {
-                // The presence's colour on its dot; the current one checked (as in the person menu).
-                let icon = if current == p { ph::CHECK } else { ph::CIRCLE };
-                let row = ui_kit::menu_row_ex(ui, icon, Some(crate::profile::presence_color(p)), crate::profile::presence_label(p), false, false);
-                if row.on_hover_text(crate::profile::presence_hint(p)).clicked() {
-                    choose = Some(p);
-                    ui.close();
+        } else {
+            let current = self.my_presence();
+            let r = ui.add(egui::Label::new(RichText::new(format!("{} {}", crate::profile::presence_label(current), ph::CARET_DOWN)).font(font).color(presence_text_color(current))).sense(Sense::click()));
+            let r = r
+                .on_hover_text(format!("{}. Clique para mudar.", crate::profile::presence_label(current)))
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            let mut choose = None;
+            egui::Popup::menu(&r).frame(ui_kit::popup_frame(ui.style())).style(ui_kit::menu_style).show(|ui| {
+                ui.set_min_width(200.0);
+                for p in vox_proto::Presence::ALL {
+                    // The presence's colour on its dot; the current one checked (as in the person menu).
+                    let icon = if current == p { ph::CHECK } else { ph::CIRCLE };
+                    let row = ui_kit::menu_row_ex(ui, icon, Some(crate::profile::presence_color(p)), crate::profile::presence_label(p), false, false);
+                    if row.on_hover_text(crate::profile::presence_hint(p)).clicked() {
+                        choose = Some(p);
+                        ui.close();
+                    }
                 }
+            });
+            if let Some(p) = choose.filter(|p| *p != current) {
+                self.set_presence(p);
             }
-        });
-        if let Some(p) = choose.filter(|p| *p != current) {
-            self.set_presence(p);
+        }
+        // v1.2: "Jogando X" under the presence (or the room) line, as on Discord's own panel.
+        if let Some(me) = self.my_id() {
+            if let Some(line) = self.activity_line(me).filter(|l| !l.is_empty()) {
+                ui.add(egui::Label::new(RichText::new(line).font(theme::body(11.0)).color(theme::NEVOA)).truncate().selectable(false));
+            }
         }
     }
 
@@ -941,7 +1305,13 @@ impl App {
     }
 
     fn online_row(&mut self, ui: &mut egui::Ui, u: &User) {
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ONLINE_H), Sense::click());
+        // 2026-11-11: an explicit id per person, like every other row of this list: the number of
+        // people above changes while the app runs, and egui's automatic id would move with it —
+        // the press and the release of a click could then land on different ids and the click would
+        // be swallowed. Keyed on the person's own id it cannot.
+        let rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), ONLINE_H));
+        let resp = ui.interact(rect, egui::Id::new(("online_row", u.id)), Sense::click());
+        ui.advance_cursor_after_rect(rect);
         if !ui.is_rect_visible(rect) {
             return;
         }
@@ -949,7 +1319,7 @@ impl App {
         let with_me = self.voice.channel.is_some() && self.my_id() != Some(u.id) && self.voice_members.get(&u.id).is_some_and(|m| m.channel_id == self.voice.channel);
         let ctx = ui.ctx().clone();
         let painter = ui.painter_at(rect);
-        let bg = if resp.hovered() { theme::ROW_HOVER } else { theme::PAREDE };
+        let bg = if resp.hovered() { theme::ROW_HOVER } else { theme::PAINEL };
         if resp.hovered() {
             painter.rect_filled(rect, radius::ROW, bg);
         }
@@ -987,7 +1357,13 @@ impl App {
         let name_left = center.x + ONLINE_AVATAR / 2.0 + 10.0;
         let color = crate::roles::role_color(role).unwrap_or(if resp.hovered() { theme::GIZ } else { theme::TEXTO });
         let name = crate::app::notify::fit_name(&painter, u.shown_name(), theme::body(14.0), color, x - name_left - 2.0);
-        painter.galley(Pos2::new(name_left, cy - name.size().y / 2.0), name, color);
+        let name_h = name.size().y;
+        painter.galley(Pos2::new(name_left, cy - name_h / 2.0), name, color);
+        // v1.2: "Jogando X" on its own line under the name, as on Discord's member list.
+        if let Some(line) = self.activity_line(u.id).filter(|l| !l.is_empty()) {
+            let act = crate::app::notify::fit_name(&painter, &line, theme::body(11.0), theme::NEVOA, x - name_left - 2.0);
+            painter.galley(Pos2::new(name_left, cy + name_h / 2.0 + 1.0), act, theme::NEVOA);
+        }
         if let Some(r) = voice_rect {
             ui.interact(r, ui.id().with(("in_voice", u.id)), Sense::hover()).on_hover_text("Em um canal de voz");
         }
@@ -1032,6 +1408,9 @@ mod tests {
             position: id as i32,
             private: None,
             category_id,
+            topic: String::new(),
+            bitrate: None,
+            user_limit: None,
         };
         vec![
             ch(1, ChannelKind::Text, None),
@@ -1052,6 +1431,62 @@ mod tests {
     fn moved(order: &[vox_proto::Channel], id: i64, at: i64, after: bool) -> Vec<i64> {
         let (moved, _) = moved_order(order, ChannelId(id), ChannelId(at), after).expect("move aceito");
         ids(&moved)
+    }
+
+    /// Categories by (id, position) — the one top-level sequence the hub writes.
+    fn cats_at(entries: &[(i64, i64)]) -> Vec<ChannelCategory> {
+        entries.iter().map(|&(id, pos)| ChannelCategory::new(ChannelId(id), "cat", "#5865F2", pos as i32)).collect()
+    }
+
+    /// The same six channels as [`flat`], but with the positions the hub actually writes for a
+    /// sidebar where a category sits BETWEEN two standalone channels: channel 1, the category 90
+    /// (3, 4 and 6 inside it), channel 2, the empty category 100, and the voice room 5. That
+    /// interleaving is the whole point of the unified endpoint, and it is what the sidebar draws.
+    fn interleaved() -> Vec<vox_proto::Channel> {
+        let mut all = flat();
+        for c in all.iter_mut() {
+            // Inside the category the channels have their own sequence, which the top level
+            // never sees — only the standalone ones (1, 2, 5) share it with the categories.
+            c.position = match c.id.into_inner() {
+                1 => 0,
+                2 => 2,
+                5 => 5,
+                inside => inside as i32,
+            };
+        }
+        // The order drawn, which is the order the slice carries (`moved_order` reads it).
+        [1, 3, 4, 6, 2, 5].iter().map(|&id| all.iter().find(|c| c.id == ChannelId(id)).unwrap().clone()).collect()
+    }
+
+    /// The plan the fixture builds.
+    fn fixture() -> SidebarPlan {
+        plan_of(&interleaved(), &cats_at(&[(90, 1), (100, 4)]))
+    }
+
+    /// The top level's rows, as a drag names them.
+    fn top_keys(plan: &SidebarPlan) -> Vec<Top> {
+        plan.top.iter().map(TopItem::key).collect()
+    }
+
+    /// The top level as a list of ids (what the wire takes).
+    fn top_ids(plan: &SidebarPlan) -> Vec<i64> {
+        top_keys(plan).iter().map(|k| match *k { Top::Channel(c) | Top::Category(c) => c.into_inner() }).collect()
+    }
+
+    /// Every channel, in the order drawn.
+    fn flat_ids(plan: &SidebarPlan) -> Vec<i64> {
+        plan.flat().iter().map(|c| c.id.into_inner()).collect()
+    }
+
+    /// `ids` turned back into channels — what a drop rebuilds the plan from.
+    fn rebuilt(ids: &[ChannelId]) -> Vec<vox_proto::Channel> {
+        let by_id: HashMap<ChannelId, vox_proto::Channel> = interleaved().into_iter().map(|c| (c.id, c)).collect();
+        ids.iter().filter_map(|i| by_id.get(i).cloned()).collect()
+    }
+
+    /// The fixture's plan after `flat` was dropped at `target`.
+    fn dropped(flat: &[vox_proto::Channel], moved: ChannelId, target: Top, after: bool) -> SidebarPlan {
+        plan_after_channel_drop(&fixture().top, flat, moved, target, after)
     }
 
     #[test]
@@ -1118,19 +1553,203 @@ mod tests {
 
     #[test]
     fn categories_reorder_among_themselves() {
-        let cats = |a: i64, b: i64, c: i64| {
-            vec![
-                ChannelCategory::new(ChannelId(a), "a", "#5865F2", 0),
-                ChannelCategory::new(ChannelId(b), "b", "#5865F2", 1),
-                ChannelCategory::new(ChannelId(c), "c", "#5865F2", 2),
-            ]
-        };
-        let order = cats(1, 2, 3);
-        assert_eq!(ids(&moved_category_order(&order, ChannelId(1), ChannelId(2), true).unwrap()), vec![2, 1, 3]);
-        assert_eq!(ids(&moved_category_order(&order, ChannelId(3), ChannelId(1), false).unwrap()), vec![3, 1, 2]);
-        assert_eq!(ids(&moved_category_order(&order, ChannelId(2), ChannelId(3), false).unwrap()), vec![1, 2, 3]);
-        assert!(moved_category_order(&order, ChannelId(1), ChannelId(1), true).is_none());
-        assert!(moved_category_order(&order, ChannelId(1), ChannelId(9), true).is_none());
+        // v1.6: the same before/after arithmetic as the channels, over the interleaved top level
+        // — a category is just another row now, not a second list.
+        let items: Vec<TopItem> = [1i64, 2, 3]
+            .iter()
+            .map(|&i| TopItem::Category { cat: ChannelCategory::new(ChannelId(i), "cat", "#5865F2", i as i32), text: vec![], voice: vec![] })
+            .collect();
+        let order = |id: i64, at: i64, after: bool| top_keys(&SidebarPlan { top: moved_top(&items, Top::Category(ChannelId(id)), Top::Category(ChannelId(at)), after).unwrap() });
+        assert_eq!(order(1, 2, true), vec![Top::Category(ChannelId(2)), Top::Category(ChannelId(1)), Top::Category(ChannelId(3))]);
+        assert_eq!(order(3, 1, false), vec![Top::Category(ChannelId(3)), Top::Category(ChannelId(1)), Top::Category(ChannelId(2))]);
+        assert_eq!(order(2, 3, false), vec![Top::Category(ChannelId(1)), Top::Category(ChannelId(2)), Top::Category(ChannelId(3))]);
+        assert!(moved_top(&items, Top::Category(ChannelId(1)), Top::Category(ChannelId(1)), true).is_none());
+        assert!(moved_top(&items, Top::Category(ChannelId(1)), Top::Category(ChannelId(9)), true).is_none());
+    }
+
+    // ------------------------------------------ the plan: ONE interleaved top level (v1.6)
+
+    #[test]
+    fn a_category_sits_between_two_standalone_channels() {
+        // The complaint this fixes: the top level was two lists (every loose channel, then every
+        // category), so a category could never be drawn between two channels — no matter what the
+        // server said. One shared position sequence, one list.
+        let plan = fixture();
+        assert_eq!(top_ids(&plan), vec![1, 90, 2, 100, 5]);
+        assert_eq!(flat_ids(&plan), vec![1, 3, 4, 6, 2, 5], "a ordem desenhada, de cima a baixo");
+    }
+
+    #[test]
+    fn text_comes_before_voice_inside_a_category() {
+        let plan = fixture();
+        match plan.top.iter().find(|it| it.key() == Top::Category(ChannelId(90))) {
+            Some(TopItem::Category { text, voice, .. }) => {
+                let text: Vec<i64> = text.iter().map(|c| c.id.into_inner()).collect();
+                let voice: Vec<i64> = voice.iter().map(|c| c.id.into_inner()).collect();
+                assert_eq!(text, vec![3, 4]);
+                assert_eq!(voice, vec![6]);
+            }
+            _ => panic!("a categoria 90 deveria estar no nível de cima"),
+        }
+    }
+
+    #[test]
+    fn a_category_moves_next_to_a_standalone_channel() {
+        // The gesture that was impossible: drag the category 90 past channel 2, the empty
+        // category 100 and channel 5 — it lands after the voice room, still in one list.
+        let items = fixture().top;
+        let moved = moved_top(&items, Top::Category(ChannelId(90)), Top::Channel(ChannelId(5)), true).expect("movimento aceito");
+        assert_eq!(top_ids(&SidebarPlan { top: moved }), vec![1, 2, 100, 5, 90]);
+    }
+
+    #[test]
+    fn a_category_dropped_where_it_already_is_changes_nothing() {
+        let items = fixture().top;
+        let moved = moved_top(&items, Top::Category(ChannelId(90)), Top::Channel(ChannelId(2)), false).expect("movimento aceito");
+        assert_eq!(top_ids(&SidebarPlan { top: moved }), vec![1, 90, 2, 100, 5], "antes do 2 já é onde ela está");
+    }
+
+    #[test]
+    fn moving_a_category_over_itself_is_refused() {
+        let items = fixture().top;
+        assert!(moved_top(&items, Top::Category(ChannelId(90)), Top::Category(ChannelId(90)), true).is_none());
+        assert!(moved_top(&items, Top::Category(ChannelId(90)), Top::Channel(ChannelId(999)), true).is_none());
+    }
+
+    #[test]
+    fn dropping_a_channel_on_a_category_header_makes_it_standalone_there() {
+        // Channel 3 lives inside the category 90; dropped on the header of 100 it leaves the group
+        // and takes the slot next to that header — between the empty category and channel 5. This
+        // is the gesture the old two-list plan could not express at all.
+        let mut flat = interleaved();
+        for c in flat.iter_mut().filter(|c| c.id == ChannelId(3)) {
+            c.category_id = None;
+        }
+        let plan = dropped(&flat, ChannelId(3), Top::Category(ChannelId(100)), true);
+        assert_eq!(top_ids(&plan), vec![1, 90, 2, 100, 3, 5]);
+        let (_, groups) = sent(&plan.request());
+        assert_eq!(groups, vec![(90, vec![4, 6]), (100, vec![])], "o 3 saiu do grupo e a categoria segue no lote");
+    }
+
+    #[test]
+    fn a_swap_between_two_standalone_channels_changes_the_top_level() {
+        // Channels 1 and 2 trade places: both are top-level slots, so the top level changes with
+        // them — not only the group they are in.
+        let (order, _) = moved_order(&interleaved(), ChannelId(1), ChannelId(2), true).expect("movimento aceito");
+        let plan = dropped(&rebuilt(&order), ChannelId(1), Top::Channel(ChannelId(2)), true);
+        assert_eq!(top_ids(&plan), vec![2, 90, 1, 100, 5], "os dois canais trocaram de lugar no nível de cima");
+        let (_, groups) = sent(&plan.request());
+        assert_eq!(groups, vec![(90, vec![3, 4, 6]), (100, vec![])], "e as categorias ficaram onde estavam");
+    }
+
+    // ------------------------------------------------------------ the one-batch structure
+
+    fn cats(a: i64, b: i64) -> Vec<ChannelCategory> {
+        vec![
+            ChannelCategory::new(ChannelId(a), "a", "#5865F2", 0),
+            ChannelCategory::new(ChannelId(b), "b", "#5865F2", 1),
+        ]
+    }
+
+    /// What the wire says, as (top level, groups).
+    fn sent(req: &vox_proto::StructureReorderRequest) -> (Vec<i64>, Vec<(i64, Vec<i64>)>) {
+        (req.top.iter().map(|i| i.id.into_inner()).collect(), req.groups.iter().map(|g| (g.category_id.into_inner(), g.ids.iter().map(|i| i.into_inner()).collect())).collect())
+    }
+
+    #[test]
+    fn the_batch_carries_the_whole_sidebar() {
+        // Channels 1, 2 and 5 standalone (text and voice), 3, 4 and 6 in the category 90; the
+        // category 100 has none. Everything exactly once, the empty category included.
+        let req = fixture().request();
+        let (top, groups) = sent(&req);
+        assert_eq!(top, vec![1, 90, 2, 100, 5], "a ordem do desenho, a categoria no meio dos canais");
+        assert_eq!(groups, vec![(90, vec![3, 4, 6]), (100, vec![])], "uma categoria vazia entra vazia, não falta");
+    }
+
+    #[test]
+    fn a_channel_that_crossed_groups_lands_in_the_new_one() {
+        // Channel 1 (standalone) dropped on channel 3 (inside the category 90): it belongs to 90
+        // now, and the batch says so — out of the top level and inside the new group, in the slot
+        // where it was dropped.
+        let (order, category) = moved_order(&interleaved(), ChannelId(1), ChannelId(3), false).expect("movimento aceito");
+        assert_eq!(category, Some(ChannelId(90)));
+        let mut flat = rebuilt(&order);
+        for c in flat.iter_mut().filter(|c| c.id == ChannelId(1)) {
+            c.category_id = category;
+        }
+        let plan = dropped(&flat, ChannelId(1), Top::Channel(ChannelId(3)), false);
+        assert_eq!(top_ids(&plan), vec![90, 2, 100, 5], "o canal 1 não é mais solto");
+        let (_, groups) = sent(&plan.request());
+        assert_eq!(groups, vec![(90, vec![1, 3, 4, 6]), (100, vec![])], "e caiu no lugar onde foi solto");
+    }
+
+    #[test]
+    fn the_positions_are_densest_first() {
+        let req = fixture().request();
+        let positions: Vec<i32> = req.top.iter().map(|i| i.position).collect();
+        assert_eq!(positions, vec![0, 1, 2, 3, 4], "o hub escreve o que recebe: 0, 1, 2, 3, 4");
+    }
+
+    #[test]
+    fn a_channel_whose_category_is_gone_counts_as_loose() {
+        // A category just deleted: the hub already left its channels standalone, but the
+        // `ChannelsChanged` broadcast has not landed, so channels 3 and 4 still say "category 90"
+        // and 90 is no longer in the list. Left out of both lists they would drop out of the batch
+        // and the hub would refuse the whole thing for missing a channel.
+        let plan = plan_of(&interleaved(), &cats_at(&[(100, 7), (101, 8)]));
+        assert_eq!(top_ids(&plan), vec![1, 2, 3, 4, 5, 6, 100, 101], "os órfãos entram como soltos, na ordem em que estavam");
+        let (_, groups) = sent(&plan.request());
+        assert_eq!(groups, vec![(100, vec![]), (101, vec![])], "e não pertencem a grupo nenhum");
+    }
+
+    // ------------------------------------------- a closed category keeps its unread count visible
+
+    fn counters(unread: &[(i64, u32)], mentions: &[(i64, u32)]) -> (HashMap<ChannelId, u32>, HashMap<ChannelId, u32>) {
+        (unread.iter().map(|(k, v)| (ChannelId(*k), *v)).collect(), mentions.iter().map(|(k, v)| (ChannelId(*k), *v)).collect())
+    }
+
+    /// Only the category's own text channels (3, 4 — 5 is loose, 6 is a voice room).
+    fn inside() -> Vec<vox_proto::Channel> {
+        flat().into_iter().filter(|c| c.category_id == Some(ChannelId(90)) && c.kind == ChannelKind::Text).collect()
+    }
+
+    #[test]
+    fn a_quiet_closed_category_shows_nothing() {
+        let (u, m) = counters(&[], &[]);
+        assert_eq!(collapsed_counts_of(ChannelId(90), &inside(), &u, &m), None);
+    }
+
+    #[test]
+    fn a_closed_category_counts_the_mentions_inside_it() {
+        let (u, m) = counters(&[(3, 2)], &[(3, 1), (4, 3)]);
+        assert_eq!(collapsed_counts_of(ChannelId(90), &inside(), &u, &m), Some(CollapsedBadge { mentions: 4, unread: true }));
+    }
+
+    #[test]
+    fn a_plain_unread_brightens_the_name_without_a_pill() {
+        let (u, m) = counters(&[(3, 5)], &[]);
+        assert_eq!(collapsed_counts_of(ChannelId(90), &inside(), &u, &m), Some(CollapsedBadge { mentions: 0, unread: true }));
+    }
+
+    #[test]
+    fn a_channel_of_another_category_is_not_counted() {
+        // Channel 1 and 2 are loose; their unread never leaks into the category's badge.
+        let (u, m) = counters(&[(1, 9)], &[(2, 9)]);
+        assert_eq!(collapsed_counts_of(ChannelId(90), &inside(), &u, &m), None);
+    }
+
+    #[test]
+    fn an_empty_category_has_no_badge() {
+        let (u, m) = counters(&[], &[]);
+        assert_eq!(collapsed_counts_of(ChannelId(100), &inside(), &u, &m), None, "categoria sem canal: nada a contar");
+    }
+
+    #[test]
+    fn the_name_is_bright_only_when_something_is_waiting() {
+        let own = Color32::from_rgb(0x58, 0x65, 0xF2);
+        assert_eq!(badge_name_color(None, own), own, "tudo lido: a cor da categoria");
+        assert_eq!(badge_name_color(Some(CollapsedBadge { mentions: 0, unread: true }), own), theme::TEXTO);
+        assert_eq!(badge_name_color(Some(CollapsedBadge { mentions: 2, unread: true }), own), theme::TEXTO);
     }
 }
 

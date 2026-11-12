@@ -213,6 +213,14 @@ pub struct Settings {
     pub recent_emoji: Vec<crate::emoji::Use>,
     /// The v1.0 shell's remembered choices (center mode, docked chat width, member list).
     pub layout: crate::layout::LayoutSettings,
+    /// "Jogando X" (Discord's "Playing X"): poll the running games and show what I am playing next
+    /// to my name (`games.rs`). Off = never poll, nothing is shown. Older files get on.
+    pub detect_game: bool,
+    /// v1.2: which channel categories are COLLAPSED in the sidebar (Discord's
+    /// `CategoryCollapseStore`: the collapse outlives the session). Only the closed ones are
+    /// kept — a category nobody ever touched is open, and the list stays short. Older files
+    /// read empty and start with everything open.
+    pub collapsed_categories: Vec<vox_proto::ChannelId>,
     /// v1.0.3: quando esta versao de atualizacao foi oferecida pela primeira vez
     /// (version, unix ms). Depois do prazo de carencia (grace_hours do feed, padrao 72h) a
     /// atualizacao vira obrigatoria. Older files get None.
@@ -267,6 +275,8 @@ impl Default for Settings {
             recent_reactions: Vec::new(),
             recent_emoji: Vec::new(),
             layout: Default::default(),
+            detect_game: true,
+            collapsed_categories: Vec::new(),
             update_first_seen: None,
             servers: Default::default(),
         }
@@ -810,6 +820,18 @@ mod tests {
         let list = std::fs::read_to_string(dir.join("AkumaLabs").join("servers.json")).unwrap();
         assert!(!list.contains("segredo-123"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn playing_x_detection_is_on_by_default_and_old_files_get_that() {
+        assert!(Settings::default().detect_game);
+        // A file written before the switch existed.
+        let old: Settings = serde_json::from_str(r#"{"server":"h","username":"ana"}"#).unwrap();
+        assert!(old.detect_game);
+        // Off survives the file.
+        let off = Settings { detect_game: false, ..Default::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert!(!back.detect_game);
     }
 
     #[test]

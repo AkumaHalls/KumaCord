@@ -166,7 +166,7 @@ impl App {
         n.add_space(space::L);
         for p in SettingsPage::ALL {
             let label = format!("Configurações: {}", p.title());
-            let row = ui_kit::Row { icon: p.icon(), name: p.title(), label: &label, selected: self.settings_ui.page == p, unread: false, count: 0, mentions: 0, hover: None };
+            let row = ui_kit::Row { icon: p.icon(), name: p.title(), label: &label, selected: self.settings_ui.page == p, unread: false, count: 0, mentions: 0, hover: None, id: Some(egui::Id::new(("settings_nav_row", p.title()))) };
             if ui_kit::sidebar_row(&mut n, row).0.clicked() {
                 self.settings_ui.page = p;
             }
@@ -593,6 +593,26 @@ impl App {
             });
         });
         note(ui, "As imagens são compactadas no seu PC antes de enviar (sem metadados, sem GPS). Prints com texto ficam nítidos em qualquer opção.", true);
+        forms::divider(ui);
+        forms::group(ui, "Presença");
+        // v1.2: "Jogando X". Only a hub that knows the activity endpoint can be told about it,
+        // so on an older one the switch rests and says why.
+        let activity_ok = self.chatx.server_features.activity;
+        row(ui, "Jogo", |ui| {
+            ch.save |= ui
+                .add_enabled(activity_ok, egui::Checkbox::new(&mut self.settings.detect_game, "Detectar o jogo aberto"))
+                .on_hover_text("O KumaCord olha os programas abertos a cada 5 segundos e mostra \"Jogando X\" para o servidor, como no Discord. Só o nome do jogo é enviado.")
+                .changed();
+        });
+        note(
+            ui,
+            if activity_ok {
+                "A detecção é local: o nome do jogo vai para o servidor, e mais nada. Feche o jogo e a linha desaparece sozinha."
+            } else {
+                "Este servidor é de uma versão antiga e não aceita \"Jogando X\" (quem hospeda precisa atualizar)."
+            },
+            true,
+        );
     }
 }
 

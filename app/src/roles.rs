@@ -188,16 +188,29 @@ pub enum AdminCmd {
     /// "Canal privado" (v0.9): private with this list, or public again (`None`).
     SetChannelAccess { id: ChannelId, private: Option<PrivateAccess> },
     RenameChannel { id: ChannelId, name: String },
+    /// v1.2: edit one channel's extras — the topic (text) and the bitrate and the user limit
+    /// (voice). `None` fields are left alone, so the request only carries what moved.
+    EditChannel { id: ChannelId, req: vox_proto::EditChannelRequest },
     DeleteChannel { id: ChannelId },
     ReorderChannels { ids: Vec<ChannelId> },
     /// v1.2: the sidebar's categories in their new order (every category id exactly once).
     ReorderCategories { ids: Vec<ChannelId> },
+    /// v1.2: the sidebar's whole order in ONE batch — the top level (standalone channels and
+    /// categories) plus each category's channels. The old pair (reorder-channels then
+    /// reorder-categories) numbered the two lists apart, so dragging one standalone channel
+    /// renumbered the categories and the whole sidebar jumped; one transaction keeps the
+    /// interleaving by construction.
+    ReorderStructure(vox_proto::StructureReorderRequest),
     /// v1.1: put a channel in a category (`None` = standalone again).
     SetChannelCategory { id: ChannelId, category: Option<ChannelId> },
     /// v1.1: create a channel category (Discord-style collapsible group in the sidebar).
     CreateCategory { name: String, color: String, position: i32 },
     /// v1.1: delete a channel category (its channels become standalone).
     DeleteCategory { id: ChannelId },
+    /// v1.2: edit one category's name and colour (the context menu's "Editar categoria"). The
+    /// `position` goes along untouched: the sidebar's drag & drop owns the order, so the caller
+    /// reads the category's current one and passes it back.
+    EditCategory { id: ChannelId, name: String, color: String, position: i32 },
     /// "Reivindicar servidor": take a server with no owner with the code its console shows.
     ClaimOwner { code: String },
     /// "Transferir posse do servidor" (owner only).
@@ -239,12 +252,17 @@ pub async fn run_admin(hub: &HubClient, cmd: &AdminCmd) -> Result<AdminReply, St
         C::CreateChannel { name, kind, private, category } => hub.create_channel(&name, kind, private, category).await.map(|_| AdminReply::Done),
         C::SetChannelAccess { id, private } => hub.set_channel_access(id, private).await.map(|_| AdminReply::Done),
         C::RenameChannel { id, name } => hub.rename_channel(id, &name).await.map(|_| AdminReply::Done),
+        C::EditChannel { id, req } => hub.edit_channel(id, &req).await.map(|_| AdminReply::Done),
         C::DeleteChannel { id } => hub.delete_channel(id).await.map(|_| AdminReply::Done),
         C::SetChannelCategory { id, category } => hub.set_channel_category(id, category).await.map(|_| AdminReply::Done),
         C::CreateCategory { name, color, position } => hub.create_category(&name, &color, position).await.map(|_| AdminReply::Done),
         C::DeleteCategory { id } => hub.delete_category(id).await.map(|_| AdminReply::Done),
+        C::EditCategory { id, name, color, position } => {
+            hub.update_category(&vox_proto::ChannelCategory { id, name, color, position }).await.map(|_| AdminReply::Done)
+        }
         C::ReorderChannels { ids } => hub.reorder_channels(ids).await.map(|_| AdminReply::Done),
         C::ReorderCategories { ids } => hub.reorder_categories(ids).await.map(|_| AdminReply::Done),
+        C::ReorderStructure(req) => hub.reorder_structure(&req).await.map(|_| AdminReply::Done),
         C::ClaimOwner { code } => hub.claim_owner(&code).await.map(AdminReply::Claimed),
         C::TransferOwner { user } => hub.transfer_owner(user.id).await.map(|_| AdminReply::Done),
     };
@@ -370,6 +388,19 @@ pub struct RolesUi {
     /// v1.1: the role being created/edited (a new one starts with id = 0).
     pub role_edit: Option<CustomRole>,
     pub confirm_delete: Option<ChannelId>,
+    /// v1.2: "Excluir categoria..." of the category's context menu (the channels tab asks first).
+    pub confirm_delete_category: Option<ChannelId>,
+    /// v1.2: the category being edited in the categories list — the name draft (the colour is
+    /// `editing_category_color`). Commits on "Salvar" (`AdminCmd::EditCategory`).
+    pub editing_category: Option<(ChannelId, String)>,
+    /// v1.2: the colour draft of the category being edited.
+    pub editing_category_color: String,
+    /// v1.2: the channel whose extras editor is open (the sliders icon on its row): the topic of
+    /// a text channel, the bitrate and the user limit of a voice room.
+    pub editing_channel: Option<ChannelId>,
+    /// v1.2: the extras draft of that channel. Empty means "unchanged" — the hub answers 400
+    /// "nothing to change" for a body with no applicable field, so only what moved is sent.
+    pub channel_draft: ChannelDraft,
     pub confirm_reset: Option<User>,
     /// v1.1: "Banir..." of this person, open as a dialog (the reason is typed inside).
     pub confirm_ban: Option<User>,
@@ -408,6 +439,19 @@ pub struct AccessDraft {
     pub search: String,
 }
 
+/// v1.2: what the channel's extras editor holds while it is open (the sliders icon on its row).
+///
+/// The topic is a text field, so it carries what the person typed; the bitrate and the user limit
+/// are numbers in a text field too, because an empty box is the natural "leave it alone" (the hub
+/// answers 400 "nothing to change" when nothing applicable is sent). Only what actually differs
+/// from the channel goes on the wire.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChannelDraft {
+    pub topic: String,
+    pub bitrate: String,
+    pub user_limit: String,
+}
+
 impl AccessDraft {
     pub fn of(p: Option<&PrivateAccess>) -> Self {
         match p {
@@ -430,6 +474,45 @@ impl AccessDraft {
         let roles = [(self.moderator, Role::Moderator), (self.member, Role::Member)].into_iter().filter(|(on, _)| *on).map(|(_, r)| r).collect();
         Some(PrivateAccess { roles, users: self.users.clone() }.normalized())
     }
+}
+
+/// v1.2: the voice quality the hub accepts, in the unit the editor shows (kbps) — the wire takes
+/// bits per second, and [`channel_extras_req`] does the ×1000. The same bounds the hub validates
+/// (`hub/src/admin.rs`), kept here so a number outside them never becomes a 400.
+const BITRATE_KBPS_MIN: i32 = 8;
+const BITRATE_KBPS_MAX: i32 = 384;
+/// v1.2: the people a voice room holds (0 = no limit). Same bounds as the hub.
+const USER_LIMIT_MIN: i32 = 0;
+const USER_LIMIT_MAX: i32 = 99;
+
+/// v1.2: what the extras editor sends for channel `c` with draft `d`, or `None` when nothing
+/// moved — the hub answers 400 "nothing to change" for a body with no applicable field, so an
+/// untouched editor is not sent at all.
+///
+/// The topic goes whenever the text differs (empty clears it, which is a real change). The
+/// bitrate and the user limit only exist on a voice room and only when their box holds a number:
+/// an empty box is "leave it alone", and a text channel never carries them even when typed.
+/// A number that does not parse is dropped rather than sent as a 400 — the box stays editable and
+/// nothing is written.
+///
+/// The bitrate is typed in **kbps** (what Discord shows and what the label says) and goes on the
+/// wire in bits per second (what the hub validates, 8000..=384000): ×1000 here, so nobody reads
+/// "64" in a box labelled kbps and gets back "bitrate must be 8000-384000". The range is checked in
+/// kbps first, for the same reason — a 400 the person cannot act on is worse than a dropped field.
+fn channel_extras_req(c: &vox_proto::Channel, d: &ChannelDraft) -> Option<vox_proto::EditChannelRequest> {
+    let topic = d.topic.trim();
+    let voice = c.kind == ChannelKind::Voice;
+    let bitrate = voice
+        .then(|| d.bitrate.trim().parse::<i32>().ok())
+        .flatten()
+        .filter(|kbps| (BITRATE_KBPS_MIN..=BITRATE_KBPS_MAX).contains(kbps))
+        .map(|kbps| kbps * 1000);
+    let user_limit = voice
+        .then(|| d.user_limit.trim().parse::<i32>().ok())
+        .flatten()
+        .filter(|n| (USER_LIMIT_MIN..=USER_LIMIT_MAX).contains(n));
+    let req = vox_proto::EditChannelRequest { name: None, topic: (topic != c.topic.trim()).then(|| topic.to_string()), bitrate, user_limit };
+    (req.topic.is_some() || req.bitrate.is_some() || req.user_limit.is_some()).then_some(req)
 }
 
 /// People the picker offers for `query`: Moderador and Membro (Dono and Admin always have access),
@@ -796,6 +879,7 @@ impl App {
             }
             (AdminCmd::SetChannelAccess { id, .. }, _) if self.roles.editing_access.as_ref().is_some_and(|(e, _)| *e == id) => self.roles.editing_access = None,
             (AdminCmd::RenameChannel { .. }, _) => self.roles.renaming = None,
+            (AdminCmd::EditChannel { id, .. }, _) if self.roles.editing_channel == Some(id) => self.roles.editing_channel = None,
             _ => {}
         }
         if self.roles.server_open && self.roles.tab == ServerTab::Audit {
@@ -1061,7 +1145,7 @@ impl App {
 
     /// Any of the server window's confirmations is up.
     fn server_confirming(&self) -> bool {
-        self.roles.confirm_delete.is_some() || self.roles.confirm_reset.is_some() || self.roles.confirm_transfer.is_some() || self.host_confirming()
+        self.roles.confirm_delete.is_some() || self.roles.confirm_delete_category.is_some() || self.roles.confirm_reset.is_some() || self.roles.confirm_transfer.is_some() || self.host_confirming()
     }
 
     /// "Servidor": the Discord-like settings of the server (Admin and Dono). A page list on the
@@ -1078,7 +1162,7 @@ impl App {
         let tab = self.roles.tab;
         let name = self.server_name.clone();
         let mut picked = None;
-        let esc = !self.server_confirming() && !egui::Popup::is_any_open(ctx) && self.cmenu.open.is_none() && self.cmenu.confirm.is_none();
+        let esc = !self.server_confirming() && !egui::Popup::is_any_open(ctx) && self.cmenu.open.is_none() && self.cmenu.chan_open.is_none() && self.cmenu.confirm.is_none();
         let open = ui_kit::settings_window(
             ctx,
             "Servidor",
@@ -1139,9 +1223,11 @@ impl App {
             self.roles.server_open = false;
             self.roles.reset_code = None;
             self.roles.confirm_delete = None;
+            self.roles.confirm_delete_category = None;
             self.roles.confirm_reset = None;
             self.roles.confirm_transfer = None;
             self.roles.editing_access = None;
+            self.roles.editing_category = None;
             self.roles.renaming = None;
         }
     }
@@ -1168,6 +1254,23 @@ impl App {
                     self.roles.confirm_delete = None;
                 }
                 Some(false) => self.roles.confirm_delete = None,
+                None => {}
+            }
+        } else if let Some(id) = self.roles.confirm_delete_category {
+            let Some(cat) = self.categories.iter().find(|c| c.id == id).cloned() else {
+                self.roles.confirm_delete_category = None;
+                return;
+            };
+            match ui_kit::confirm(ctx, "server_delete_category", "Apagar categoria", "Apagar categoria", Kind::Danger, true, |ui| {
+                ui_kit::body_text(ui, format!("Apagar a categoria {}?", cat.name));
+                ui_kit::hint(ui, "A categoria desaparece da lateral, mas os canais dela continuam existindo (ficam soltos, no topo). Isso não pode ser desfeito.");
+            }) {
+                Some(true) => {
+                    self.admin(AdminCmd::DeleteCategory { id });
+                    self.roles.confirm_delete_category = None;
+                    self.roles.editing_category = None;
+                }
+                Some(false) => self.roles.confirm_delete_category = None,
                 None => {}
             }
         } else if let Some(u) = self.roles.confirm_reset.clone() {
@@ -1733,6 +1836,18 @@ impl App {
         self.new_channel_group(ui);
     }
 
+    /// v1.2: the channel's extras editor commits here. Only what actually moved is sent: the
+    /// topic when the text changed, and — on a voice room — the bitrate and the user limit when
+    /// their boxes hold a number (an empty box means "leave it alone"). `None` when nothing
+    /// changed, so no pointless 400 "nothing to change" comes back.
+    fn save_channel(&mut self, c: &vox_proto::Channel, d: &ChannelDraft) {
+        if let Some(req) = channel_extras_req(c, d) {
+            self.admin(AdminCmd::EditChannel { id: c.id, req });
+        } else {
+            self.roles.editing_channel = None;
+        }
+    }
+
     /// One channel: its icon and name (or the rename field), then up, down, rename, "Acesso"
     /// (v0.9) and delete; the access editor opens right under it. Returns a new order.
     fn channel_row(&mut self, ui: &mut egui::Ui, c: &vox_proto::Channel, up: Option<Vec<ChannelId>>, down: Option<Vec<ChannelId>>) -> Option<Vec<ChannelId>> {
@@ -1767,6 +1882,45 @@ impl App {
             });
             if keep && self.roles.editing_access.is_none() {
                 self.roles.editing_access = Some((id, draft));
+            }
+        }
+        // v1.2: the extras of this channel (topic / bitrate / limit), right under its row.
+        if self.roles.editing_channel == Some(c.id) {
+            let mut draft = std::mem::take(&mut self.roles.channel_draft);
+            let mut close = false;
+            egui::Frame::new().fill(theme::NOITE).corner_radius(radius::ROW).inner_margin(egui::Margin::symmetric(14, 10)).outer_margin(egui::Margin { left: 28, right: 4, top: 2, bottom: 6 }).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = 6.0;
+                let voice = c.kind == ChannelKind::Voice;
+                if voice {
+                    ui_kit::field_label(ui, "Qualidade (kbps) — de 8 a 384; 64 já dá para conversar, 128 sobra para música");
+                    ui.add(ui_kit::field(&mut draft.bitrate).desired_width(120.0));
+                    ui_kit::field_label(ui, "Limite de pessoas — 0 é sem limite");
+                    ui.add(ui_kit::field(&mut draft.user_limit).desired_width(120.0));
+                } else {
+                    ui_kit::field_label(ui, "Tópico — uma linha, aparece no topo do canal");
+                    ui.add(ui_kit::field(&mut draft.topic).desired_width(ui.available_width()));
+                    if c.topic.trim().is_empty() {
+                        ui_kit::hint(ui, "Sem tópico: o topo do canal mostra só o nome.");
+                    }
+                }
+                ui.add_space(space::S);
+                // (One lamp button per view: a rename open at the same time keeps it.)
+                let kind = if self.roles.renaming.is_some() { Kind::Secondary } else { Kind::Primary };
+                ui.horizontal(|ui| {
+                    if ui_kit::button_sized(ui, kind, Size::Small, None, "Salvar").clicked() {
+                        self.save_channel(c, &draft);
+                        close = true;
+                    }
+                    if ui_kit::button_sized(ui, Kind::Ghost, Size::Small, None, "Cancelar").clicked() {
+                        close = true;
+                    }
+                });
+            });
+            if close {
+                self.roles.editing_channel = None;
+            } else {
+                self.roles.channel_draft = draft;
             }
         }
         reorder
@@ -1814,6 +1968,20 @@ impl App {
             if ui_kit::icon_button(ui, ph::PENCIL_SIMPLE, "Renomear", IconState::Normal).clicked() {
                 self.roles.renaming = Some((c.id, c.name.clone()));
             }
+            // v1.2: the extras (topic on a text channel, bitrate and limit on a voice room). An
+            // older hub has no such endpoint, so the button is not offered at all.
+            if self.chatx.server_features.channel_extras {
+                let what = if c.kind == ChannelKind::Text { "Editar o tópico do canal" } else { "Editar a qualidade e o limite de pessoas da sala" };
+                if ui_kit::icon_button(ui, ph::SLIDERS_HORIZONTAL, what, IconState::Normal).clicked() {
+                    self.roles.editing_channel = Some(c.id);
+                    self.roles.channel_draft = ChannelDraft {
+                        topic: c.topic.clone(),
+                        // The room's quality comes back in bits per second; the editor speaks kbps.
+                        bitrate: c.bitrate.map(|b| (b / 1000).to_string()).unwrap_or_default(),
+                        user_limit: c.user_limit.map(|l| l.to_string()).unwrap_or_default(),
+                    };
+                }
+            }
             // v1.1: which category the channel belongs to (Discord-style groups in the sidebar).
             let cat_button = ui_kit::icon_button(ui, ph::FOLDER_OPEN, "Categoria: onde o canal fica agrupado na barra lateral", IconState::Normal);
             let cats = self.categories.clone();
@@ -1860,6 +2028,33 @@ impl App {
             }
             for cat in self.categories.clone() {
                 let color = egui::Color32::from_hex(cat.color.get(1..).unwrap_or("5865F2")).unwrap_or(theme::NEVOA);
+                // v1.2: this one is being edited (the context menu's "Editar categoria") — the
+                // name and the colour become fields, with "Salvar".
+                let editing = matches!(&self.roles.editing_category, Some((id, _)) if *id == cat.id);
+                if editing {
+                    if let Some((id, mut name)) = self.roles.editing_category.take_if(|_| true) {
+                        let mut keep = true;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = space::S;
+                            let (dot, _) = ui.allocate_exact_size(egui::Vec2::splat(12.0), egui::Sense::hover());
+                            ui.painter().circle_filled(dot.center(), 4.0, color);
+                            ui.add(ui_kit::field(&mut name).hint_text("Nome").desired_width(160.0));
+                            ui.add(ui_kit::field(&mut self.roles.editing_category_color).hint_text("#5865F2").desired_width(90.0));
+                            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if ui_kit::button_sized(ui, Kind::Primary, Size::Small, None, "Salvar").clicked() || enter {
+                                self.save_category(id, &name);
+                                keep = false;
+                            }
+                            if ui_kit::button_sized(ui, Kind::Ghost, Size::Small, None, "Cancelar").clicked() {
+                                keep = false;
+                            }
+                        });
+                        if keep && self.roles.editing_category.is_none() {
+                            self.roles.editing_category = Some((id, name));
+                        }
+                    }
+                    continue;
+                }
                 ui.horizontal(|ui| {
                     let (dot, _) = ui.allocate_exact_size(egui::Vec2::splat(12.0), egui::Sense::hover());
                     ui.painter().circle_filled(dot.center(), 4.0, color);
@@ -1868,7 +2063,7 @@ impl App {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.label(egui::RichText::new(format!("ordem {}", cat.position)).small().color(theme::NEVOA));
                         if ui_kit::icon_button(ui, ph::TRASH, "Apagar categoria (os canais dela ficam soltos)", IconState::Normal).clicked() {
-                            self.admin(AdminCmd::DeleteCategory { id: cat.id });
+                            self.roles.confirm_delete_category = Some(cat.id);
                         }
                     });
                 });
@@ -1893,6 +2088,23 @@ impl App {
                 self.roles.new_category_color.clear();
             }
         });
+    }
+
+    /// v1.2: "Salvar" of the category being edited. The name is required (an empty one just
+    /// closes the editor); the colour gets its `#` back when the person left it out.
+    fn save_category(&mut self, id: ChannelId, name: &str) {
+        self.roles.editing_category = None;
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let color = self.roles.editing_category_color.trim().to_string();
+        let color = if color.starts_with('#') { color } else { format!("#{color}") };
+        self.roles.editing_category_color.clear();
+        // The order is the sidebar's business (the drag & drop), so this category's current
+        // position goes back untouched — the hub writes what it is given.
+        let position = self.categories.iter().find(|c| c.id == id).map_or(0, |c| c.position);
+        self.admin(AdminCmd::EditCategory { id, name, color, position });
     }
 
     fn new_channel_group(&mut self, ui: &mut egui::Ui) {
@@ -2180,5 +2392,125 @@ mod tests {
         }
         assert_eq!(covered, perm::GRANTABLE, "o editor cobre exatamente as permissões concedíveis");
         assert_eq!(App::PERMS.len(), 21);
+    }
+
+    // ------------------------------------------------------------ the channel's extras editor
+
+    fn room(id: i64, kind: ChannelKind, topic: &str, bitrate: Option<i32>, limit: Option<i32>) -> vox_proto::Channel {
+        vox_proto::Channel {
+            id: ChannelId(id),
+            name: format!("c{id}"),
+            kind,
+            position: id as i32,
+            private: None,
+            category_id: None,
+            topic: topic.to_string(),
+            bitrate,
+            user_limit: limit,
+        }
+    }
+
+    #[test]
+    fn an_untouched_editor_sends_nothing() {
+        let c = room(1, ChannelKind::Text, "um tópico", None, None);
+        let d = ChannelDraft { topic: "um tópico".into(), bitrate: String::new(), user_limit: String::new() };
+        assert!(channel_extras_req(&c, &d).is_none(), "nada mudou: o hub responderia 400 \"nothing to change\"");
+    }
+
+    #[test]
+    fn the_topic_goes_when_the_text_changed() {
+        let c = room(1, ChannelKind::Text, "velho", None, None);
+        let d = ChannelDraft { topic: "  novo  ".into(), ..Default::default() };
+        assert_eq!(channel_extras_req(&c, &d).unwrap().topic.as_deref(), Some("novo"), "vai aparado");
+    }
+
+    #[test]
+    fn an_empty_topic_clears_it() {
+        // Empty is a real change, not "leave it alone": the channel had a topic and now has none.
+        let c = room(1, ChannelKind::Text, "some coisa", None, None);
+        let d = ChannelDraft { topic: "   ".into(), ..Default::default() };
+        assert_eq!(channel_extras_req(&c, &d).unwrap().topic.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_voice_room_sends_its_quality_and_limit() {
+        // The boxes speak kbps (what Discord shows); the wire takes bits per second.
+        let c = room(1, ChannelKind::Voice, "", None, None);
+        let d = ChannelDraft { topic: String::new(), bitrate: "128".into(), user_limit: "5".into() };
+        let req = channel_extras_req(&c, &d).unwrap();
+        assert_eq!((req.bitrate, req.user_limit), (Some(128000), Some(5)));
+    }
+
+    #[test]
+    fn the_quality_box_is_in_kbps_and_the_wire_in_bits() {
+        // The number the label tells the person to type ("64") must survive: ×1000, not raw.
+        let c = room(1, ChannelKind::Voice, "", None, None);
+        let d = ChannelDraft { bitrate: "64".into(), ..Default::default() };
+        assert_eq!(channel_extras_req(&c, &d).unwrap().bitrate, Some(64000));
+        // And what the hub hands back (64000 bits/s) reads as 64 in the box, not 64000.
+        let back = room(1, ChannelKind::Voice, "", Some(64000), None);
+        assert_eq!(back.bitrate.map(|b| (b / 1000).to_string()).unwrap_or_default(), "64", "o valor que volta é mostrado em kbps");
+    }
+
+    #[test]
+    fn a_quality_outside_the_hubs_range_is_dropped_not_refused() {
+        // 4 kbps is under the hub's 8000 bits/s floor: sending it would be a 400 quoting bits per
+        // second at somebody who typed kbps. The field is dropped instead and the box stays there.
+        let c = room(1, ChannelKind::Voice, "", None, None);
+        for typed in ["4", "500"] {
+            let d = ChannelDraft { bitrate: typed.into(), user_limit: "5".into(), ..Default::default() };
+            let req = channel_extras_req(&c, &d).unwrap();
+            assert_eq!(req.bitrate, None, "{typed} kbps está fora de 8..=384");
+            assert_eq!(req.user_limit, Some(5), "o outro campo não é perdido por causa dele");
+        }
+        let d = ChannelDraft { user_limit: "150".into(), ..Default::default() };
+        assert_eq!(channel_extras_req(&c, &d), None, "150 pessoas está fora de 0..=99: nada a enviar");
+    }
+
+    #[test]
+    fn an_empty_box_means_leave_it_alone() {
+        // The boxes start with what the room has; an empty one is the person clearing it, which
+        // must read as "unchanged" rather than as a 0 that would mean "unlimited".
+        let c = room(1, ChannelKind::Voice, "", Some(64000), Some(3));
+        let d = ChannelDraft::default();
+        assert!(channel_extras_req(&c, &d).is_none());
+    }
+
+    #[test]
+    fn a_voice_room_also_takes_a_topic() {
+        // The topic is not text-only: a voice room keeps its own, and it is sent when it changes.
+        let c = room(1, ChannelKind::Voice, "", Some(64000), None);
+        let d = ChannelDraft { topic: "a sala do ranked".into(), ..Default::default() };
+        let req = channel_extras_req(&c, &d).unwrap();
+        assert_eq!(req.topic.as_deref(), Some("a sala do ranked"));
+    }
+
+    #[test]
+    fn a_text_channel_never_carries_bitrate_or_limit() {
+        // The hub ignores them on a text channel without validating, so sending them would be a
+        // pointless "nothing to change" — they are not even offered there.
+        let c = room(1, ChannelKind::Text, "", None, None);
+        let d = ChannelDraft { topic: "fala".into(), bitrate: "128".into(), user_limit: "5".into() };
+        let req = channel_extras_req(&c, &d).unwrap();
+        assert_eq!((req.bitrate, req.user_limit), (None, None));
+        assert_eq!(req.topic.as_deref(), Some("fala"));
+    }
+
+    #[test]
+    fn a_number_that_does_not_parse_is_dropped() {
+        // The box stays editable and nothing is written, rather than a 400 the person cannot act on.
+        let c = room(1, ChannelKind::Voice, "", None, None);
+        let d = ChannelDraft { topic: String::new(), bitrate: "muito".into(), user_limit: "5".into() };
+        let req = channel_extras_req(&c, &d).unwrap();
+        assert_eq!((req.bitrate, req.user_limit), (None, Some(5)));
+    }
+
+    #[test]
+    fn the_name_is_never_in_the_extras_request() {
+        // The rename is its own field on the row; the extras editor never rewrites the name, so a
+        // channel cannot be renamed by saving a topic.
+        let c = room(1, ChannelKind::Text, "", None, None);
+        let d = ChannelDraft { topic: "x".into(), ..Default::default() };
+        assert_eq!(channel_extras_req(&c, &d).unwrap().name, None);
     }
 }

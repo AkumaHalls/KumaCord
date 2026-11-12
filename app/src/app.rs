@@ -559,6 +559,8 @@ impl App {
         // A carência da atualização conta da primeira vez que a versão foi vista,
         // guardada no settings (persiste entre sessões).
         let update_first_seen = settings.update_first_seen.clone();
+        // The collapsed categories come back from the settings (Discord remembers them).
+        let category_open = Self::collapsed_from_settings(&settings);
         let mut app = App {
             backend,
             repaint,
@@ -609,7 +611,8 @@ impl App {
             alert_policy: AlertPolicy::default(),
             gate_voice: Arc::new(VoiceGate::default()),
             gate_test: Arc::new(VoiceGate::default()),
-            category_open: Default::default(),
+            // The collapsed categories come back from the settings (Discord remembers them).
+            category_open,
             categories: Vec::new(),
             noise,
             meter_watch: None,
@@ -659,6 +662,53 @@ impl App {
         if self.persist || crate::settings::dir_overridden() {
             self.settings.save();
         }
+    }
+
+    /// The sidebar's collapsed categories as they were left last session (Discord's
+    /// `CategoryCollapseStore`): only the closed ones are saved, so the map starts with
+    /// everything open and the settings file stays short.
+    fn collapsed_from_settings(settings: &Settings) -> HashMap<ChannelId, bool> {
+        settings.collapsed_categories.iter().map(|id| (*id, false)).collect()
+    }
+
+    /// Collapse (or expand) a category and remember it: the next session finds it as it was left.
+    pub(crate) fn set_category_collapsed(&mut self, id: ChannelId, collapsed: bool) {
+        self.category_open.insert(id, !collapsed);
+        let list = &mut self.settings.collapsed_categories;
+        if collapsed {
+            if !list.contains(&id) {
+                list.push(id);
+            }
+        } else {
+            list.retain(|c| *c != id);
+        }
+        self.save_settings();
+    }
+
+    /// Collapse (or expand) every category at once — Discord's `CATEGORY_COLLAPSE_ALL` /
+    /// `CATEGORY_EXPAND_ALL`. One row in the server menu instead of one click per category, and
+    /// one write of the settings file instead of one per category.
+    pub(crate) fn set_all_categories_collapsed(&mut self, collapsed: bool) {
+        let ids: Vec<ChannelId> = self.categories.iter().map(|c| c.id).collect();
+        {
+            let list = &mut self.settings.collapsed_categories;
+            for id in ids {
+                self.category_open.insert(id, !collapsed);
+                if collapsed {
+                    if !list.contains(&id) {
+                        list.push(id);
+                    }
+                } else {
+                    list.retain(|c| *c != id);
+                }
+            }
+        }
+        self.save_settings();
+    }
+
+    /// Whether every category is closed right now (what the collapse-all row offers to undo).
+    pub(crate) fn all_categories_collapsed(&self) -> bool {
+        !self.categories.is_empty() && self.categories.iter().all(|c| !self.category_open.get(&c.id).copied().unwrap_or(true))
     }
 
     /// v1.1.9: stop the launch cinematic and its music (the user is entering the server, or the
@@ -1755,6 +1805,7 @@ impl App {
                     chat,
                     custom_roles,
                     categories,
+                    features,
                     ..
                 } => {
                     channels.sort_by_key(|c| (c.position, c.id));
@@ -1767,7 +1818,7 @@ impl App {
                     self.profile_on_ready();
                     self.dm_on_ready();
                     self.images_on_ready();
-                    self.chat_on_ready(chat, &online);
+                    self.chat_on_ready(chat, features, &online);
                     self.channels = channels;
                     self.online = online;
                     self.voice_members = voice
@@ -1850,7 +1901,9 @@ impl App {
                     }
                     self.check_watched_alive();
                 }
-                ServerEvent::PresenceChanged { user_id, presence, status } => self.on_presence_changed(user_id, presence, status),
+                ServerEvent::PresenceChanged { user_id, presence, status, activity } => {
+                    self.on_presence_changed(user_id, presence, status, activity)
+                }
                 // Reactions (v0.8): channels, and my DMs (the hub sends those only to the two people).
                 ServerEvent::ReactionChanged { channel_id, message_id, emoji, user_id, added } => {
                     self.on_reaction(chat_extras::Target::Channel(vox_proto::ChannelId(*channel_id)), message_id.into_inner(), &emoji, user_id, added)
@@ -2148,6 +2201,7 @@ impl eframe::App for App {
         self.sound_tick();
         self.intro_tick(ctx);
         self.profile_tick(ctx);
+        self.game_tick(ctx);
         self.dm_tick(ctx);
         // Before `notify_tick`: leaving the app while hosting asks first (`host.rs`).
         self.host_tick(ctx);
@@ -2212,6 +2266,7 @@ impl eframe::App for App {
             self.profile_popout(&ctx);
             self.dm_windows(&ctx);
             self.person_menu_layer(&ctx);
+            self.channel_menu_layer(&ctx);
             self.menu_confirm_window(&ctx);
             self.image_viewer(&ctx);
         }
