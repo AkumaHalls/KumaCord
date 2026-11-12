@@ -13,7 +13,7 @@ use tokio_tungstenite::tungstenite::{self, Message};
 use tracing::{debug, info, warn};
 use url::Url;
 use vox_proto::{
-    ApiError, AuditEntry, AvatarResponse, Channel, ChannelAccessRequest, ChannelCategory, ChannelCreateRequest, ChannelId, ChannelKind, ChannelRenameRequest, ChannelReorderRequest, CategoryReorderRequest, ClaimOwnerRequest, SetChannelCategoryRequest,
+    ApiError, AuditEntry, AvatarResponse, Channel, ChannelAccessRequest, ChannelCategory, ChannelCreateRequest, ChannelId, ChannelKind, ChannelRenameRequest, ChannelReorderRequest, CategoryReorderRequest, ClaimOwnerRequest, EditChannelRequest, SetActivityRequest, SetChannelCategoryRequest, StructureReorderRequest,
     ClaimOwnerResponse, ClientEvent, HealthResponse, LinkPreview, LoginRequest, LoginResponse, MemberInfo, Message as ChatMessage, MessageId, ModMoveRequest, ModMuteRequest,
     OkResponse, PrivateAccess, BanInfo, BanRequest, CustomRole, CustomRoleRequest, ResetPasswordResponse, Role, ServerEvent, SetBadgesRequest, SetPasswordRequest, SetPasswordResponse, SetRoleRequest, SetUserCustomRolesRequest, TransferOwnerRequest, UserId,
     VoiceJoinResponse, PROTOCOL_VERSION,
@@ -309,9 +309,45 @@ impl HubClient {
         self.post::<_, OkResponse>("channel category", &format!("api/admin/channels/{id}/category"), &SetChannelCategoryRequest { category_id: category }).await.map(|_| ())
     }
 
+    /// v1.2: `POST /api/admin/channels/{id}` — edit a channel. Every field is optional and only
+    /// what is present changes, so a request that carries just the topic leaves the name alone.
+    /// `bitrate` and `user_limit` mean something on a voice channel only (an older hub ignores
+    /// them everywhere).
+    pub async fn edit_channel(&self, id: ChannelId, req: &EditChannelRequest) -> Result<()> {
+        self.post::<_, OkResponse>("edit channel", &format!("api/admin/channels/{id}"), req).await.map(|_| ())
+    }
+
+    /// v1.2: `POST /api/admin/structure` — the whole sidebar order in one batch: the top level
+    /// (categories and standalone channels, interleaved) plus the channels inside each category.
+    /// This is what the drag & drop sends: one transaction, so moving a standalone channel no
+    /// longer rewrites every category's position.
+    pub async fn reorder_structure(&self, req: &StructureReorderRequest) -> Result<()> {
+        self.post::<_, OkResponse>("reorder structure", "api/admin/structure", req).await.map(|_| ())
+    }
+
     /// v1.1: `POST /api/admin/categories` — create a channel category.
     pub async fn create_category(&self, name: &str, color: &str, position: i32) -> Result<ChannelCategory> {
         self.post::<_, ChannelCategory>("create category", "api/admin/categories", &serde_json::json!({ "name": name, "color": color, "position": position })).await
+    }
+
+    /// v1.2: `POST /api/admin/categories/{id}` — edit one category's name and colour (the
+    /// context menu's "Editar categoria"). The position goes along untouched: the sidebar's
+    /// drag & drop owns the order, and the hub's own `update_category` keeps what it is given.
+    pub async fn update_category(&self, cat: &ChannelCategory) -> Result<()> {
+        self.post::<_, OkResponse>("update category", &format!("api/admin/categories/{}", cat.id), cat).await.map(|_| ())
+    }
+
+    /// v1.2: `PUT /api/me/activity` — "I am playing `name`". The hub stamps `started_at_ms`
+    /// (every viewer reads the same clock) and tells everybody through `PresenceChanged`, but
+    /// only when the name actually changes.
+    pub async fn set_activity(&self, name: &str) -> Result<()> {
+        self.put::<_, OkResponse>("set activity", "api/me/activity", &SetActivityRequest { name: name.to_string() }).await.map(|_| ())
+    }
+
+    /// v1.2: `DELETE /api/me/activity` — the game was closed: nothing playing anymore.
+    pub async fn clear_activity(&self) -> Result<()> {
+        let resp = self.auth(self.http.delete(self.url("api/me/activity")?))?.send().await.context("clear activity request")?;
+        Self::parse("clear activity", resp).await.map(|_: OkResponse| ())
     }
 
     /// v1.1: `DELETE /api/admin/categories/{id}` — its channels become standalone.

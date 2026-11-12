@@ -729,6 +729,79 @@ pub struct SetChannelCategoryRequest {
     pub category_id: Option<ChannelId>,
 }
 
+/// 2026-11-11: `POST /api/admin/channels/{id}` — edit a channel (Admin and Dono). Every field is
+/// optional: only what is present changes. `name` follows the same rules as at creation
+/// ([`CHANNEL_NAME_MAX`]); `topic` is the text channel's description (Discord's "Tópico", at most
+/// [`CHANNEL_TOPIC_MAX`] characters); `bitrate` (bits per second) and `user_limit` (0 = unlimited)
+/// only mean something on a voice channel and are ignored on a text one. Answer: [`OkResponse`].
+/// `403` not an admin, `404` unknown channel, `400` an empty name or an out-of-range value.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct EditChannelRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_limit: Option<i32>,
+}
+
+/// A channel's topic: 0 to this many characters.
+pub const CHANNEL_TOPIC_MAX: usize = 1024;
+
+/// 2026-11-11: `PUT /api/me/activity` — "I am playing `name`" (the game detection). The hub
+/// stamps `started_at_ms` itself the first time it sees this name, so every viewer reads the same
+/// clock; the body carries no timestamp. Answer: [`OkResponse`]. `DELETE /api/me/activity` clears
+/// it (leaving the game). The activity is ephemeral — never persisted, gone with the connection —
+/// and is announced to everybody through [`ServerEvent::PresenceChanged`], but only when the name
+/// actually changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetActivityRequest {
+    /// The game's display name, at most [`ACTIVITY_NAME_MAX`] characters.
+    pub name: String,
+}
+
+/// A game's name: 1 to this many characters.
+pub const ACTIVITY_NAME_MAX: usize = 128;
+
+/// One entry of [`StructureReorderRequest::top`]: a category or a standalone channel, and where it
+/// now sits in the sidebar's single top-level order (Discord's one `position` sequence per guild:
+/// categories and loose channels share it, and the children of a category order among themselves).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructureItem {
+    pub id: ChannelId,
+    pub position: i32,
+}
+
+/// The new order of the channels inside one category (by [`StructureItem`]-free id list, densest
+/// first: the first id gets the smallest position).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructureGroup {
+    pub category_id: ChannelId,
+    pub ids: Vec<ChannelId>,
+}
+
+/// 2026-11-11: `POST /api/admin/structure` — the whole sidebar order in ONE atomic batch, the way
+/// the Discord client sends its single `PATCH /guilds/{id}/channels`. It replaces the pair
+/// `/channels/reorder` + `/categories/reorder` for the drag-and-drop: those two rewrite their own
+/// list's positions `0..n` and therefore destroy the interleaving between categories and loose
+/// channels (move a loose channel and every category jumps). Here the client sends the complete
+/// state and the hub rewrites it in one transaction, so the interleaving survives by construction.
+///
+/// The request must cover EVERYTHING: `top` holds every category and every standalone channel
+/// exactly once; `groups` holds every channel that lives in a category, each in its category's
+/// list exactly once. A request that misses or repeats an id is a `400` and changes nothing.
+/// Answer: [`OkResponse`]. `403` not an admin. The change goes out at once as `ChannelsChanged` +
+/// `CategoriesChanged`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct StructureReorderRequest {
+    /// Categories and standalone channels, interleaved, in the new top-level order.
+    pub top: Vec<StructureItem>,
+    /// The channels inside each category (a category with no channels may be omitted).
+    pub groups: Vec<StructureGroup>,
+}
+
 /// Channel names: 1 to this many characters.
 pub const CHANNEL_NAME_MAX: usize = 32;
 
@@ -858,6 +931,18 @@ pub struct Channel {
     /// access to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category_id: Option<ChannelId>,
+    /// 2026-11-11: the text channel's topic (Discord's "Tópico"), shown under the header. Empty
+    /// when unset: absent from the JSON (byte-identical to before), ignored by older clients.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub topic: String,
+    /// 2026-11-11: the voice channel's bitrate in bits per second (Discord's default 64000).
+    /// `None` = the hub's default. Same compatibility rules as `topic`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate: Option<i32>,
+    /// 2026-11-11: the voice channel's user limit (0 = unlimited, Discord's semantics).
+    /// `None` = unlimited. Same compatibility rules as `topic`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_limit: Option<i32>,
 }
 
 impl Channel {
@@ -1053,6 +1138,34 @@ pub enum ClientEvent {
 /// has just sent [`ClientEvent::WatchState`] and gets this back knows the hub is too old.
 pub const WATCH_STATE_REJECTED: &str = "invalid event";
 
+/// What a hub knows beyond v1.1 (2026-11-11: "Jogando X" + channel extras + the unified
+/// reorder). Sent in [`ServerEvent::Ready`]; absent from an older hub's JSON, and an older
+/// client ignores it. Each flag is skipped when false, so a hub that only knows part of this
+/// sends just what it has — like [`ChatFeatures::private_channels`] — and `#[serde(default)]`
+/// reads the missing ones back as `false`, exactly like that one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerFeatures {
+    /// The hub accepts `PUT`/`DELETE /api/me/activity` and announces
+    /// [`ServerEvent::PresenceChanged`]'s `activity`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub activity: bool,
+    /// Channels carry `topic`/`bitrate`/`user_limit` and `POST /api/admin/channels/{id}` edits
+    /// them.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub channel_extras: bool,
+    /// `POST /api/admin/structure` reorders categories and channels in one atomic batch (the
+    /// sidebar's drag-and-drop).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub structure_reorder: bool,
+}
+
+impl ServerFeatures {
+    /// Everything this version knows.
+    pub const ALL: ServerFeatures =
+        ServerFeatures { activity: true, channel_extras: true, structure_reorder: true };
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
@@ -1080,6 +1193,10 @@ pub enum ServerEvent {
         /// sections in the sidebar. An older client logs and skips it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         categories: Option<Vec<ChannelCategory>>,
+        /// 2026-11-11: what this hub knows beyond v1.1 (absent: an older hub). An older client
+        /// ignores it and keeps the v1.1 behaviour.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        features: Option<ServerFeatures>,
     },
     MessageCreated { message: Message },
     UserOnline { user: User },
@@ -1138,6 +1255,11 @@ pub enum ServerEvent {
         presence: Presence,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<CustomStatus>,
+        /// 2026-11-11: what this person is playing ("Jogando X" — the game detection). Absent
+        /// when nothing is being played (or an older hub/app: ignored by both). Ephemeral: gone
+        /// when the connection dies, never persisted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        activity: Option<Activity>,
     },
     // ---- reactions (v0.8, see `chat.rs`), no protocol bump (older clients log and skip them)
     /// `user_id` put `emoji` on a channel message (`added`) or took it off. To everybody who may
@@ -1242,7 +1364,7 @@ mod tests {
         let ev = ServerEvent::VoiceStateChanged { member: m.clone() };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(matches!(serde_json::from_str::<v020::ServerEvent>(&json), Ok(v020::ServerEvent::VoiceStateChanged { .. })));
-        let ready = ServerEvent::Ready { user: user(1), channels: vec![], online: vec![user(1)], voice: vec![m], account: None, chat: None, server_id: None, custom_roles: None, categories: None };
+        let ready = ServerEvent::Ready { user: user(1), channels: vec![], online: vec![user(1)], voice: vec![m], account: None, chat: None, server_id: None, custom_roles: None, categories: None, features: None };
         let json = serde_json::to_string(&ready).unwrap();
         assert!(matches!(serde_json::from_str::<v020::ServerEvent>(&json), Ok(v020::ServerEvent::Ready { .. })));
     }
@@ -1251,6 +1373,37 @@ mod tests {
     fn nobody_watching_serialises_exactly_as_before() {
         let m = VoiceMember { user: user(3), channel_id: None, muted: false, deafened: false, streaming: false, watching: vec![], camera: false, server_muted: false, audio_only: false };
         assert!(!serde_json::to_string(&m).unwrap().contains("watching"));
+    }
+
+    /// `ServerFeatures` is skipped flag by flag, so a hub that knows only part of it sends a partial
+    /// object: every missing flag has to read back as `false`, not fail the whole event (which is
+    /// what a plain derive would do, and would cost the app its `Ready`).
+    #[test]
+    fn a_partial_features_object_reads_the_missing_flags_as_off() {
+        assert_eq!(serde_json::to_string(&ServerFeatures::ALL).unwrap(), r#"{"activity":true,"channel_extras":true,"structure_reorder":true}"#);
+        assert_eq!(serde_json::to_string(&ServerFeatures { activity: true, ..Default::default() }).unwrap(), r#"{"activity":true}"#);
+        assert_eq!(serde_json::to_string(&ServerFeatures::default()).unwrap(), "{}", "nothing set: nothing sent");
+        assert_eq!(serde_json::from_str::<ServerFeatures>(r#"{"activity":true}"#).unwrap(), ServerFeatures { activity: true, channel_extras: false, structure_reorder: false });
+        assert_eq!(serde_json::from_str::<ServerFeatures>("{}").unwrap(), ServerFeatures::default());
+        // ...and inside the event an older hub's `Ready` does not carry: absent means "no features".
+        let ready = ServerEvent::Ready {
+            user: user(1),
+            channels: vec![],
+            online: vec![],
+            voice: vec![],
+            account: None,
+            chat: None,
+            server_id: None,
+            custom_roles: None,
+            categories: None,
+            features: None,
+        };
+        let json = serde_json::to_string(&ready).unwrap();
+        assert!(!json.contains("features"), "{json}");
+        assert!(matches!(serde_json::from_str::<ServerEvent>(&json), Ok(ServerEvent::Ready { features: None, .. })));
+        // A hub that knows one flag: the app reads the rest as off and keeps the v1.1 behaviour.
+        let one = r#"{"type":"ready","user":{"id":1,"username":"a"},"channels":[],"online":[],"voice":[],"features":{"activity":true}}"#;
+        assert!(matches!(serde_json::from_str::<ServerEvent>(one), Ok(ServerEvent::Ready { features: Some(f), .. }) if f == ServerFeatures { activity: true, ..Default::default() }));
     }
 
     #[test]
@@ -1468,6 +1621,7 @@ mod tests {
             server_id: Some("0123456789abcdef0123456789abcdef".into()),
             custom_roles: None,
             categories: None,
+            features: None,
         };
         assert!(matches!(serde_json::from_str::<v041::ServerEvent>(&serde_json::to_string(&ready).unwrap()), Ok(v041::ServerEvent::Ready { .. })));
         let msg = Message { id: MessageId(1), channel_id: ChannelId(1), author: admin.clone(), content: "oi".into(), created_at_ms: 5, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] };
@@ -1725,7 +1879,7 @@ mod tests {
         assert_eq!((old.user, old.channel_id, old.streaming), (user(4), Some(ChannelId(5)), true));
         let ev = serde_json::to_string(&ServerEvent::VoiceStateChanged { member: m.clone() }).unwrap();
         assert!(matches!(serde_json::from_str::<v050::ServerEvent>(&ev), Ok(v050::ServerEvent::VoiceStateChanged { .. })));
-        let ready = serde_json::to_string(&ServerEvent::Ready { user: user(4), channels: vec![], online: vec![user(4)], voice: vec![m], account: None, chat: None, server_id: None, custom_roles: None, categories: None }).unwrap();
+        let ready = serde_json::to_string(&ServerEvent::Ready { user: user(4), channels: vec![], online: vec![user(4)], voice: vec![m], account: None, chat: None, server_id: None, custom_roles: None, categories: None, features: None }).unwrap();
         assert!(matches!(serde_json::from_str::<v050::ServerEvent>(&ready), Ok(v050::ServerEvent::Ready { voice, .. }) if voice.len() == 1));
     }
 
@@ -1806,7 +1960,7 @@ mod tests {
     }
 
     fn channel(id: i64, private: Option<PrivateAccess>) -> Channel {
-        Channel { id: ChannelId(id), name: format!("c{id}"), kind: ChannelKind::Text, position: id as i32, private, category_id: None }
+        Channel { id: ChannelId(id), name: format!("c{id}"), kind: ChannelKind::Text, position: id as i32, private, category_id: None, topic: String::new(), bitrate: None, user_limit: None }
     }
 
     #[test]
@@ -1835,7 +1989,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Channel>(&only_staff).unwrap().private, Some(PrivateAccess::default()));
         // Inside the events an old app parses.
         for ev in [
-            ServerEvent::Ready { user: user(1), channels: vec![ch.clone()], online: vec![], voice: vec![], account: None, chat: Some(ChatFeatures::ALL), server_id: None, custom_roles: None, categories: None },
+            ServerEvent::Ready { user: user(1), channels: vec![ch.clone()], online: vec![], voice: vec![], account: None, chat: Some(ChatFeatures::ALL), server_id: None, custom_roles: None, categories: None, features: None },
             ServerEvent::ChannelsChanged { channels: vec![ch.clone(), channel(6, None)] },
         ] {
             let json = serde_json::to_string(&ev).unwrap();

@@ -399,7 +399,7 @@ mod tests {
     use super::*;
 
     fn ch(id: ChannelId, private: Option<PrivateAccess>) -> Channel {
-        Channel { id, name: format!("c{id}"), kind: ChannelKind::Voice, position: id.into_inner() as i32, private, category_id: None }
+        Channel { id, name: format!("c{id}"), kind: ChannelKind::Voice, position: id.into_inner() as i32, private, category_id: None, topic: String::new(), bitrate: None, user_limit: None }
     }
 
     fn rules(list: &[Channel], roles: &[(UserId, Role)]) -> Rules {

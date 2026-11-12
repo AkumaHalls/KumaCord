@@ -39,6 +39,10 @@ pub struct PresenceEntry {
     /// The app's idle detection set "away" over `Online` (not persisted: a new connection starts clean).
     pub auto_away: bool,
     pub status: Option<CustomStatus>,
+    /// 2026-11-11: what the person is playing ("Jogando X", the game detection). Like `auto_away`
+    /// it is ephemeral — never persisted, gone with the last connection — but unlike it the hub
+    /// stamps [`Activity::started_at_ms`] itself, so every viewer reads the same clock.
+    pub activity: Option<Activity>,
 }
 
 impl PresenceEntry {
@@ -53,11 +57,16 @@ impl PresenceEntry {
 
     /// Plain "online, no status": nothing worth telling a client about.
     pub fn is_default(&self) -> bool {
-        self.effective() == Presence::Online && self.status.is_none()
+        self.effective() == Presence::Online && self.status.is_none() && self.activity.is_none()
     }
 
     pub fn event(&self, user_id: UserId) -> ServerEvent {
-        ServerEvent::PresenceChanged { user_id, presence: self.effective(), status: self.status.clone() }
+        ServerEvent::PresenceChanged {
+            user_id,
+            presence: self.effective(),
+            status: self.status.clone(),
+            activity: self.activity.clone(),
+        }
     }
 }
 
@@ -100,6 +109,10 @@ pub struct ProfileState {
     pub edits: RateWindow,
     /// Presence changes (the app's idle detection makes a few).
     pub presence: RateWindow,
+    /// "Jogando X" changes (2026-11-11). Generous on purpose: the app sends at most one per game
+    /// change and only when the name actually changed, so a real client never sees this; it is here
+    /// so a modified or broken one cannot fan an event out to the whole server in a tight loop.
+    pub activity: RateWindow,
 }
 
 impl Default for ProfileState {
@@ -107,9 +120,15 @@ impl Default for ProfileState {
         ProfileState {
             edits: RateWindow::new(PROFILE_RATE_LIMIT, Duration::from_secs(PROFILE_RATE_WINDOW_SECS)),
             presence: RateWindow::new(PRESENCE_RATE_LIMIT, Duration::from_secs(PRESENCE_RATE_WINDOW_SECS)),
+            activity: RateWindow::new(ACTIVITY_RATE_LIMIT, Duration::from_secs(ACTIVITY_RATE_WINDOW_SECS)),
         }
     }
 }
+
+/// At most this many "Jogando X" changes per person...
+pub const ACTIVITY_RATE_LIMIT: usize = 30;
+/// ...in this many seconds (the app sends at most one per ~5 s, and only on change).
+pub const ACTIVITY_RATE_WINDOW_SECS: u64 = 60;
 
 fn too_fast(wait: Duration, what: &str) -> ApiErr {
     let secs = wait.as_secs_f64().ceil().max(1.0) as u64;
@@ -166,9 +185,16 @@ pub fn load(conn: &Connection, user_id: UserId) -> rusqlite::Result<ProfileRow> 
 }
 
 /// What a connecting person starts with: their stored presence and a status that has not expired.
+/// The activity is never persisted (it dies with the connection), so a connecting person starts
+/// with none — the app re-announces the game it detects running.
 pub fn load_entry(conn: &Connection, user_id: UserId, now: i64) -> rusqlite::Result<PresenceEntry> {
     let row = load(conn, user_id)?;
-    Ok(PresenceEntry { stored: row.presence, auto_away: false, status: row.status.filter(|s| s.live(now).is_some()) })
+    Ok(PresenceEntry {
+        stored: row.presence,
+        auto_away: false,
+        status: row.status.filter(|s| s.live(now).is_some()),
+        activity: None,
+    })
 }
 
 fn ensure_row(conn: &Connection, user_id: UserId) -> rusqlite::Result<()> {
@@ -371,6 +397,47 @@ pub async fn delete_status(State(s): State<AppState>, me: Authed) -> ApiResult<S
     store_status(&s, &me, None).await
 }
 
+/// The game's name, the same shape of check as a channel's: 1 to [`ACTIVITY_NAME_MAX`]
+/// characters, trimmed, no control characters (it is one line under a name in the member list).
+fn check_activity_name(name: &str) -> Result<String, ApiErr> {
+    let name = name.trim();
+    let n = name.chars().count();
+    if !(1..=ACTIVITY_NAME_MAX).contains(&n) || name.chars().any(char::is_control) {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, format!("activity name must be 1-{ACTIVITY_NAME_MAX} characters")));
+    }
+    Ok(name.to_string())
+}
+
+/// `PUT /api/me/activity` (2026-11-11): "I am playing this". The hub stamps
+/// [`Activity::started_at_ms`] itself the first time it sees the name (the body carries no
+/// timestamp, so every viewer reads the same clock) and announces it to everybody through
+/// [`ServerEvent::PresenceChanged`] — but only when the name actually changes, and never to others
+/// about an invisible person (their own connections are told, like every other presence change).
+/// The activity is ephemeral: it is never persisted and dies with the last connection.
+async fn store_activity(s: &AppState, me: &Authed, name: Option<String>) -> ApiResult<OkResponse> {
+    if let Err(wait) = s.profiles.activity.allow(me.user.id, Instant::now()) {
+        tracing::warn!(user = %me.user.username, "activity change refused: rate limit");
+        return Err(too_fast(wait, "activity"));
+    }
+    let changed = name.is_some() || s.presence_entry(me.user.id).is_some_and(|e| e.activity.is_some());
+    s.set_activity(me.user.id, name.clone());
+    if changed {
+        tracing::info!(user = %me.user.username, playing = name.as_deref().unwrap_or(""), "activity");
+    }
+    Ok(Json(OkResponse { ok: true }))
+}
+
+pub async fn put_activity(State(s): State<AppState>, me: Authed, body: Result<Json<SetActivityRequest>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    let name = check_activity_name(&req.name)?;
+    store_activity(&s, &me, Some(name)).await
+}
+
+/// `DELETE /api/me/activity`: the game is closed. Announceced only when there was one.
+pub async fn delete_activity(State(s): State<AppState>, me: Authed) -> ApiResult<OkResponse> {
+    store_activity(&s, &me, None).await
+}
+
 fn excerpt(text: &str) -> String {
     let t: String = text.chars().take(80).map(|c| if c.is_control() { ' ' } else { c }).collect();
     if text.chars().count() > 80 { format!("{t}...") } else { t }
@@ -440,6 +507,23 @@ mod tests {
         assert_eq!(e.effective(), Presence::Invisible);
         e = PresenceEntry { status: Some(CustomStatus { emoji: "🎮".into(), ..Default::default() }), ..Default::default() };
         assert!(!e.is_default());
+        // A game being played is news too (the app shows "Jogando X").
+        e = PresenceEntry { activity: Some(Activity { name: "CS2".into(), started_at_ms: 1 }), ..Default::default() };
+        assert!(!e.is_default());
+        assert!(matches!(&e.event(UserId(1)), ServerEvent::PresenceChanged { user_id, presence: Presence::Online, status: None, activity: Some(a) } if *user_id == UserId(1) && a.name == "CS2" && a.started_at_ms == 1));
+        // ...and it goes away with the entry.
+        e.activity = None;
+        assert!(e.is_default());
+        assert!(matches!(e.event(UserId(2)), ServerEvent::PresenceChanged { user_id: UserId(2), presence: Presence::Online, status: None, activity: None }));
+    }
+
+    #[test]
+    fn activity_names_are_checked() {
+        assert_eq!(check_activity_name("  CS2  ").ok().as_deref(), Some("CS2"));
+        for bad in ["", "   ", &"x".repeat(ACTIVITY_NAME_MAX + 1), "a\u{7}b"] {
+            assert!(check_activity_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(check_activity_name(&"x".repeat(ACTIVITY_NAME_MAX)).is_ok());
     }
 
     #[test]

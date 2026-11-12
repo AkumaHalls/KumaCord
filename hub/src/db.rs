@@ -40,6 +40,12 @@
 //! one exists `channels` holds a guard row that every older hub fails to read at start (its
 //! `position` is text): it refuses to start instead. Without private channels the guard is gone
 //! and older hubs run on the file as before. Every query here skips the guard (`id > 0`).
+//!
+//! Channel extras (2026-11-11: topic, bitrate, user limit) need no version number either, for the
+//! same reason as the categories below: three columns on `channels` with defaults, each checked
+//! before it is added, so the migration is repeatable and a v1.2 hub still runs on the file (its
+//! `INSERT INTO channels` names its columns and gets the defaults, and its `Channel` rows simply
+//! have no topic and no bitrate).
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -249,6 +255,46 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     }
     if !has_column(&tx, "channels", "category_id")? {
         tx.execute_batch("ALTER TABLE channels ADD COLUMN category_id INTEGER REFERENCES categories(id)")?;
+    }
+    // 2026-11-11: the channel extras (Discord's topic, bitrate and user limit). Purely additive,
+    // like `category_id` above: an older hub's rows read back with an empty topic and no bitrate.
+    for (column, decl) in [
+        ("topic", "TEXT NOT NULL DEFAULT ''"),
+        ("bitrate", "INTEGER"),
+        ("user_limit", "INTEGER"),
+    ] {
+        if !has_column(&tx, "channels", column)? {
+            tx.execute_batch(&format!("ALTER TABLE channels ADD COLUMN {column} {decl}"))?;
+        }
+    }
+    // 2026-11-11: a category and a channel must never carry the same id. The unified structure
+    // reorder names them by id alone — one `top` list holding a category and a loose channel side by
+    // side — so an id has to mean exactly one row of one table. v1.1 minted the two tables from
+    // separate counters, so an existing server's first category shares its id with its first channel;
+    // move every category above every channel, once. Additive and idempotent (afterwards no category
+    // id is at or below a channel's, so a second run finds nothing to do), and from then on
+    // `ids::insert_with` mints the two tables from one shared counter.
+    //
+    // Compatibility: category ids reach the apps (the sidebar rows, `channels.category_id`), so this
+    // renumbers them once, at the first start of this hub — an older hub running against the same
+    // database in between would just see the new ids. Nothing else stores a category id: messages,
+    // the audit log and the voice rooms only ever name channels and users.
+    let top_channel_id: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM channels WHERE id > 0", [], |r| r.get(0))?;
+    let collides: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM categories WHERE id <= ?1)", [top_channel_id], |r| r.get(0))?;
+    if collides {
+        let shift = top_channel_id + 1;
+        // `channels.category_id` references `categories(id)` with SQLite's default NO ACTION, so a
+        // parent key cannot be moved while children point at it. Deferring pushes every foreign key
+        // check to the COMMIT, by which point parents and children have moved together. (The pragma
+        // switches itself back off at COMMIT, so nothing after this runs deferred.)
+        tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
+        tx.execute("UPDATE categories SET id = id + ?1", [shift])?;
+        tx.execute("UPDATE channels SET category_id = category_id + ?1 WHERE category_id IS NOT NULL", [shift])?;
+        let top_category_id: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM categories", [], |r| r.get(0))?;
+        // `migrate` runs before `ids::init`, so the mark table may not be there yet.
+        crate::ids::ensure_table(&tx)?;
+        crate::ids::raise(&tx, crate::ids::Seq::Categories, top_category_id)?;
+        tracing::info!(shift, "category ids moved above the channel ids");
     }
     if version < SCHEMA_VERSION {
         tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
@@ -567,7 +613,7 @@ pub fn server_muted_ids(conn: &Connection) -> rusqlite::Result<Vec<UserId>> {
 /// Every channel (with its access list when private, v0.9), in order. `id > 0` skips the
 /// downgrade guard row (`access.rs`), here and in every query on `channels`.
 pub fn list_channels(conn: &Connection) -> rusqlite::Result<Vec<Channel>> {
-    let mut st = conn.prepare("SELECT id, name, kind, position, category_id FROM channels WHERE id > 0 ORDER BY position, id")?;
+    let mut st = conn.prepare("SELECT id, name, kind, position, category_id, topic, bitrate, user_limit FROM channels WHERE id > 0 ORDER BY position, id")?;
     let rows = st.query_map([], |r| {
         let kind: String = r.get(2)?;
         Ok(Channel {
@@ -577,6 +623,9 @@ pub fn list_channels(conn: &Connection) -> rusqlite::Result<Vec<Channel>> {
             position: r.get(3)?,
             private: None,
             category_id: r.get(4)?,
+            topic: r.get(5)?,
+            bitrate: r.get(6)?,
+            user_limit: r.get(7)?,
         })
     })?;
     let mut list = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -592,7 +641,41 @@ pub fn create_channel(conn: &Connection, name: &str, kind: ChannelKind) -> rusql
         conn.execute("INSERT INTO channels (id, name, kind, position) VALUES (?, ?, ?, ?)", params![id, name, k, pos])?;
         Ok(id)
     })?;
-    Ok(Channel { id: ChannelId(id), name: name.to_string(), kind, position: pos, private: None, category_id: None })
+    Ok(Channel { id: ChannelId(id), name: name.to_string(), kind, position: pos, private: None, category_id: None, topic: String::new(), bitrate: None, user_limit: None })
+}
+
+/// 2026-11-11: edit a channel — its name, its topic and (on a voice channel) its bitrate and user
+/// limit. Every field is optional: `None` leaves it alone. A field that is present is written with
+/// that value (writing `NULL` back is not expressible on the wire, see `EditChannelRequest`), so
+/// a caller that wants the hub's defaults simply never sends the field. One transaction, so a
+/// channel is never half-edited. `false`: no such channel.
+pub fn update_channel(
+    conn: &mut Connection,
+    id: i64,
+    name: Option<&str>,
+    topic: Option<&str>,
+    bitrate: Option<i32>,
+    user_limit: Option<i32>,
+) -> rusqlite::Result<bool> {
+    let tx = conn.transaction()?;
+    let known = tx.query_row("SELECT 1 FROM channels WHERE id = ?1 AND id > 0", [id], |_| Ok(())).optional()?.is_some();
+    if !known {
+        return Ok(false);
+    }
+    if let Some(name) = name {
+        tx.execute("UPDATE channels SET name = ?1 WHERE id = ?2", params![name, id])?;
+    }
+    if let Some(topic) = topic {
+        tx.execute("UPDATE channels SET topic = ?1 WHERE id = ?2", params![topic, id])?;
+    }
+    if let Some(bitrate) = bitrate {
+        tx.execute("UPDATE channels SET bitrate = ?1 WHERE id = ?2", params![bitrate, id])?;
+    }
+    if let Some(user_limit) = user_limit {
+        tx.execute("UPDATE channels SET user_limit = ?1 WHERE id = ?2", params![user_limit, id])?;
+    }
+    tx.commit()?;
+    Ok(true)
 }
 
 pub fn rename_channel(conn: &Connection, id: i64, name: &str) -> rusqlite::Result<bool> {
@@ -936,6 +1019,37 @@ pub fn reorder_categories(conn: &mut Connection, ids: &[i64]) -> rusqlite::Resul
     tx.commit()
 }
 
+/// 2026-11-11: the whole sidebar order in ONE transaction — the single `position` sequence the
+/// categories and the standalone channels share, plus the order inside each category. This is what
+/// [`reorder_channels`] + [`reorder_categories`] cannot do: each of them rewrites its own list's
+/// positions `0..n`, so moving one loose channel renumbered every category and destroyed the
+/// interleaving. Here the caller sends the complete state (already validated against the current
+/// one) and every row is rewritten in the same transaction, so the interleaving survives by
+/// construction: `top` gets `0..n` in the given order and each group's channels get `0..n`.
+///
+/// A row that is not there to be moved is skipped (the caller validated the lists), and the
+/// downgrade guard row is never touched (`id > 0`).
+pub fn reorder_structure(conn: &mut Connection, top: &[i64], groups: &[(i64, Vec<i64>)]) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    for (pos, id) in top.iter().enumerate() {
+        let category = tx.query_row("SELECT 1 FROM categories WHERE id = ?1", [id], |_| Ok(())).optional()?.is_some();
+        if category {
+            tx.execute("UPDATE categories SET position = ?1 WHERE id = ?2", params![pos as i64, id])?;
+        } else {
+            tx.execute("UPDATE channels SET position = ?1 WHERE id = ?2 AND id > 0", params![pos as i64, id])?;
+        }
+    }
+    for (category, ids) in groups {
+        for (pos, id) in ids.iter().enumerate() {
+            tx.execute(
+                "UPDATE channels SET position = ?1 WHERE id = ?2 AND id > 0 AND category_id = ?3",
+                params![pos as i64, id, category],
+            )?;
+        }
+    }
+    tx.commit()
+}
+
 /// v1.1: put a channel in a category (`None`: standalone again). `false`: no such channel.
 /// The caller checked that `category` exists when `Some`.
 pub fn set_channel_category(conn: &Connection, channel: ChannelId, category: Option<i64>) -> rusqlite::Result<bool> {
@@ -1128,6 +1242,58 @@ mod tests {
         db.call_now(|c| {
             assert!(user_for_session(c, "h")?.is_some(), "Ana has no personal password: kept");
             assert!(user_for_session(c, "d")?.is_none(), "dono has one: logs in again");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// A v1.1 database, whose categories were minted from their own counter: the first category
+    /// carries the first channel's id. Opening it with this hub moves the categories clear.
+    #[test]
+    fn a_category_and_a_channel_never_carry_the_same_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("voxhub.db");
+        v041_db(&path);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL DEFAULT '#5865F2', position INTEGER NOT NULL DEFAULT 0);
+             ALTER TABLE channels ADD COLUMN category_id INTEGER REFERENCES categories(id);
+             INSERT INTO channels (name, kind, position) VALUES ('Sala 2', 'voice', 2);
+             INSERT INTO categories (id, name, position) VALUES (1, 'jogos', 0), (2, 'música', 1);
+             UPDATE channels SET category_id = 1 WHERE name = 'Sala 1';
+             UPDATE channels SET category_id = 2 WHERE name = 'Sala 2';",
+        )
+        .unwrap();
+        drop(conn);
+        let db = Db::open(&path).unwrap();
+        db.call_now(|c| {
+            let channels: Vec<(i64, String)> = c
+                .prepare("SELECT id, name FROM channels WHERE id > 0 ORDER BY position")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            let categories: Vec<(i64, String)> =
+                c.prepare("SELECT id, name FROM categories ORDER BY position")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+            for (id, _) in &categories {
+                assert!(!channels.iter().any(|(cid, _)| cid == id), "category {id} shares its id with a channel");
+            }
+            assert_eq!(categories, vec![(5, "jogos".to_string()), (6, "música".to_string())], "moved above every channel, order and names kept");
+            let in_jogos: i64 = c.query_row("SELECT category_id FROM channels WHERE name = 'Sala 1'", [], |r| r.get(0))?;
+            assert_eq!(in_jogos, 5, "the channels followed their category");
+            let in_musica: i64 = c.query_row("SELECT category_id FROM channels WHERE name = 'Sala 2'", [], |r| r.get(0))?;
+            assert_eq!(in_musica, 6);
+            assert_eq!(c.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get::<_, i64>(0))?, 0, "nothing dangles");
+            // The new category keeps out of the channel's way too.
+            let next = create_category(c, " competitivo", "#5865F2", 2)?;
+            assert!(next.id.0 > 6, "id {:?} is above every category and channel", next.id);
+            Ok(())
+        })
+        .unwrap();
+        // Idempotent: a second start moves nothing.
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        db.call_now(|c| {
+            let ids: Vec<i64> = c.prepare("SELECT id FROM categories ORDER BY position")?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            assert_eq!(ids, vec![5, 6, 7]);
             Ok(())
         })
         .unwrap();

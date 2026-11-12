@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tokio::sync::{broadcast, watch};
-use vox_proto::{Account, Channel, ChannelId, ChannelKind, CustomStatus, Presence, ServerEvent, User, UserId, VoiceMember};
+use vox_proto::{Account, Activity, Channel, ChannelId, ChannelKind, CustomStatus, Presence, ServerEvent, User, UserId, VoiceMember};
 
 use crate::access;
 use crate::auth::Throttle;
@@ -390,6 +390,10 @@ impl Shared {
             server_id: Some(self.server_id.clone()),
             custom_roles: Some(g.custom_roles.clone()),
             categories: Some(g.categories.clone()),
+            // 2026-11-11: everything beyond v1.1 is in (activity, channel extras, the unified
+            // reorder). An older client ignores the field and keeps the v1.1 behaviour; a newer
+            // client on an older hub sees it absent and hides what the hub cannot do.
+            features: Some(vox_proto::ServerFeatures::ALL),
         };
         (ready, rx)
     }
@@ -511,6 +515,23 @@ impl Shared {
             return;
         }
         e.status = status;
+        let before = e.effective();
+        self.announce_presence(&g, user_id, before);
+    }
+
+    /// 2026-11-11: set (or clear) what a connected person is playing ("Jogando X"). Same shape as
+    /// [`Shared::set_status`], with one rule of its own: the same name again is a no-op (nothing is
+    /// announced — the app may re-send it, a burst must not fan an event out each time), and a
+    /// different name re-stamps [`Activity::started_at_ms`] with the hub's clock, so every viewer
+    /// reads when *this* game started, not when the app first noticed it. Ephemeral: the entry dies
+    /// with the connection (`disconnect`), exactly like the auto-away and the custom status.
+    pub fn set_activity(&self, user_id: UserId, name: Option<String>) {
+        let mut g = self.lock();
+        let Some(e) = g.presence.get_mut(&user_id) else { return };
+        if e.activity.as_ref().map(|a| a.name.as_str()) == name.as_deref() {
+            return;
+        }
+        e.activity = name.map(|name| Activity { name, started_at_ms: crate::util::now_ms() });
         let before = e.effective();
         self.announce_presence(&g, user_id, before);
     }

@@ -135,6 +135,19 @@ impl CustomStatus {
     }
 }
 
+/// What somebody is playing right now ("Jogando X" — the game detection of 2026-11-11): the
+/// detected game's name and when this person started playing it. Ephemeral like the auto-away
+/// of [`crate::PresenceEntry`] on the hub: never persisted, gone when the connection dies, and
+/// re-sent by the app only when the detected game actually changes. `name` comes from the
+/// app's own catalogue (the executable's basename), so the hub only carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Activity {
+    /// The game's display name ("Counter-Strike 2", "Minecraft"...).
+    pub name: String,
+    /// Unix epoch milliseconds (the hub's clock) when this game was first seen running.
+    pub started_at_ms: i64,
+}
+
 /// One person's full profile, `GET /api/users/{id}/profile`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserProfile {
@@ -566,7 +579,7 @@ mod tests {
         for ev in [
             ServerEvent::UserOnline { user: u.clone() },
             ServerEvent::UserUpdated { user: u.clone() },
-            ServerEvent::Ready { user: u.clone(), channels: vec![], online: vec![u.clone()], voice: vec![], account: None, chat: None, server_id: None, custom_roles: None, categories: None },
+            ServerEvent::Ready { user: u.clone(), channels: vec![], online: vec![u.clone()], voice: vec![], account: None, chat: None, server_id: None, custom_roles: None, categories: None, features: None },
             ServerEvent::MessageCreated { message: crate::Message { id: MessageId(1), channel_id: ChannelId(2), author: u.clone(), content: "oi".into(), created_at_ms: 3, attachments: vec![], mentions: vec![], mention_everyone: false, reply: None, reactions: vec![] } },
         ] {
             let json = serde_json::to_string(&ev).unwrap();
@@ -576,21 +589,28 @@ mod tests {
 
     #[test]
     fn presence_changed_is_unknown_to_v052_clients_which_skip_it() {
-        let ev = ServerEvent::PresenceChanged { user_id: UserId(4), presence: Presence::Dnd, status: Some(CustomStatus { text: "x".into(), ..Default::default() }) };
+        let ev = ServerEvent::PresenceChanged { user_id: UserId(4), presence: Presence::Dnd, status: Some(CustomStatus { text: "x".into(), ..Default::default() }), activity: None };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(serde_json::from_str::<v052::ServerEvent>(&json).is_err());
         assert!(serde_json::from_str::<ServerEvent>(&json).is_ok());
         // Every other event keeps its shape: Ready has no presence field at all.
-        let ready = ServerEvent::Ready { user: User::new(UserId(1), "a"), channels: vec![], online: vec![], voice: vec![], account: None, chat: None, server_id: None, custom_roles: None, categories: None };
+        let ready = ServerEvent::Ready { user: User::new(UserId(1), "a"), channels: vec![], online: vec![], voice: vec![], account: None, chat: None, server_id: None, custom_roles: None, categories: None, features: None };
         assert!(!serde_json::to_string(&ready).unwrap().contains("presence"));
     }
 
     #[test]
     fn presence_changed_wire_shape() {
-        let ev = ServerEvent::PresenceChanged { user_id: UserId(4), presence: Presence::Away, status: None };
+        let ev = ServerEvent::PresenceChanged { user_id: UserId(4), presence: Presence::Away, status: None, activity: None };
         assert_eq!(serde_json::to_string(&ev).unwrap(), r#"{"type":"presence_changed","user_id":4,"presence":"away"}"#);
-        let with = ServerEvent::PresenceChanged { user_id: UserId(4), presence: Presence::Online, status: Some(CustomStatus { emoji: "🎮".into(), ..Default::default() }) };
-        let back: ServerEvent = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
-        assert!(matches!(back, ServerEvent::PresenceChanged { user_id: UserId(4), status: Some(s), .. } if s.emoji == "🎮"));
+        let with = ServerEvent::PresenceChanged {
+            user_id: UserId(4),
+            presence: Presence::Online,
+            status: Some(CustomStatus { emoji: "🎮".into(), ..Default::default() }),
+            activity: Some(Activity { name: "CS2".into(), started_at_ms: 12 }),
+        };
+        let json = serde_json::to_string(&with).unwrap();
+        assert!(json.contains(r#""activity":{"name":"CS2","started_at_ms":12}"#), "{json}");
+        let back: ServerEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ServerEvent::PresenceChanged { user_id: UserId(4), status: Some(s), activity: Some(a), .. } if s.emoji == "🎮" && a.name == "CS2" && a.started_at_ms == 12));
     }
 }

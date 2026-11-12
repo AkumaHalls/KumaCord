@@ -742,6 +742,102 @@ async fn channel_management() {
     env.server.shutdown().await;
 }
 
+/// 2026-11-11: editing a channel — name, topic, bitrate, user limit — in one call, broadcast to
+/// everybody like a rename and written in the log. `bitrate` and `user_limit` only mean something
+/// on a voice channel.
+#[tokio::test]
+async fn editing_a_channel_changes_its_extras_and_tells_everybody() {
+    let env = setup().await;
+    let s = staff(&env).await;
+    let mut w = env.ws(&s.mem).await;
+    w.ready().await;
+    let r = env.post(&s.admin, "/api/admin/channels", json!({"name": "Sala Nova", "kind": "voice"})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let sala: Channel = r.json().await.unwrap();
+    let list = wait_list(&mut w).await;
+    assert!(list.iter().any(|c| c.id == sala.id));
+    let avisos = env.post(&s.admin, "/api/admin/channels", json!({"name": "avisos", "kind": "text"})).await.json::<Channel>().await.unwrap();
+    wait_list(&mut w).await;
+
+    // Who may: not a moderator, not a member; an unknown channel is a 404 whatever the body says.
+    let edit = |id: ChannelId| format!("/api/admin/channels/{id}");
+    assert_eq!(env.status(&s.moder, &edit(sala.id), json!({"name": "x"})).await, StatusCode::FORBIDDEN);
+    assert_eq!(env.status(&s.mem, &edit(sala.id), json!({"name": "x"})).await, StatusCode::FORBIDDEN);
+    assert_eq!(env.status(&s.admin, &edit(ChannelId(9999)), json!({"name": "x"})).await, StatusCode::NOT_FOUND);
+    assert_eq!(env.status(&s.admin, &edit(ChannelId(9999)), json!({})).await, StatusCode::NOT_FOUND);
+
+    // An empty body, a bad name, a bad topic and out-of-range numbers are all 400s that change nothing.
+    for (what, body) in [
+        ("nothing to change", json!({})),
+        ("empty name", json!({"name": "  "})),
+        ("long name", json!({"name": "x".repeat(CHANNEL_NAME_MAX + 1)})),
+        ("name with a control character", json!({"name": "a\u{7}b"})),
+        ("topic too long", json!({"topic": "t".repeat(CHANNEL_TOPIC_MAX + 1)})),
+        ("topic with a newline", json!({"topic": "a\nb"})),
+        ("bitrate too low", json!({"bitrate": 1000})),
+        ("bitrate too high", json!({"bitrate": 400_000})),
+        ("user limit negative", json!({"user_limit": -1})),
+        ("user limit too high", json!({"user_limit": 100})),
+    ] {
+        assert_eq!(env.status(&s.admin, &edit(sala.id), body).await, StatusCode::BAD_REQUEST, "{what}");
+    }
+    let chs = env.channels(&s.mem).await;
+    let untouched = chs.iter().find(|c| c.id == sala.id).unwrap();
+    assert_eq!((untouched.name.as_str(), untouched.topic.as_str(), untouched.bitrate, untouched.user_limit), ("Sala Nova", "", None, None), "a refused edit changed nothing");
+
+    // Everything at once on a voice channel: the answer is ChannelsChanged with the new values.
+    let r = env.post(&s.admin, &edit(sala.id), json!({"name": " Ranked ", "topic": " só os bruxo ", "bitrate": 128000, "user_limit": 5})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.json::<OkResponse>().await.unwrap().ok, true);
+    let list = wait_list(&mut w).await;
+    let edited = list.iter().find(|c| c.id == sala.id).unwrap();
+    assert_eq!((edited.name.as_str(), edited.topic.as_str(), edited.bitrate, edited.user_limit), ("Ranked", "só os bruxo", Some(128000), Some(5)));
+    assert_eq!(env.channels(&s.mem).await, list, "HTTP and the event agree");
+
+    // Only what is sent changes: the topic alone, then a name alone.
+    assert_eq!(env.status(&s.admin, &edit(sala.id), json!({"topic": ""})).await, StatusCode::OK);
+    let list = wait_list(&mut w).await;
+    let edited = list.iter().find(|c| c.id == sala.id).unwrap();
+    assert_eq!((edited.name.as_str(), edited.topic.as_str(), edited.bitrate, edited.user_limit), ("Ranked", "", Some(128000), Some(5)));
+    assert_eq!(env.status(&s.admin, &edit(sala.id), json!({"name": "Casual"})).await, StatusCode::OK);
+    let list = wait_list(&mut w).await;
+    let edited = list.iter().find(|c| c.id == sala.id).unwrap();
+    assert_eq!((edited.name.as_str(), edited.topic.as_str()), ("Casual", ""));
+    // A user limit of 0 is "no limit", not "nobody may enter".
+    assert_eq!(env.status(&s.admin, &edit(sala.id), json!({"user_limit": 0})).await, StatusCode::OK);
+    let list = wait_list(&mut w).await;
+    assert_eq!(list.iter().find(|c| c.id == sala.id).unwrap().user_limit, Some(0));
+
+    // On a text channel the voice-only fields are ignored, not refused and not even checked (an old
+    // client sends them everywhere): an out-of-range one means nothing there.
+    assert_eq!(env.status(&s.admin, &edit(avisos.id), json!({"topic": "regras do servidor", "bitrate": 64000, "user_limit": 3})).await, StatusCode::OK);
+    let list = wait_list(&mut w).await;
+    let edited = list.iter().find(|c| c.id == avisos.id).unwrap();
+    assert_eq!((edited.topic.as_str(), edited.bitrate, edited.user_limit), ("regras do servidor", None, None));
+    assert_eq!(env.status(&s.admin, &edit(avisos.id), json!({"topic": "leia antes", "bitrate": 10, "user_limit": 500})).await, StatusCode::OK);
+    let list = wait_list(&mut w).await;
+    let edited = list.iter().find(|c| c.id == avisos.id).unwrap();
+    assert_eq!((edited.topic.as_str(), edited.bitrate, edited.user_limit), ("leia antes", None, None));
+
+    // The log says what changed, in the same Portuguese as the other channel entries (newest first),
+    // and names the channel as it was called before that edit ("Ranked" once it has been renamed).
+    let log = env.audit(&s.admin).await;
+    let edits: Vec<&str> = log.iter().filter(|e| e.action == AUDIT_CHANNEL_RENAME).map(|e| e.detail.as_str()).collect();
+    assert_eq!(
+        edits,
+        [
+            "avisos (texto): tópico: leia antes",
+            "avisos (texto): tópico: regras do servidor",
+            "Casual (voz): limite: sem limite",
+            "Ranked (voz): nome: Ranked -> Casual",
+            "Ranked (voz): tópico: ",
+            "Sala Nova (voz): nome: Sala Nova -> Ranked, tópico: só os bruxo, bitrate: 128000, limite: 5",
+        ],
+        "newest first, with what changed"
+    );
+    env.server.shutdown().await;
+}
+
 // ---------------------------------------------------------------- compatibility
 
 /// A v0.4.1 client speaks raw JSON with none of the item-12 fields: it logs in as before (open

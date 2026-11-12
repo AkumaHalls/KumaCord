@@ -64,6 +64,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/categories/{id}", post(admin::update_category).delete(admin::delete_category))
         .route("/api/admin/channels/{id}/rename", post(admin::rename_channel))
         .route("/api/admin/channels/{id}/delete", post(admin::delete_channel))
+        // 2026-11-11: edit a channel (topic, bitrate, user limit, name). After the static segments
+        // above it, so "reorder" and friends keep matching themselves and not the id.
+        .route("/api/admin/channels/{id}", post(admin::edit_channel))
+        // 2026-11-11: the whole sidebar order in one atomic batch (categories and channels share
+        // one position sequence). The older pair stays registered above for older apps.
+        .route("/api/admin/structure", post(admin::reorder_structure))
         // private channels (v0.9, `access.rs`)
         .route("/api/admin/channels/{id}/access", post(admin::set_channel_access))
         // profile pictures
@@ -75,6 +81,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/me/profile", put(profile::put_profile))
         .route("/api/me/presence", put(profile::put_presence))
         .route("/api/me/status", put(profile::put_status).delete(profile::delete_status))
+        // 2026-11-11: "Jogando X" (the game detection), ephemeral like the auto-away
+        .route("/api/me/activity", put(profile::put_activity).delete(profile::delete_activity))
         .route("/api/mod/users/{id}/clear-profile", post(profile::clear_profile))
         // soundboard
         .route("/api/sounds", get(sounds::list).post(sounds::upload).layer(DefaultBodyLimit::max(SOUND_MAX_UPLOAD_BYTES + 4096)))

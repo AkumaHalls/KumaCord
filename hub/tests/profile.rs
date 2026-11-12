@@ -370,7 +370,7 @@ async fn presence_and_status_are_broadcast_and_part_of_the_snapshot() {
     let evs = carla_ws.drain(Duration::from_millis(500)).await;
     let ready_at = evs.iter().position(|e| matches!(e, ServerEvent::Ready { .. })).expect("ready");
     for e in &evs[ready_at + 1..] {
-        if let ServerEvent::PresenceChanged { user_id, presence, status } = e {
+        if let ServerEvent::PresenceChanged { user_id, presence, status, activity: _ } = e {
             seen.push((*user_id, *presence, status.as_ref().map(|s| s.text.clone())));
         }
     }
@@ -560,6 +560,125 @@ async fn edits_are_rate_limited_per_person() {
         assert_eq!(env.put(&ana, "/api/me/presence", json!({"presence": p})).await.status(), StatusCode::OK, "{i}");
     }
     assert_eq!(env.put(&ana, "/api/me/presence", json!({"presence": "dnd"})).await.status(), StatusCode::TOO_MANY_REQUESTS);
+    env.server.shutdown().await;
+}
+
+/// The activity ("Jogando X", 2026-11-11): the same ride as a custom status — a
+/// `PresenceChanged` that carries it, to everybody but an invisible person's own connections — with
+/// the hub's own clock on it, the same name again saying nothing, and the whole thing gone with the
+/// session (it is never persisted).
+#[tokio::test]
+async fn an_activity_is_announced_like_a_status_and_dies_with_the_session() {
+    let env = setup().await;
+    let (ana, bia) = (env.who("ana").await, env.who("bia").await);
+    let (mut bia_ws, _) = env.ws_ready(&bia).await;
+    let (ana_ws, _) = env.ws_ready(&ana).await;
+    assert!(bia_ws.quiet_for(Duration::from_millis(200), |e| matches!(e, ServerEvent::PresenceChanged { .. })).await);
+
+    // Setting one announces it to everybody, with the hub's clock on it.
+    let started = voxhub_now();
+    assert_eq!(env.put(&ana, "/api/me/activity", json!({"name": "  CS2  "})).await.status(), StatusCode::OK);
+    let ev = bia_ws.wait_for("activity", |e| matches!(e, ServerEvent::PresenceChanged { user_id, .. } if *user_id == ana.user.id)).await;
+    let ServerEvent::PresenceChanged { activity: Some(first), presence, status, .. } = ev else { panic!("the activity rides on the presence event") };
+    assert_eq!((first.name.as_str(), presence, status), ("CS2", Presence::Online, None));
+    assert!((first.started_at_ms - started).abs() < 5_000, "stamped by the hub: {}", first.started_at_ms);
+
+    // The same name again is not news (the app re-sends it; nothing fans out).
+    assert_eq!(env.put(&ana, "/api/me/activity", json!({"name": "CS2"})).await.status(), StatusCode::OK);
+    assert!(bia_ws.quiet_for(Duration::from_millis(300), |e| matches!(e, ServerEvent::PresenceChanged { .. })).await);
+
+    // A different game is announced again and re-stamped.
+    let started = voxhub_now();
+    assert_eq!(env.put(&ana, "/api/me/activity", json!({"name": "Valorant"})).await.status(), StatusCode::OK);
+    let ev = bia_ws.wait_for("other activity", |e| matches!(e, ServerEvent::PresenceChanged { user_id, .. } if *user_id == ana.user.id)).await;
+    let ServerEvent::PresenceChanged { activity: Some(second), .. } = ev else { panic!() };
+    assert_eq!((second.name.as_str(), second.started_at_ms >= first.started_at_ms), ("Valorant", true));
+    assert!((second.started_at_ms - started).abs() < 5_000, "{}", second.started_at_ms);
+
+    // Somebody who connects afterwards learns it right after Ready.
+    let carla = env.who("carla").await;
+    let mut carla_ws = env.ws(&carla).await;
+    let evs = carla_ws.drain(Duration::from_millis(500)).await;
+    let ready_at = evs.iter().position(|e| matches!(e, ServerEvent::Ready { .. })).expect("ready");
+    assert!(evs[ready_at + 1..].iter().any(|e| matches!(e, ServerEvent::PresenceChanged { user_id, activity: Some(a), .. } if *user_id == ana.user.id && a.name == "Valorant")), "{evs:?}");
+
+    // Leaving the game clears it, and says so once.
+    let r = env.http.delete(env.url("/api/me/activity")).bearer_auth(&ana.token).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let ev = bia_ws.wait_for("activity cleared", |e| matches!(e, ServerEvent::PresenceChanged { user_id, .. } if *user_id == ana.user.id)).await;
+    assert!(matches!(ev, ServerEvent::PresenceChanged { activity: None, .. }), "{ev:?}");
+    // ...and clearing what is not there is silent.
+    let r = env.http.delete(env.url("/api/me/activity")).bearer_auth(&ana.token).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert!(bia_ws.quiet_for(Duration::from_millis(300), |e| matches!(e, ServerEvent::PresenceChanged { .. })).await);
+
+    // It is never persisted: gone with the last connection, so a fresh session has nothing to say.
+    assert_eq!(env.put(&ana, "/api/me/activity", json!({"name": "Minecraft"})).await.status(), StatusCode::OK);
+    bia_ws.wait_for("activity again", |e| matches!(e, ServerEvent::PresenceChanged { user_id, activity: Some(_), .. } if *user_id == ana.user.id)).await;
+    drop(ana_ws);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (_ana_again, _) = env.ws_ready(&ana).await;
+    let dora = env.who("dora").await;
+    let mut dora_ws = env.ws(&dora).await;
+    let evs = dora_ws.drain(Duration::from_millis(500)).await;
+    assert!(evs.iter().all(|e| !matches!(e, ServerEvent::PresenceChanged { user_id, activity: Some(_), .. } if *user_id == ana.user.id)), "{evs:?}");
+    env.server.shutdown().await;
+}
+
+/// An invisible person's activity is private: everybody else was told she left and hears nothing
+/// more, her own connections hear it, and a new snapshot leaves her out entirely.
+#[tokio::test]
+async fn an_invisible_persons_activity_is_not_leaked() {
+    let env = setup().await;
+    let (ana, bia) = (env.who("ana").await, env.who("bia").await);
+    let (mut bia_ws, _) = env.ws_ready(&bia).await;
+    let (mut ana_ws, _) = env.ws_ready(&ana).await;
+    assert_eq!(env.presence(&ana, "invisible", false).await, Presence::Invisible);
+    bia_ws.wait_for("ana offline", |e| matches!(e, ServerEvent::UserOffline { user_id } if *user_id == ana.user.id)).await;
+
+    assert_eq!(env.put(&ana, "/api/me/activity", json!({"name": "escondido"})).await.status(), StatusCode::OK);
+    assert!(bia_ws.quiet_for(Duration::from_millis(400), |e| is_about(e, ana.user.id.into_inner())).await, "nobody but Ana hears about it");
+    // ...while her own connection does.
+    let ev = ana_ws.wait_for("own activity", |e| matches!(e, ServerEvent::PresenceChanged { user_id, activity: Some(_), .. } if *user_id == ana.user.id)).await;
+    let ServerEvent::PresenceChanged { activity: Some(a), .. } = ev else { panic!() };
+    assert_eq!(a.name, "escondido");
+    // A fresh snapshot does not mention her at all.
+    let carla = env.who("carla").await;
+    let mut carla_ws = env.ws(&carla).await;
+    let evs = carla_ws.drain(Duration::from_millis(500)).await;
+    assert!(evs.iter().all(|e| !is_about(e, ana.user.id.into_inner())), "{evs:?}");
+    env.server.shutdown().await;
+}
+
+/// The activity name is validated like a status text, and the PUT has its own generous limit (the
+/// app sends at most one per ~5 s, and only when the game changes).
+#[tokio::test]
+async fn an_activity_name_is_validated_and_rate_limited() {
+    let env = setup().await;
+    let (ana, bia) = (env.who("ana").await, env.who("bia").await);
+    let bad: Vec<(&str, Value)> = vec![
+        ("empty", json!({"name": ""})),
+        ("blank", json!({"name": "   "})),
+        ("too long", json!({"name": "x".repeat(ACTIVITY_NAME_MAX + 1)})),
+        ("with a control character", json!({"name": "a\u{7}b"})),
+        ("with a newline", json!({"name": "a\nb"})),
+    ];
+    for (what, body) in bad {
+        let (status, msg) = error_of(env.put(&ana, "/api/me/activity", body).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: {msg}");
+        assert!(!msg.is_empty(), "{what}");
+    }
+    // Exactly at the limit is fine (and a refused name costs nothing against it).
+    assert_eq!(env.put(&ana, "/api/me/activity", json!({"name": "x".repeat(ACTIVITY_NAME_MAX)})).await.status(), StatusCode::OK);
+    // The window holds `ACTIVITY_RATE_LIMIT` successes: the one above plus these are all of them.
+    for i in 1..voxhub_server::profile::ACTIVITY_RATE_LIMIT {
+        assert_eq!(env.put(&ana, "/api/me/activity", json!({"name": format!("jogo {i}")})).await.status(), StatusCode::OK, "{i}");
+    }
+    let (status, msg) = error_of(env.put(&ana, "/api/me/activity", json!({"name": "demais"})).await).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{msg}");
+    assert!(msg.contains("activity"), "{msg}");
+    // Somebody else is unaffected.
+    assert_eq!(env.put(&bia, "/api/me/activity", json!({"name": "outro jogo"})).await.status(), StatusCode::OK);
     env.server.shutdown().await;
 }
 

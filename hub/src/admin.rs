@@ -710,6 +710,12 @@ fn kind_pt(kind: ChannelKind) -> &'static str {
     }
 }
 
+/// A voice channel's bitrate: Discord's range (8 kbps to 384 kbps).
+const BITRATE_MIN: i32 = 8000;
+const BITRATE_MAX: i32 = 384000;
+/// A voice channel's user limit: 0 = unlimited, at most this many seats.
+const USER_LIMIT_MAX: i32 = 99;
+
 /// Read the channel list again and tell everybody their own view of it; whoever lost access to a
 /// private voice channel is taken out of it at once (v0.9).
 async fn reload_channels(s: &AppState) -> Result<(), ApiErr> {
@@ -791,6 +797,91 @@ pub async fn set_channel_access(State(s): State<AppState>, me: Authed, Path(id):
     let detail = format!("{}: {}", ch.name, crate::access::describe(stored.as_ref(), &names));
     audit(&s, Some(me.user.id), AUDIT_CHANNEL_ACCESS, None, detail).await;
     Ok(ok())
+}
+
+/// `POST /api/admin/channels/{id}` (2026-11-11): edit a channel. Every field of
+/// [`EditChannelRequest`] is optional and only what is present changes; `bitrate` and `user_limit`
+/// only mean something on a voice channel and are silently ignored on a text one (the wire says so,
+/// so an old client that sends them everywhere is not punished). The name follows the same rules as
+/// at creation and the topic is at most [`CHANNEL_TOPIC_MAX`] characters. Answer: [`OkResponse`];
+/// `403` not an admin, `404` unknown channel, `400` an empty name or an out-of-range value. Every
+/// change is in the moderation log and goes out at once as `ChannelsChanged`, exactly like a rename.
+pub async fn edit_channel(State(s): State<AppState>, me: Authed, Path(id): Path<ChannelId>, body: Result<Json<EditChannelRequest>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    can_manage_channels(&me)?;
+    let name = req.name.as_deref().map(check_channel_name).transpose()?;
+    let topic = req.topic.as_deref().map(check_topic).transpose()?;
+    let (bitrate, user_limit) = if let Some(ch) = s.channel(id) {
+        if ch.kind == ChannelKind::Voice { (check_bitrate(req.bitrate)?, check_user_limit(req.user_limit)?) } else { (None, None) }
+    } else {
+        // An unknown channel is a 404 whatever the body says (and before anything is written).
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "channel not found"));
+    };
+    if name.is_none() && topic.is_none() && bitrate.is_none() && user_limit.is_none() {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "nothing to change"));
+    }
+    let Some(old) = s.channel(id) else {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "channel not found"));
+    };
+    let (n, t, b, l) = (name.clone(), topic.clone(), bitrate, user_limit);
+    let updated = s
+        .db
+        .call(move |c| db::update_channel(c, *id, n.as_deref(), t.as_deref(), b, l))
+        .await?;
+    if !updated {
+        return Err(ApiErr::new(StatusCode::NOT_FOUND, "channel not found"));
+    }
+    reload_channels(&s).await?;
+    // The log says what changed, in the same Portuguese the access change uses.
+    let mut parts = Vec::new();
+    if let Some(name) = &name {
+        parts.push(format!("nome: {old} -> {name}", old = old.name));
+    }
+    if let Some(topic) = &topic {
+        parts.push(format!("tópico: {}", excerpt(topic)));
+    }
+    if let Some(bitrate) = bitrate {
+        parts.push(format!("bitrate: {bitrate}"));
+    }
+    if let Some(limit) = user_limit {
+        parts.push(format!("limite: {}", if limit == 0 { "sem limite".to_string() } else { limit.to_string() }));
+    }
+    tracing::info!(channel = %id, "channel edited");
+    audit(&s, Some(me.user.id), AUDIT_CHANNEL_RENAME, None, format!("{} ({}): {}", old.name, kind_pt(old.kind), parts.join(", "))).await;
+    Ok(ok())
+}
+
+/// A voice channel's bitrate in bits per second (Discord's range: 8 kbps to 384 kbps).
+fn check_bitrate(bitrate: Option<i32>) -> Result<Option<i32>, ApiErr> {
+    let Some(b) = bitrate else { return Ok(None) };
+    if !(BITRATE_MIN..=BITRATE_MAX).contains(&b) {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, format!("bitrate must be {BITRATE_MIN}-{BITRATE_MAX}")));
+    }
+    Ok(Some(b))
+}
+
+/// A voice channel's user limit: 0 = unlimited, up to [`USER_LIMIT_MAX`] (Discord's semantics).
+fn check_user_limit(limit: Option<i32>) -> Result<Option<i32>, ApiErr> {
+    let Some(l) = limit else { return Ok(None) };
+    if !(0..=USER_LIMIT_MAX).contains(&l) {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, format!("user limit must be 0-{USER_LIMIT_MAX}")));
+    }
+    Ok(Some(l))
+}
+
+/// A channel's topic: at most [`CHANNEL_TOPIC_MAX`] characters (empty clears it), one line.
+fn check_topic(topic: &str) -> Result<String, ApiErr> {
+    let topic = topic.trim();
+    if topic.chars().count() > CHANNEL_TOPIC_MAX || topic.chars().any(char::is_control) {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, format!("topic must be at most {CHANNEL_TOPIC_MAX} characters")));
+    }
+    Ok(topic.to_string())
+}
+
+/// An excerpt of a topic for the moderation log (same idea as `profile::excerpt`).
+fn excerpt(text: &str) -> String {
+    let t: String = text.chars().take(40).collect();
+    if text.chars().count() > 40 { format!("{t}...") } else { t }
 }
 
 /// `POST /api/admin/channels/{id}/rename`
@@ -940,6 +1031,60 @@ pub async fn reorder_categories(State(s): State<AppState>, me: Authed, body: Res
     }
     let ids: Vec<i64> = req.ids.iter().map(|c| c.into_inner()).collect();
     s.db.call(move |c| db::reorder_categories(c, &ids)).await?;
+    let list = s.db.call(|c| db::list_categories(c)).await?;
+    s.set_categories(list);
+    audit(&s, Some(me.user.id), AUDIT_CHANNEL_REORDER, None, String::new()).await;
+    Ok(ok())
+}
+
+/// 2026-11-11: `POST /api/admin/structure` — the whole sidebar order in ONE atomic batch, the way
+/// the Discord client sends its single `PATCH /guilds/{id}/channels`. It replaces the pair
+/// [`reorder_channels`] + [`reorder_categories`] for the drag-and-drop: those two each rewrite
+/// their own list's positions `0..n` and therefore destroy the interleaving between categories and
+/// loose channels (move a loose channel and every category jumps). Here the client sends the
+/// complete state and the hub rewrites it in one transaction, so the interleaving survives by
+/// construction.
+///
+/// The request must cover EVERYTHING: `top` holds every category and every standalone channel
+/// exactly once, `groups` holds every channel that lives in a category in its category's list
+/// exactly once. A request that misses or repeats an id is a `400` and changes nothing (the lists
+/// are checked against the current state before a single row is written). The `position` each item
+/// carries is ignored: the hub rewrites densely (`0..n` in the given order), so a client that sends
+/// gaps or duplicates of position still gets exactly the order it drew. Answer: [`OkResponse`];
+/// `403` not an admin. The change goes out at once as `ChannelsChanged` + `CategoriesChanged`, the
+/// same way the old reorder routes do. The old routes stay (older apps keep using them).
+pub async fn reorder_structure(State(s): State<AppState>, me: Authed, body: Result<Json<StructureReorderRequest>, JsonRejection>) -> ApiResult<OkResponse> {
+    let Json(req) = body?;
+    can_manage_channels(&me)?;
+    let channels = s.channels();
+    let categories = s.categories();
+    // The top level: every category and every standalone channel, exactly once each.
+    let mut have: Vec<ChannelId> =
+        categories.iter().map(|c| c.id).chain(channels.iter().filter(|c| c.category_id.is_none()).map(|c| c.id)).collect();
+    let mut want: Vec<ChannelId> = req.top.iter().map(|i| i.id).collect();
+    have.sort_unstable();
+    want.sort_unstable();
+    if have != want {
+        return Err(ApiErr::new(StatusCode::BAD_REQUEST, "top must list every category and every standalone channel exactly once"));
+    }
+    // The groups: each one exactly the channels of its own category, no strangers and no repeats.
+    let mut groups: Vec<(i64, Vec<i64>)> = Vec::with_capacity(req.groups.len());
+    for g in &req.groups {
+        if !categories.iter().any(|c| c.id == g.category_id) {
+            return Err(ApiErr::new(StatusCode::BAD_REQUEST, "groups must name a category"));
+        }
+        let mut have: Vec<ChannelId> = channels.iter().filter(|c| c.category_id == Some(g.category_id)).map(|c| c.id).collect();
+        let mut want = g.ids.clone();
+        have.sort_unstable();
+        want.sort_unstable();
+        if have != want {
+            return Err(ApiErr::new(StatusCode::BAD_REQUEST, "groups must list every channel of each category exactly once"));
+        }
+        groups.push((g.category_id.into_inner(), g.ids.iter().map(|c| c.into_inner()).collect()));
+    }
+    let top: Vec<i64> = req.top.iter().map(|i| i.id.into_inner()).collect();
+    s.db.call(move |c| db::reorder_structure(c, &top, &groups)).await?;
+    reload_channels(&s).await?;
     let list = s.db.call(|c| db::list_categories(c)).await?;
     s.set_categories(list);
     audit(&s, Some(me.user.id), AUDIT_CHANNEL_REORDER, None, String::new()).await;
