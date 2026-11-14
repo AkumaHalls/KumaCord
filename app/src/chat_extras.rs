@@ -638,7 +638,7 @@ fn text_part(ui: &mut egui::Ui, textures: &mut crate::emoji::Textures, text: &st
 }
 
 /// The reaction chips under a message ("👍 3", highlighted when I am in it).
-pub fn reaction_chips(ui: &mut egui::Ui, chat: &ChatUi, id: i64, reactions: &[Reaction], me: Option<UserId>, acts: &mut Vec<Act>) {
+pub fn reaction_chips(ui: &mut egui::Ui, chat: &ChatUi, textures: &mut crate::emoji::Textures, id: i64, reactions: &[Reaction], me: Option<UserId>, acts: &mut Vec<Act>) {
     if reactions.is_empty() {
         return;
     }
@@ -647,7 +647,7 @@ pub fn reaction_chips(ui: &mut egui::Ui, chat: &ChatUi, id: i64, reactions: &[Re
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
         for r in reactions {
             let mine = me.is_some_and(|m| r.users.contains(&m));
-            let resp = reaction_pill(ui, &r.emoji, r.users.len(), mine);
+            let resp = reaction_pill(ui, textures, &r.emoji, r.users.len(), mine);
             // (The names are only looked up under the pointer.)
             let resp = resp.on_hover_ui(|ui| {
                 let names: Vec<String> = r.users.iter().map(|u| chat.name(*u)).collect();
@@ -661,10 +661,12 @@ pub fn reaction_chips(ui: &mut egui::Ui, chat: &ChatUi, id: i64, reactions: &[Re
 }
 
 /// A reaction pill ("👍 2"): round, raised; mine a step lighter with a chalk outline (the lamp is
-/// only for speakers, the main action and mentions).
-pub fn reaction_pill(ui: &mut egui::Ui, emoji: &str, count: usize, mine: bool) -> egui::Response {
-    let g = ui.painter().layout_no_wrap(format!("{emoji} {count}"), theme::body(13.0), theme::GIZ);
-    let size = egui::vec2(g.size().x + 18.0, 24.0);
+/// only for speakers, the main action and mentions). The emoji is drawn from its colour art when
+/// the catalogue has it — the font's glyph is only the fallback, never the default.
+pub fn reaction_pill(ui: &mut egui::Ui, textures: &mut crate::emoji::Textures, emoji: &str, count: usize, mine: bool) -> egui::Response {
+    let g = ui.painter().layout_no_wrap(count.to_string(), theme::body(13.0), theme::GIZ);
+    let icon = 14.0_f32;
+    let size = egui::vec2(10.0 + icon + 4.0 + g.size().x + 10.0, 24.0);
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let (fill, line) = match (mine, resp.hovered()) {
@@ -674,7 +676,18 @@ pub fn reaction_pill(ui: &mut egui::Ui, emoji: &str, count: usize, mine: bool) -
         };
         let p = ui.painter();
         p.rect(rect, theme::radius::PILL, fill, egui::Stroke::new(theme::stroke::HAIRLINE, line), egui::StrokeKind::Inside);
-        p.galley(rect.center() - g.size() / 2.0, g, theme::GIZ);
+        let icon_rect = egui::Rect::from_center_size(egui::pos2(rect.left() + 10.0 + icon / 2.0, rect.center().y), egui::vec2(icon, icon));
+        let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
+        match crate::emoji::def(emoji).and_then(|d| textures.get(ui.ctx(), d.ch)) {
+            Some(tex) => {
+                p.image(tex, icon_rect, uv, egui::Color32::WHITE);
+            }
+            None => {
+                let gi = p.layout_no_wrap(emoji.to_string(), theme::body(13.0), theme::GIZ);
+                p.galley(icon_rect.center() - gi.size() / 2.0, gi, theme::GIZ);
+            }
+        }
+        p.galley(egui::pos2(icon_rect.right() + 4.0, rect.center().y - g.size().y / 2.0), g, theme::GIZ);
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

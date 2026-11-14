@@ -36,6 +36,13 @@ categorias não pulam mais quando você mexe só nos canais.
   (`CHAT_INPUT_BORDER_RADIUS`), controles (checkbox/select/botão) 8
   (`CONTROL_CHECKBOX_BORDER_RADIUS`) — antes o checkbox herdava o raio da linha
   e virava círculo.
+- **Reações coloridas:** a pill "👍 3" desenhava o emoji com o glifo
+  monocromático da fonte (cinza). Agora o emoji da reação sai da arte PNG do
+  catálogo, com o glifo só como fallback para emoji fora do catálogo.
+- **Picker de emoji não fecha mais ao trocar de categoria:** o id do grid
+  carregava a categoria e a busca, então cada troca de aba criava um id novo e
+  o popup perdia a âncora. O id agora é fixo (`emoji_grid`); só o conteúdo
+  muda.
 
 ### Adicionado (perfil)
 

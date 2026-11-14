@@ -258,7 +258,7 @@ pub fn message_list<T: ChatLine>(ui: &mut egui::Ui, p: Parts<'_>, msgs: &[T], sp
                             }
                         }
                     }
-                    chat_extras::reaction_chips(ui, p.chatx, m.id(), m.reactions(), me, &mut out.acts);
+                    chat_extras::reaction_chips(ui, p.chatx, p.emoji, m.id(), m.reactions(), me, &mut out.acts);
                 });
             });
             // The row's background (mention, a clicked quote's flash, hover), its right-click menu
