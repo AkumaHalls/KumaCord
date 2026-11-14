@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.6.1] — 2026-11-14
+
+Re-lançamento da 1.6.0: a release `v1.6.0` foi publicada a partir do commit
+`d49e461`, antes dos últimos fixes. Esta tag (`v1.6.1`) empacota o conteúdo
+completo da 1.6.0 mais:
+
+- **Reações coloridas** — a pill "👍 3" saía cinza (glifo da fonte); agora o
+  emoji vem da arte PNG do catálogo, com o glifo só como fallback.
+- **Picker de emoji não fecha ao trocar de categoria** — o id do grid era
+  dinâmico e cada troca de aba perdia a âncora do popup; agora é fixo.
+
 ## [1.6.0] — 2026-11-12
 
 ### Corrigido (estrutura de canais e categorias)
