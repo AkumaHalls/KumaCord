@@ -464,11 +464,15 @@ pub const AVATAR_RATE_LIMIT: usize = 5;
 /// ...in this many seconds.
 pub const AVATAR_RATE_WINDOW_SECS: u64 = 600;
 
-/// Answer of `PUT` / `DELETE /api/me/avatar`: the new version (`None` after a removal).
+/// Answer of `PUT` / `DELETE /api/me/avatar`: the new version (`None` after a removal) and whether
+/// the hub kept an animation for it (`false` after a removal, and on any hub that predates
+/// animations — hence the `default`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvatarResponse {
     #[serde(default)]
     pub avatar: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub animated: bool,
 }
 
 // ---------- profile banners ----------
@@ -499,11 +503,15 @@ pub const BANNER_RATE_LIMIT: usize = 5;
 /// ...in this many seconds.
 pub const BANNER_RATE_WINDOW_SECS: u64 = 600;
 
-/// Answer of `PUT` / `DELETE /api/me/banner`: the new version (`None` after a removal).
+/// Answer of `PUT` / `DELETE /api/me/banner`: the new version (`None` after a removal) and whether
+/// the hub kept an animation for it (`false` after a removal, and on any hub that predates
+/// animations — hence the `default`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BannerResponse {
     #[serde(default)]
     pub banner: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub animated: bool,
 }
 
 /// The connecting user's own identity state (item 12), only in [`ServerEvent::Ready`]. Its
@@ -1859,9 +1867,14 @@ mod tests {
 
     #[test]
     fn avatar_response_wire_shape() {
-        assert_eq!(serde_json::to_string(&AvatarResponse { avatar: Some("ab".into()) }).unwrap(), r#"{"avatar":"ab"}"#);
-        assert_eq!(serde_json::to_string(&AvatarResponse { avatar: None }).unwrap(), r#"{"avatar":null}"#);
-        assert_eq!(serde_json::from_str::<AvatarResponse>("{}").unwrap(), AvatarResponse { avatar: None });
+        assert_eq!(serde_json::to_string(&AvatarResponse { avatar: Some("ab".into()), animated: false }).unwrap(), r#"{"avatar":"ab"}"#);
+        assert_eq!(serde_json::to_string(&AvatarResponse { avatar: Some("ab".into()), animated: true }).unwrap(), r#"{"avatar":"ab","animated":true}"#);
+        assert_eq!(serde_json::to_string(&AvatarResponse { avatar: None, animated: false }).unwrap(), r#"{"avatar":null}"#);
+        // An old hub answers without the flag: `false`, not a parse error.
+        assert_eq!(serde_json::from_str::<AvatarResponse>("{}").unwrap(), AvatarResponse { avatar: None, animated: false });
+        assert_eq!(serde_json::from_str::<AvatarResponse>(r#"{"avatar":"ab"}"#).unwrap(), AvatarResponse { avatar: Some("ab".into()), animated: false });
+        assert_eq!(serde_json::to_string(&BannerResponse { banner: Some("cd".into()), animated: true }).unwrap(), r#"{"banner":"cd","animated":true}"#);
+        assert_eq!(serde_json::from_str::<BannerResponse>("{}").unwrap(), BannerResponse { banner: None, animated: false });
         assert_eq!(AVATAR_SIZES, [64, 256]);
     }
 

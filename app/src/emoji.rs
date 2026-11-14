@@ -511,9 +511,25 @@ impl Picker {
         now_ms: u64,
     ) -> Option<&'static str> {
         let mut picked = None;
-        egui::Popup::menu(b).frame(crate::ui_kit::popup_frame(ui.style())).style(crate::ui_kit::menu_style).show(|ui| {
-            picked = picker.content(ui, textures, uses, now_ms);
-        });
+        // `Popup::menu` defaults to `CloseOnClick`: ANY click while the popup was open last
+        // frame closes it — including clicks on the category tabs and the search field INSIDE
+        // it (egui's popup.rs: `close_click = was_open_last_frame && any_click`, then
+        // `CloseOnClick => close_click`). That was the "click a tab and the menu closes" bug.
+        // `CloseOnClickOutside` leaves inside clicks alone; outside clicks, Escape and the
+        // toggle on `b` still close it.
+        let popup_id = egui::Popup::default_response_id(b);
+        egui::Popup::menu(b)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .frame(crate::ui_kit::popup_frame(ui.style()))
+            .style(crate::ui_kit::menu_style)
+            .show(|ui| {
+                picked = picker.content(ui, textures, uses, now_ms);
+            });
+        if picked.is_some() {
+            // Picking an emoji is a click inside the popup, so it no longer closes the menu by
+            // itself — close it here, the way Discord does after a pick from the chat's 🙂.
+            egui::Popup::close_id(ui.ctx(), popup_id);
+        }
         picked
     }
 
@@ -559,10 +575,10 @@ impl Picker {
             ui_kit::hint(ui, if q.is_empty() && self.cat.is_none() { "Use um emoji e ele aparece aqui." } else { "Nada encontrado." });
         }
         // The id must stand still. It used to carry `self.cat.is_none()` and the whole search
-        // string, so every keystroke and every tab change minted a NEW id — and a popup whose
-        // content id moves between frames loses its anchor and closes. That is exactly "mudo de
-        // categoria e ele fecha, tenho que abrir de novo". A Grid's id is only its own state
-        // (which row it is on); the cells below can change every frame without touching it.
+        // string, so every keystroke and every tab change minted a NEW id and reset the Grid's
+        // own state (its scroll row). A Grid's id is only its own state; the cells below can
+        // change every frame without touching it. (The menu *closing* on a tab click was a
+        // separate bug — the popup's default `CloseOnClick`, fixed in `Picker::menu`.)
         egui::Grid::new("emoji_grid").spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
             for (i, d) in cells.iter().enumerate() {
                 let (r, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());

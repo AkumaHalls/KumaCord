@@ -96,8 +96,18 @@ pub fn process(bytes: &[u8]) -> Result<Processed, ThumbError> {
     } else {
         ("image/jpeg", encode_jpeg(&fitted)?)
     };
-    let version = hex(&Sha256::digest(&image)[..VERSION_BYTES]);
-    Ok(Processed { image, mime, version, anim: keep_animation(bytes, w, h)? })
+    let anim = keep_animation(bytes, w, h)?;
+    // The animation is part of the version, exactly as for avatars: a new banner whose first
+    // frame fits the box the same way must still get a new version, or no `UserUpdated` goes out
+    // and every client keeps the previous banner pinned by that version.
+    let mut hasher = Sha256::new();
+    hasher.update(&image);
+    if let Some(a) = &anim {
+        hasher.update([0u8]);
+        hasher.update(&a.bytes);
+    }
+    let version = hex(&hasher.finalize()[..VERSION_BYTES]);
+    Ok(Processed { image, mime, version, anim })
 }
 
 /// The uploaded file's animation, cleaned and budgeted — or `None` when it has none to keep.
@@ -347,7 +357,7 @@ pub async fn put_banner(State(s): State<AppState>, me: Authed, body: Result<Byte
     if before.as_deref() != Some(version.as_str()) {
         announce(&s, id).await?;
     }
-    Ok(Json(BannerResponse { banner: Some(version) }))
+    Ok(Json(BannerResponse { banner: Some(version), animated }))
 }
 
 /// `DELETE /api/me/banner`
@@ -357,7 +367,7 @@ pub async fn delete_banner(State(s): State<AppState>, me: Authed) -> ApiResult<B
         tracing::info!(user = %me.user.username, "banner removed");
         announce(&s, id).await?;
     }
-    Ok(Json(BannerResponse { banner: None }))
+    Ok(Json(BannerResponse { banner: None, animated: false }))
 }
 
 /// `POST /api/mod/users/{id}/remove-banner` (Moderador and up, for people below their role).

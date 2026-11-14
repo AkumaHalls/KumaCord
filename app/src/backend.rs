@@ -2258,7 +2258,11 @@ pub fn friendly(e: &anyhow::Error) -> String {
         // branch below and was reported as "não foi possível conectar" — which sent people to
         // check a hub that was up and had simply said no (a 400 on a field, a 409, a 422).
         friendly_status(code, &full)
-    } else if l.contains("request") || l.contains("connect") || l.contains("timed out") || l.contains("dns") {
+    } else if l.contains("timed out") || l.contains("timeout") {
+        // The request left and no answer came back in time: the hub may well be up, the link is
+        // what gave up. Distinct from "never got there", which is the branch below.
+        "O servidor demorou demais para responder (tempo esgotado). Tente de novo.".into()
+    } else if l.contains("request") || l.contains("connect") || l.contains("dns") {
         "Não foi possível conectar ao servidor. Confira o endereço e se o servidor está ligado (porta 7890).".into()
     } else {
         format!("Erro: {full}")
@@ -2346,6 +2350,19 @@ mod tests {
         // port, not a status, so nothing here is mistaken for a refusal).
         let e = anyhow::anyhow!("error sending request for url (http://147.15.124.229:7890/api/admin/categories)").context("create category request");
         assert!(friendly(&e).starts_with("Não foi possível conectar"), "{:?}", friendly(&e));
+    }
+
+    /// A timeout is not a dead server either: the request went out and no answer came back in
+    /// time, which is the opposite failure of "connection refused" (and the old transport branch
+    /// used to swallow it because reqwest's timeout error also says "request").
+    #[test]
+    fn a_timeout_is_not_a_dead_server() {
+        let e = anyhow::anyhow!("set banner request: error sending request for url (http://147.15.124.229:7890/api/me/banner): operation timed out").context("set banner request");
+        let msg = friendly(&e);
+        assert!(msg.contains("demorou demais"), "{msg}");
+        assert!(!msg.contains("Não foi possível conectar"), "{msg}");
+        let e = anyhow::anyhow!("set banner request: operation timed out");
+        assert!(friendly(&e).contains("demorou demais"), "{:?}", friendly(&e));
     }
 
     /// A stand-in for some other server (v1.0.1 test): answers its health check as `server_id`

@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.6.2] — 2026-11-14
+
+### Corrigido
+
+- **Picker de emoji fechava ao trocar de categoria** — causa raiz: o
+  `egui::Popup::menu` fecha em *qualquer* clique enquanto aberto
+  (`CloseOnClick`), incluindo os cliques nas abas. Agora o picker usa
+  `CloseOnClickOutside` e só fecha no clique fora ou ao escolher um emoji
+  (`Popup::close_id`); a categoria escolhida continua selecionada ao reabrir.
+- **Avatar voltava para a foto anterior** — o frame desenhado era casado só
+  pela classe, ignorando a versão; agora casa `version + class + anim`, com
+  fallback para a mesma versão.
+- **GIF de avatar/banner setava mas não animava** — três lacunas: o hub
+  perdia a flag `animated` no histórico (`display_user` hardcoded), o
+  cliente não aplicava a flag local (`AvatarResponse`/`BannerResponse`
+  ganharam `animated`), e o store de texturas ignorava a flag na chave.
+- **Banner dava "não foi possível conectar ao servidor"** — HTTP 4xx era
+  classificado como erro de transporte e o upload usava o timeout global de
+  60s; agora status HTTP é extraído antes e uploads têm timeout próprio de
+  300s com mensagem dedicada.
+
+### Adicionado
+
+- **Logo do jogo na atividade** — o tile agora tenta primeiro a lista
+  "detectable applications" do Discord (`cdn.discordapp.com/app-assets/...`,
+  com verificação por nome e fallback para o ícone do app), depois Steam,
+  depois emoji temático. Tudo com fallback gracioso para o gamepad.
+
 ## [1.6.1] — 2026-11-14
 
 Re-lançamento da 1.6.0: a release `v1.6.0` foi publicada a partir do commit

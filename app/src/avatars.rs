@@ -212,6 +212,10 @@ enum State {
 struct Entry {
     version: String,
     class: Class,
+    /// Whether this entry was asked for with `?anim=1` — the animation flag is part of the entry's
+    /// identity, because it can change for the same version when the hub's `UserUpdated` arrives
+    /// after the entry was created.
+    anim: bool,
     state: State,
     /// The decoded frames as textures: exactly one for a still, many for an animation.
     frames: Vec<TextureHandle>,
@@ -224,8 +228,8 @@ struct Entry {
 }
 
 impl Entry {
-    fn new(version: &str, class: Class, now: Instant) -> Self {
-        Entry { version: version.to_string(), class, state: State::Loading, frames: Vec::new(), delays: Vec::new(), frame: 0, frame_at: now, last_seen: now }
+    fn new(version: &str, class: Class, now: Instant, anim: bool) -> Self {
+        Entry { version: version.to_string(), class, anim, state: State::Loading, frames: Vec::new(), delays: Vec::new(), frame: 0, frame_at: now, last_seen: now }
     }
 
     /// Forget the textures (the downloaded bytes stay): nothing is on the GPU until it is drawn
@@ -315,10 +319,10 @@ impl Store {
         let version = self.kind.version(user)?;
         let anim = self.kind.animated(user);
         let list = self.entries.entry(user.id).or_default();
-        let idx = match list.iter().position(|e| e.version == version && e.class == class) {
+        let idx = match list.iter().position(|e| e.version == version && e.class == class && e.anim == anim) {
             Some(i) => i,
             None => {
-                list.push(Entry::new(version, class, now));
+                list.push(Entry::new(version, class, now, anim));
                 self.queue.push_back(Request { user: user.id, version: version.to_string(), class, kind: self.kind, anim });
                 list.len() - 1
             }
@@ -340,7 +344,7 @@ impl Store {
                 };
                 match decoded {
                     Some((images, delays)) => {
-                        let name = format!("{}-{}-{}", self.kind.path(), user.id, e.version);
+                        let name = format!("{}-{}-{}-{}", self.kind.path(), user.id, e.version, if e.anim { "anim" } else { "still" });
                         e.frames = images
                             .into_iter()
                             .enumerate()
@@ -355,7 +359,7 @@ impl Store {
                     None => match &e.state {
                         State::Bytes(b) => match decode_still(b, self.kind) {
                             Some(img) => {
-                                let name = format!("{}-{}-{}", self.kind.path(), user.id, e.version);
+                                let name = format!("{}-{}-{}-{}", self.kind.path(), user.id, e.version, if e.anim { "anim" } else { "still" });
                                 e.frames = vec![ctx.load_texture(name, img, TextureOptions::LINEAR)];
                             }
                             None => e.state = State::Broken,
@@ -368,17 +372,25 @@ impl Store {
             }
         }
         // (The entry's borrow ends here: advancing an animation needs the whole store no more, but
-        // it does need `ctx`, which is not part of it.)
-        if let Some(tex) = self.entry_frame(ctx, user.id, class, now) {
+        // it does need `ctx`, which is not part of it.) The lookup is by version AND class AND anim:
+        // matching on `class` alone would hand back the previous version's entry and draw the old
+        // picture over the new one.
+        if let Some(tex) = self.entry_frame(ctx, user.id, version, class, anim, now) {
             return Some(tex);
         }
-        // The other size of the same picture will do until this one arrives.
+        // The other size of the same picture will do until this one arrives (any animation flag:
+        // if the `?anim=1` answer was a 404, the still of the same version is still the picture).
         let list = self.entries.get_mut(&user.id)?;
         for px in self.kind.sizes() {
             if *px == class.px() {
                 continue;
             }
-            if let Some(e) = list.iter_mut().find(|e| e.version == version && e.class.px() == *px) {
+            let idx = list
+                .iter()
+                .position(|e| e.version == version && e.class.px() == *px && e.anim == anim)
+                .or_else(|| list.iter().position(|e| e.version == version && e.class.px() == *px));
+            if let Some(i) = idx {
+                let e = &mut list[i];
                 e.last_seen = now;
                 return frame_now(e, ctx, now);
             }
@@ -386,10 +398,20 @@ impl Store {
         None
     }
 
-    /// The frame `user`'s picture of `class` is showing now, if it has any.
-    fn entry_frame(&mut self, ctx: &egui::Context, user: UserId, class: Class, now: Instant) -> Option<TextureId> {
-        let e = self.entries.get_mut(&user)?.iter_mut().find(|e| e.class == class)?;
-        frame_now(e, ctx, now)
+    /// The frame `user`'s current picture of `class` is showing now, if it has any. The entry is
+    /// matched by version (and animation flag) as well as class: another version's entry of the
+    /// same size must never be drawn in its place. The same version's other animation flag is the
+    /// fallback, so the still shows while the animation is still loading.
+    fn entry_frame(&mut self, ctx: &egui::Context, user: UserId, version: &str, class: Class, anim: bool, now: Instant) -> Option<TextureId> {
+        let list = self.entries.get_mut(&user)?;
+        // The exact version+class+anim entry that already has frames; otherwise the same
+        // version+class with the other animation flag (the still while the animation loads).
+        // Never another version's entry.
+        let idx = list
+            .iter()
+            .position(|e| e.version == version && e.class == class && e.anim == anim && !e.frames.is_empty())
+            .or_else(|| list.iter().position(|e| e.version == version && e.class == class && !e.frames.is_empty()))?;
+        frame_now(&mut list[idx], ctx, now)
     }
 
     /// `user`'s current picture if it is already on the GPU (any size); never asks the hub for it
@@ -418,12 +440,12 @@ impl Store {
     }
 
     /// The hub's answer to a [`Request`].
-    pub fn on_image(&mut self, user: UserId, version: &str, class: Class, reply: AvatarReply, now: Instant) {
+    pub fn on_image(&mut self, user: UserId, version: &str, class: Class, anim: bool, reply: AvatarReply, now: Instant) {
         self.in_flight = self.in_flight.saturating_sub(1);
         let Some(e) = self
             .entries
             .get_mut(&user)
-            .and_then(|l| l.iter_mut().find(|e| e.version == version && e.class == class))
+            .and_then(|l| l.iter_mut().find(|e| e.version == version && e.class == class && e.anim == anim))
             .filter(|e| matches!(e.state, State::Loading))
         else {
             return;
@@ -776,13 +798,13 @@ pub enum AvatarCmd {
 
 #[derive(Debug)]
 pub enum AvatarEv {
-    /// My upload / removal finished: the new version (`None` after a removal), or a message in
-    /// Portuguese.
-    Changed(Result<Option<String>, String>),
+    /// My upload / removal finished: the new version (`None` after a removal) and whether the hub
+    /// kept an animation for it, or a message in Portuguese.
+    Changed(Result<(Option<String>, bool), String>),
     /// A moderator removal finished.
     ModRemoved(Result<(), String>),
     /// My banner upload / removal finished (same shape, other store).
-    BannerChanged(Result<Option<String>, String>),
+    BannerChanged(Result<(Option<String>, bool), String>),
     Image { request: Request, reply: AvatarReply },
 }
 
@@ -801,8 +823,8 @@ impl AvatarCmd {
 
 pub async fn run(hub: &HubClient, cmd: AvatarCmd) -> AvatarEv {
     match cmd {
-        AvatarCmd::Set(file) => AvatarEv::Changed(hub.set_avatar(file.0.as_ref().clone()).await.map(|a| a.avatar).map_err(|e| error_text(&e, Kind::Avatar))),
-        AvatarCmd::Clear => AvatarEv::Changed(hub.clear_avatar().await.map(|a| a.avatar).map_err(|e| error_text(&e, Kind::Avatar))),
+        AvatarCmd::Set(file) => AvatarEv::Changed(hub.set_avatar(file.0.as_ref().clone()).await.map(|a| (a.avatar, a.animated)).map_err(|e| error_text(&e, Kind::Avatar))),
+        AvatarCmd::Clear => AvatarEv::Changed(hub.clear_avatar().await.map(|a| (a.avatar, a.animated)).map_err(|e| error_text(&e, Kind::Avatar))),
         AvatarCmd::ModRemove { user } => AvatarEv::ModRemoved(hub.mod_remove_avatar(user).await.map_err(|e| error_text(&e, Kind::Avatar))),
         AvatarCmd::BannerSet(file) => AvatarEv::BannerChanged(upload(hub, Kind::Banner, &file.0).await.map_err(|e| error_text(&e, Kind::Banner))),
         AvatarCmd::BannerClear => AvatarEv::BannerChanged(remove(hub, Kind::Banner).await.map_err(|e| error_text(&e, Kind::Banner))),
@@ -859,20 +881,28 @@ async fn fetch(hub: &HubClient, request: &Request) -> AvatarReply {
     }
 }
 
-/// `PUT api/me/{path}`, the file as the body: the new version of that picture.
-async fn upload(hub: &HubClient, kind: Kind, file: &[u8]) -> Result<Option<String>> {
+/// Uploads get their own, much longer timeout than the app's default 60 s: a 8 MB GIF on a slow
+/// link to the hub can legitimately take longer, and a client-side timeout must not be reported as
+/// "could not connect to the server".
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// `PUT api/me/{path}`, the file as the body: the new version of that picture (and whether the
+/// hub kept an animation for it).
+async fn upload(hub: &HubClient, kind: Kind, file: &[u8]) -> Result<(Option<String>, bool)> {
     let what = format!("set {}", kind.label());
     let path = format!("api/me/{}", kind.upload_path());
-    let body = send(hub, http().put(hub.base_url().join(&path).with_context(|| format!("bad path {path}"))?), &what, file).await?;
-    Ok(version_of(kind, &body))
+    let req = http().put(hub.base_url().join(&path).with_context(|| format!("bad path {path}"))?).timeout(UPLOAD_TIMEOUT);
+    let body = send(hub, req, &what, file).await?;
+    Ok((version_of(kind, &body), animated_of(&body)))
 }
 
-/// `DELETE api/me/{path}`: the picture's version is now nothing.
-async fn remove(hub: &HubClient, kind: Kind) -> Result<Option<String>> {
+/// `DELETE api/me/{path}`: the picture's version is now nothing (and nothing is animated).
+async fn remove(hub: &HubClient, kind: Kind) -> Result<(Option<String>, bool)> {
     let what = format!("clear {}", kind.label());
     let path = format!("api/me/{}", kind.upload_path());
-    let body = send(hub, http().delete(hub.base_url().join(&path).with_context(|| format!("bad path {path}"))?), &what, &[]).await?;
-    Ok(version_of(kind, &body))
+    let req = http().delete(hub.base_url().join(&path).with_context(|| format!("bad path {path}"))?).timeout(UPLOAD_TIMEOUT);
+    let body = send(hub, req, &what, &[]).await?;
+    Ok((version_of(kind, &body), false))
 }
 
 /// Send a request with the session token and read the answer as text, refusing it the way the
@@ -892,6 +922,12 @@ async fn send(hub: &HubClient, req: reqwest::RequestBuilder, what: &str, body: &
 /// The version the hub gave back, out of the field this kind uses (`avatar` / `banner`).
 fn version_of(kind: Kind, body: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(body).ok()?.get(kind.version_field())?.as_str().map(Into::into)
+}
+
+/// Whether the hub kept an animation for the uploaded picture. The field is absent on hubs older
+/// than the animations: `false` then, which is what those hubs store anyway.
+fn animated_of(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body).ok().and_then(|v| v.get("animated")?.as_bool()).unwrap_or(false)
 }
 
 /// The hub's refusals, for the people.
@@ -917,6 +953,11 @@ pub fn error_text(e: &anyhow::Error, kind: Kind) -> String {
         format!("Este servidor é de uma versão antiga e ainda não aceita {picture}.")
     } else if l.contains("http 403") {
         "Seu cargo não permite isso.".into()
+    } else if l.contains("timed out") || l.contains("timeout") {
+        // A client-side timeout (the upload has its own, long one): the server may be fine, the
+        // link is what gave up — saying "could not connect" would send people to check a hub that
+        // is up.
+        "O envio demorou demais e a conexão caiu (tempo esgotado). Tente de novo.".into()
     } else {
         crate::backend::friendly(e)
     }
@@ -1090,8 +1131,8 @@ impl App {
             AvatarEv::Image { request, reply } => {
                 // The answer belongs to whichever store asked (the banner's is a different one).
                 match request.kind {
-                    Kind::Avatar => self.avatars.store.on_image(request.user, &request.version, request.class, reply, Instant::now()),
-                    Kind::Banner => self.avatars.banners.store.on_image(request.user, &request.version, request.class, reply, Instant::now()),
+                    Kind::Avatar => self.avatars.store.on_image(request.user, &request.version, request.class, request.anim, reply, Instant::now()),
+                    Kind::Banner => self.avatars.banners.store.on_image(request.user, &request.version, request.class, request.anim, reply, Instant::now()),
                 }
                 self.pump_avatars();
             }
@@ -1105,12 +1146,14 @@ impl App {
     }
 
     /// An upload / removal finished: the section says so and my own `User` carries the new version
-    /// (the hub's `UserUpdated` tells everybody; this keeps my own screen right even if it is late).
-    fn picture_saved(&mut self, kind: Kind, result: Result<Option<String>, String>) {
+    /// AND the animation flag straight from the hub's answer (the `UserUpdated` tells everybody;
+    /// this keeps my own screen right even if that broadcast is late — without the flag here, the
+    /// store would pin the still for this version and a GIF would never animate on my own screen).
+    fn picture_saved(&mut self, kind: Kind, result: Result<(Option<String>, bool), String>) {
         let p = self.picture(kind);
         p.busy = false;
         match result {
-            Ok(version) => {
+            Ok((version, animated)) => {
                 let what = match kind {
                     Kind::Avatar => "Foto",
                     Kind::Banner => "Banner",
@@ -1119,8 +1162,14 @@ impl App {
                 p.picked = None;
                 if let Some(me) = self.me.as_mut() {
                     match kind {
-                        Kind::Avatar => me.avatar = version,
-                        Kind::Banner => me.banner = version,
+                        Kind::Avatar => {
+                            me.avatar = version;
+                            me.avatar_animated = animated;
+                        }
+                        Kind::Banner => {
+                            me.banner = version;
+                            me.banner_animated = animated;
+                        }
                     }
                 }
             }
@@ -1556,7 +1605,7 @@ mod tests {
             }
             for r in reqs {
                 let reply = reply(&r);
-                s.on_image(r.user, &r.version, r.class, reply, now);
+                s.on_image(r.user, &r.version, r.class, r.anim, reply, now);
             }
         }
     }
@@ -1581,7 +1630,7 @@ mod tests {
         assert_eq!(s.take_requests(), vec![Request { user: UserId(1), version: "v1".into(), class: Class::SMALL, kind: Kind::Avatar, anim: false }]);
         assert!(s.take_requests().is_empty());
         assert!(!s.answered(&ana));
-        s.on_image(UserId(1), "v1", Class::SMALL, AvatarReply::Image(jpeg(64, 1)), now);
+        s.on_image(UserId(1), "v1", Class::SMALL, false, AvatarReply::Image(jpeg(64, 1)), now);
         assert!(s.answered(&ana) && !s.has_picture(&ana), "answered, not decoded until drawn");
         s.begin_frame(now);
         assert!(s.texture(&ctx, &ana, Class::SMALL, now).is_some());
@@ -1599,7 +1648,7 @@ mod tests {
         }
         assert_eq!(s.take_requests().len(), MAX_IN_FLIGHT);
         assert!(s.take_requests().is_empty(), "the window is full");
-        s.on_image(UserId(0), "v", Class::SMALL, AvatarReply::NotFound, now);
+        s.on_image(UserId(0), "v", Class::SMALL, false, AvatarReply::NotFound, now);
         assert_eq!(s.take_requests().len(), 1);
     }
 
@@ -1610,12 +1659,12 @@ mod tests {
         s.begin_frame(now);
         s.texture(&ctx, &ana, Class::SMALL, now);
         s.take_requests();
-        s.on_image(UserId(1), "v1", Class::SMALL, AvatarReply::Image(jpeg(64, 1)), now);
+        s.on_image(UserId(1), "v1", Class::SMALL, false, AvatarReply::Image(jpeg(64, 1)), now);
         let small = s.texture(&ctx, &ana, Class::SMALL, now).expect("small is ready");
         // The big one is wanted now (a tile): until it arrives, the small picture is drawn.
         assert_eq!(s.texture(&ctx, &ana, Class::BIG, now), Some(small));
         assert_eq!(s.take_requests(), vec![Request { user: UserId(1), version: "v1".into(), class: Class::BIG, kind: Kind::Avatar, anim: false }]);
-        s.on_image(UserId(1), "v1", Class::BIG, AvatarReply::Image(jpeg(256, 1)), now);
+        s.on_image(UserId(1), "v1", Class::BIG, false, AvatarReply::Image(jpeg(256, 1)), now);
         let big = s.texture(&ctx, &ana, Class::BIG, now).expect("big is ready");
         assert_ne!(big, small);
     }
@@ -1661,7 +1710,7 @@ mod tests {
         s.begin_frame(now);
         s.texture(&ctx, &ana, Class::SMALL, now);
         s.take_requests();
-        s.on_image(UserId(1), "v1", Class::SMALL, AvatarReply::Image(b"<html>nope</html>".to_vec()), now);
+        s.on_image(UserId(1), "v1", Class::SMALL, false, AvatarReply::Image(b"<html>nope</html>".to_vec()), now);
         for _ in 0..5 {
             s.begin_frame(now);
             assert_eq!(s.texture(&ctx, &ana, Class::SMALL, now), None);
@@ -1670,7 +1719,7 @@ mod tests {
         // A picture bigger than the hub ever sends is refused too.
         s.texture(&ctx, &user(UserId(2), Some("v")), Class::BIG, now);
         s.take_requests();
-        s.on_image(UserId(2), "v", Class::BIG, AvatarReply::Image(jpeg(600, 1)), now);
+        s.on_image(UserId(2), "v", Class::BIG, false, AvatarReply::Image(jpeg(600, 1)), now);
         s.begin_frame(now);
         assert_eq!(s.texture(&ctx, &user(UserId(2), Some("v")), Class::BIG, now), None);
     }
@@ -1682,7 +1731,7 @@ mod tests {
         s.texture(&ctx, &user(UserId(1), Some("v1")), Class::SMALL, now);
         s.take_requests();
         s.reset(); // another server
-        s.on_image(UserId(1), "v1", Class::SMALL, AvatarReply::Image(jpeg(64, 1)), now);
+        s.on_image(UserId(1), "v1", Class::SMALL, false, AvatarReply::Image(jpeg(64, 1)), now);
         assert_eq!(s.stats(), (0, 0));
         assert!(s.take_requests().is_empty());
     }
@@ -1808,6 +1857,9 @@ mod tests {
         let b = |s: &str| error_text(&anyhow::anyhow!("{s}"), Kind::Banner);
         assert!(b("set banner failed: HTTP 404 Not Found: ").contains("banner"));
         assert!(b("set banner failed: HTTP 429 Too Many Requests: too many picture changes, wait 90 s").contains("banner"));
+        // A timeout is neither a refusal nor "could not connect".
+        assert!(e("set banner request: error sending request: operation timed out").contains("demorou demais"));
+        assert!(!e("set banner request: error sending request: operation timed out").contains("conectar"));
     }
 
     // ---------------------------------------------------------------- animation
@@ -1876,6 +1928,51 @@ mod tests {
         ana.avatar_animated = true;
         s.texture(&ctx, &ana, Class::SMALL, now);
         assert_eq!(s.take_requests(), vec![Request { user: UserId(1), version: "v2".into(), class: Class::SMALL, kind: Kind::Avatar, anim: true }]);
+    }
+
+    #[test]
+    fn a_flag_that_arrives_late_re_asks_the_same_version_for_the_animation() {
+        // The entry is keyed by version AND animation flag: when the hub's `UserUpdated` brings
+        // `avatar_animated = true` after the still was already fetched for this version, the store
+        // must ask again with `?anim=1` instead of keeping the still pinned for that version.
+        let (mut s, ctx, now) = (AvatarStore::default(), egui::Context::default(), Instant::now());
+        let mut ana = user(UserId(1), Some("v1"));
+        s.begin_frame(now);
+        s.texture(&ctx, &ana, Class::SMALL, now);
+        assert_eq!(s.take_requests(), vec![Request { user: UserId(1), version: "v1".into(), class: Class::SMALL, kind: Kind::Avatar, anim: false }]);
+        s.on_image(UserId(1), "v1", Class::SMALL, false, AvatarReply::Image(jpeg(64, 1)), now);
+        s.begin_frame(now);
+        let still = s.texture(&ctx, &ana, Class::SMALL, now).expect("the still");
+        // The `UserUpdated` arrives now: same version, but animated.
+        ana.avatar_animated = true;
+        s.begin_frame(now);
+        assert_eq!(s.texture(&ctx, &ana, Class::SMALL, now), Some(still), "the still keeps showing while the animation loads");
+        assert_eq!(s.take_requests(), vec![Request { user: UserId(1), version: "v1".into(), class: Class::SMALL, kind: Kind::Avatar, anim: true }], "a second ask, with ?anim=1");
+        s.on_image(UserId(1), "v1", Class::SMALL, true, AvatarReply::Image(gif(3, 64, 100)), now);
+        s.begin_frame(now);
+        let first = s.texture(&ctx, &ana, Class::SMALL, now).expect("the animation's first frame");
+        assert_ne!(first, still, "the animation replaced the still for this version");
+    }
+
+    #[test]
+    fn a_new_version_is_drawn_over_the_old_versions_entry() {
+        // `entry_frame` used to match on `class` alone and could hand back the PREVIOUS version's
+        // texture: the avatar "went back to the old one" whenever the old entry still had frames.
+        let (mut s, ctx, now) = (AvatarStore::default(), egui::Context::default(), Instant::now());
+        let v1 = user(UserId(1), Some("v1"));
+        s.begin_frame(now);
+        s.texture(&ctx, &v1, Class::SMALL, now);
+        answer_all(&mut *s, now, |_| AvatarReply::Image(jpeg(64, 1)));
+        s.begin_frame(now);
+        let old = s.texture(&ctx, &v1, Class::SMALL, now).expect("v1's texture");
+        let v2 = user(UserId(1), Some("v2"));
+        s.begin_frame(now);
+        s.texture(&ctx, &v2, Class::SMALL, now);
+        answer_all(&mut *s, now, |_| AvatarReply::Image(jpeg(64, 2)));
+        s.begin_frame(now);
+        let new = s.texture(&ctx, &v2, Class::SMALL, now).expect("v2's texture");
+        assert_ne!(new, old, "the new version's entry, not the old version's");
+        assert_eq!(s.texture(&ctx, &v2, Class::SMALL, now), Some(new));
     }
 
     #[test]
@@ -1981,8 +2078,8 @@ mod tests {
                 Kind::Banner => AvatarReply::Image(jpeg(600, 2)),
             };
             match r.kind {
-                Kind::Avatar => a.on_image(r.user, &r.version, r.class, reply, now),
-                Kind::Banner => b.on_image(r.user, &r.version, r.class, reply, now),
+                Kind::Avatar => a.on_image(r.user, &r.version, r.class, r.anim, reply, now),
+                Kind::Banner => b.on_image(r.user, &r.version, r.class, r.anim, reply, now),
             }
         }
         // Each store decodes its own answer and only its own.

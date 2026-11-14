@@ -84,8 +84,19 @@ pub fn process(bytes: &[u8]) -> Result<Processed, ThumbError> {
     } else {
         ("image/jpeg", encode_jpeg(&big)?, encode_jpeg(&small)?)
     };
-    let version = hex(&Sha256::digest(&big_bytes)[..VERSION_BYTES]);
-    Ok(Processed { small: small_bytes, big: big_bytes, mime, version, anim: keep_animation(bytes, w, h)? })
+    let anim = keep_animation(bytes, w, h)?;
+    // The animation is part of the version: two uploads whose first frame crops to the same still
+    // but whose animation differs must not share a version — the version is the cache key on every
+    // client and the only thing that makes the hub broadcast `UserUpdated`, so a shared version
+    // would leave everybody (the uploader included) drawing the previous picture forever.
+    let mut hasher = Sha256::new();
+    hasher.update(&big_bytes);
+    if let Some(a) = &anim {
+        hasher.update([0u8]);
+        hasher.update(&a.bytes);
+    }
+    let version = hex(&hasher.finalize()[..VERSION_BYTES]);
+    Ok(Processed { small: small_bytes, big: big_bytes, mime, version, anim })
 }
 
 /// The uploaded file's animation, cleaned and budgeted — or `None` when it has none to keep.
@@ -321,13 +332,14 @@ pub async fn put_avatar(State(s): State<AppState>, me: Authed, body: Result<Byte
             refusal(e)
         })?;
     let version = processed.version.clone();
+    let animated = processed.anim.is_some();
     let (small, big) = (processed.small.len(), processed.big.len());
     let before = s.db.call(move |c| store(c, id, &processed)).await?;
     tracing::info!(user = %me.user.username, len, small, big, %version, "picture saved");
     if before.as_deref() != Some(version.as_str()) {
         announce(&s, id).await?;
     }
-    Ok(Json(AvatarResponse { avatar: Some(version) }))
+    Ok(Json(AvatarResponse { avatar: Some(version), animated }))
 }
 
 /// `DELETE /api/me/avatar`
@@ -337,7 +349,7 @@ pub async fn delete_avatar(State(s): State<AppState>, me: Authed) -> ApiResult<A
         tracing::info!(user = %me.user.username, "picture removed");
         announce(&s, id).await?;
     }
-    Ok(Json(AvatarResponse { avatar: None }))
+    Ok(Json(AvatarResponse { avatar: None, animated: false }))
 }
 
 /// `POST /api/mod/users/{id}/remove-avatar` (Moderador and up, for people below their role).
@@ -426,6 +438,35 @@ mod tests {
             assert_eq!((small.width(), small.height()), (64, 64), "{w}x{h}");
             assert_eq!(p.version.len(), VERSION_BYTES * 2);
         }
+    }
+
+    #[test]
+    fn the_version_covers_the_animation_not_just_the_first_frame() {
+        use image::codecs::gif::{GifEncoder, Repeat};
+        use image::Frame;
+        let gif = |colours: &[Rgba<u8>]| {
+            let mut out = Vec::new();
+            {
+                let mut enc = GifEncoder::new(&mut out);
+                enc.set_repeat(Repeat::Infinite).unwrap();
+                for c in colours {
+                    enc.encode_frame(Frame::new(RgbaImage::from_pixel(64, 64, *c))).unwrap();
+                }
+            }
+            out
+        };
+        let red = Rgba([255, 0, 0, 255]);
+        let green = Rgba([0, 255, 0, 255]);
+        let blue = Rgba([0, 0, 255, 255]);
+        let a = process(&gif(&[red, green])).unwrap();
+        let b = process(&gif(&[red, blue])).unwrap();
+        assert!(a.anim.is_some() && b.anim.is_some(), "both are animations");
+        assert_eq!(a.big, b.big, "same first frame: the still is identical");
+        assert_ne!(a.version, b.version, "but the version must differ, or no client ever re-asks");
+        let again = process(&gif(&[red, green])).unwrap();
+        assert_eq!(a.version, again.version, "the same file keeps its version");
+        let still = process(&png_of(&DynamicImage::ImageRgba8(RgbaImage::from_pixel(64, 64, red)))).unwrap();
+        assert!(still.anim.is_none());
     }
 
     #[test]

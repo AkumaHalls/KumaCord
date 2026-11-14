@@ -1,14 +1,18 @@
 //! The game's own tile next to "Jogando X" — the little icon Discord draws from the game's art.
 //!
-//! The activity only carries the game's name, so [`resolve`] matches that name against a
-//! built-in table: a Steam appid (the capsule art on Steam's public CDN, fetched once in a
-//! thread and cached as a texture) or, for games that are not on Steam, a themed emoji from
-//! the app's own Twemoji catalogue (drawn at once, no fetch). Anything unknown gets the
-//! gamepad. No key and no account: the CDN is public, and a fetch that fails just leaves the
-//! gamepad tile there.
+//! The activity only carries the game's name, so the tile resolves that name the way Discord's
+//! own client does: first against Discord's "detectable applications" list, whose art lives on
+//! the public app-assets CDN (`cdn.discordapp.com/app-assets/{app_id}/{asset_id}.png`, falling
+//! back to the app icon `cdn.discordapp.com/app-icons/{app_id}/{icon}.png`) — the game's real
+//! logo, no key and no account. When Discord has no entry for the game (or the API refuses),
+//! [`resolve`] matches the name against a built-in table: a Steam appid (capsule art on
+//! Steam's public CDN, fetched once in a thread and cached as a texture) or, for games not on
+//! Steam, a themed emoji from the app's own Twemoji catalogue (drawn at once, no fetch).
+//! Anything unknown gets the gamepad. A fetch that fails just leaves the next source's tile.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, Pos2, Rect, TextureId, Vec2};
@@ -176,7 +180,7 @@ pub fn resolve(game_name: &str) -> Resolved {
     Resolved::Emoji(GAMEPAD)
 }
 
-/// The Steam art of each appid this session asked for: loading, ready, or failed (failed stays
+/// The art of each source this session asked for: loading, ready, or failed (failed stays
 /// failed for the session — a CDN hiccup is not worth re-hammering it every frame).
 enum State {
     Loading,
@@ -185,11 +189,11 @@ enum State {
 }
 
 /// The session's cache of game tiles. The fetch runs on its own thread and comes back through a
-/// channel, so the UI never blocks; [`Store::steam`] drains the channel into textures.
+/// channel, so the UI never blocks; [`Store::poll`] drains the channel into textures.
 pub struct Store {
-    map: HashMap<u32, State>,
-    tx: Sender<(u32, Option<Vec<u8>>)>,
-    rx: Receiver<(u32, Option<Vec<u8>>)>,
+    map: HashMap<String, State>,
+    tx: Sender<(String, Option<Vec<u8>>)>,
+    rx: Receiver<(String, Option<Vec<u8>>)>,
 }
 
 impl Store {
@@ -198,53 +202,197 @@ impl Store {
         Store { map: HashMap::new(), tx, rx }
     }
 
-    /// Turn the fetches that finished into textures. Called from [`Store::steam`], which the
+    /// Turn the fetches that finished into textures. Called from the source getters, which the
     /// tile draw calls every frame while the row is visible.
     fn poll(&mut self, ctx: &egui::Context) {
-        while let Ok((appid, bytes)) = self.rx.try_recv() {
+        while let Ok((key, bytes)) = self.rx.try_recv() {
             let state = match bytes.and_then(|b| vox_client_core::images::decode(&b).ok()) {
                 Some(img) => {
                     let rgba = img.to_rgba8();
                     let (w, h) = rgba.dimensions();
                     let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
-                    State::Ready(ctx.load_texture(format!("game/{appid}"), color, egui::TextureOptions::LINEAR).id())
+                    State::Ready(ctx.load_texture(format!("game/{key}"), color, egui::TextureOptions::LINEAR).id())
                 }
                 None => State::Failed,
             };
-            self.map.insert(appid, state);
+            self.map.insert(key, state);
         }
     }
 
-    /// Start the fetch of `appid`'s capsule art if nobody did yet.
-    fn ensure(&mut self, appid: u32) {
-        if self.map.contains_key(&appid) {
+    /// Start the fetch of `key`'s art if nobody did yet.
+    fn ensure(&mut self, key: String, fetch: impl FnOnce() -> Option<Vec<u8>> + Send + 'static) {
+        if self.map.contains_key(&key) {
             return;
         }
-        self.map.insert(appid, State::Loading);
+        self.map.insert(key.clone(), State::Loading);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
+            let _ = tx.send((key, fetch()));
+        });
+    }
+
+    /// The texture of `appid`'s Steam capsule art if it has arrived; starts the fetch on the
+    /// first call and answers `None` (the caller draws the next source meanwhile) until then.
+    pub fn steam(&mut self, ctx: &egui::Context, appid: u32) -> Option<TextureId> {
+        let key = format!("steam/{appid}");
+        self.poll(ctx);
+        self.ensure(key.clone(), move || {
             // capsule_184x69.jpg is the small header art (~15 KB): enough for a 16-22 px tile.
             let url = format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{appid}/capsule_184x69.jpg");
-            let bytes = reqwest::blocking::Client::builder()
+            reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .build()
                 .ok()
                 .and_then(|c| c.get(&url).send().ok())
-                .and_then(|r| if r.status().is_success() { r.bytes().ok().map(|b| b.to_vec()) } else { None });
-            let _ = tx.send((appid, bytes));
+                .and_then(|r| if r.status().is_success() { r.bytes().ok().map(|b| b.to_vec()) } else { None })
         });
-    }
-
-    /// The texture of `appid`'s art if it has arrived; starts the fetch on the first call and
-    /// answers `None` (the caller draws the gamepad meanwhile) until then.
-    pub fn steam(&mut self, ctx: &egui::Context, appid: u32) -> Option<TextureId> {
-        self.poll(ctx);
-        self.ensure(appid);
-        match self.map.get(&appid) {
+        match self.map.get(&key) {
             Some(State::Ready(id)) => Some(*id),
             _ => None,
         }
     }
+
+    /// The game's own logo from Discord's app-assets CDN, resolved by game name: `None` while
+    /// it loads, and `None` for good when Discord has no such game — the caller then falls back
+    /// to the Steam/emoji sources.
+    pub fn discord(&mut self, ctx: &egui::Context, game_key: &str) -> Option<TextureId> {
+        let key = format!("discord/{game_key}");
+        self.poll(ctx);
+        let k = game_key.to_string();
+        self.ensure(key.clone(), move || discord_art(&k));
+        match self.map.get(&key) {
+            Some(State::Ready(id)) => Some(*id),
+            _ => None,
+        }
+    }
+}
+
+// ------------------------------------------------------------------ Discord's own art
+//
+// Discord's client matches a running process against its "detectable applications" list and
+// draws the game's logo from `cdn.discordapp.com/app-assets/{app_id}/{asset_id}.png` (the
+// rich-presence art), or the app's icon `cdn.discordapp.com/app-icons/{app_id}/{icon}.png`.
+// Both CDNs are public; the list is the same one Discord polls. Every match is verified by
+// NAME against the application itself before anything is drawn, so a wrong or stale entry can
+// never show another game's logo.
+
+/// The detectable-applications list, fetched once per session and shared by every lookup.
+enum Detectable {
+    Unfetched,
+    List(Arc<Vec<(u64, String)>>),
+    Failed,
+}
+static DETECTABLE: OnceLock<Mutex<Detectable>> = OnceLock::new();
+
+fn detectable_list() -> Option<Arc<Vec<(u64, String)>>> {
+    let m = DETECTABLE.get_or_init(|| Mutex::new(Detectable::Unfetched));
+    let mut g = m.lock().ok()?;
+    if let Detectable::List(l) = &*g {
+        return Some(l.clone());
+    }
+    if matches!(&*g, Detectable::Failed) {
+        return None;
+    }
+    let list = match http_get("https://discord.com/api/v9/applications/detectable") {
+        Ok(body) => parse_detectable(&body),
+        Err(_) => Vec::new(),
+    };
+    if list.is_empty() {
+        *g = Detectable::Failed;
+        return None;
+    }
+    let arc = Arc::new(list);
+    *g = Detectable::List(arc.clone());
+    Some(arc)
+}
+
+fn http_get(url: &str) -> Result<String, reqwest::Error> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?
+        .get(url)
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) KumaCord")
+        .send()?
+        .error_for_status()?
+        .text()
+}
+
+fn http_get_bytes(url: &str) -> Option<Vec<u8>> {
+    let r = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .ok()?
+        .get(url)
+        .send()
+        .ok()?;
+    if r.status().is_success() { r.bytes().ok().map(|b| b.to_vec()) } else { None }
+}
+
+/// Normalised name match — "League of Legends" matches "leagueoflegends".
+fn name_matches(app_name: &str, k: &str) -> bool {
+    let a = key(app_name);
+    !a.is_empty() && !k.is_empty() && (a == k || a.contains(k) || k.contains(&a))
+}
+
+/// `[{"id":"730","name":"Counter-Strike 2",...}, ...]` -> (app id, name) pairs.
+fn parse_detectable(body: &str) -> Vec<(u64, String)> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else { return Vec::new() };
+    v.as_array().map(|a| a.as_slice()).unwrap_or_default()
+        .iter()
+        .filter_map(|e| {
+            let id = e.get("id")?.as_str()?.parse::<u64>().ok()?;
+            let name = e.get("name")?.as_str()?.to_string();
+            Some((id, name))
+        })
+        .collect()
+}
+
+/// The rich-presence art to draw: the large image (type 1) when there is one, else the first.
+fn pick_asset(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let arr = v.as_array()?;
+    arr.iter()
+        .find(|a| a.get("type").and_then(|t| t.as_u64()) == Some(1))
+        .or_else(|| arr.first())
+        .and_then(|a| a.get("id")?.as_str())
+        .map(str::to_string)
+}
+
+fn asset_url(app: u64, asset: &str, ext: &str) -> String {
+    format!("https://cdn.discordapp.com/app-assets/{app}/{asset}.{ext}")
+}
+
+fn app_icon_url(app: u64, icon: &str) -> String {
+    format!("https://cdn.discordapp.com/app-icons/{app}/{icon}.png?size=256")
+}
+
+/// The game's logo bytes, or `None` (Discord has no such game / the API refused / CDN hiccup).
+fn discord_art(k: &str) -> Option<Vec<u8>> {
+    let list = detectable_list()?;
+    let &(app, _) = list.iter().find(|(_, name)| name_matches(name, k))?;
+    // Verify by name against the application itself: never draw another game's logo.
+    let info: serde_json::Value = serde_json::from_str(&http_get(&format!("https://discord.com/api/v9/applications/{app}")).ok()?).ok()?;
+    if !name_matches(info.get("name")?.as_str()?, k) {
+        return None;
+    }
+    let icon = info.get("icon").and_then(|i| i.as_str()).unwrap_or("");
+    // 1) the rich-presence art (app-assets CDN): png first, animated gif second.
+    if let Ok(assets) = http_get(&format!("https://discord.com/api/v9/applications/{app}/assets")) {
+        if let Some(asset) = pick_asset(&assets) {
+            for ext in ["png", "gif"] {
+                if let Some(b) = http_get_bytes(&asset_url(app, &asset, ext)) {
+                    return Some(b);
+                }
+            }
+        }
+    }
+    // 2) the app's icon (always on the public CDN).
+    if !icon.is_empty() {
+        if let Some(b) = http_get_bytes(&app_icon_url(app, icon)) {
+            return Some(b);
+        }
+    }
+    None
 }
 
 impl Default for Store {
@@ -262,6 +410,15 @@ pub fn tile(ctx: &egui::Context, painter: &egui::Painter, store: &mut Store, emo
     painter.rect_stroke(rect, corner, egui::Stroke::new(theme::stroke::HAIRLINE, theme::MOVEL_PRESSED), egui::StrokeKind::Inside);
     let inner = rect.shrink(2.5);
     let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
+    // Discord's own logo first (the same art the official client draws); Steam/emoji when
+    // Discord has no entry for the game.
+    let k = key(game);
+    if !k.is_empty() {
+        if let Some(tex) = store.discord(ctx, &k) {
+            painter.image(tex, inner, uv, Color32::WHITE);
+            return;
+        }
+    }
     match resolve(game) {
         Resolved::Steam(appid) => {
             if let Some(tex) = store.steam(ctx, appid) {
@@ -333,5 +490,38 @@ mod tests {
     fn the_key_ignores_case_and_punctuation() {
         assert_eq!(key("Rocket League™"), key("rocket league"));
         assert_eq!(key("HELLDIVERS 2"), "helldivers2");
+    }
+
+    #[test]
+    fn discord_names_match_by_normalised_key() {
+        assert!(name_matches("League of Legends", "leagueoflegends"));
+        assert!(name_matches("Counter-Strike 2", "counterstrike2"));
+        assert!(!name_matches("Steam", "counterstrike2"));
+        assert!(!name_matches("", "x"));
+        assert!(!name_matches("Dota 2", ""));
+    }
+
+    #[test]
+    fn detectable_json_parses_to_id_name_pairs() {
+        let body = r#"[{"id":"730","name":"Counter-Strike 2","icon":"abc"},{"id":"570","name":"Dota 2"}]"#;
+        assert_eq!(parse_detectable(body), vec![(730, "Counter-Strike 2".to_string()), (570, "Dota 2".to_string())]);
+        assert!(parse_detectable(r#"{"error":"401 Unauthorized"}"#).is_empty());
+        assert!(parse_detectable("not json").is_empty());
+    }
+
+    #[test]
+    fn the_large_image_is_the_picked_asset() {
+        let body = r#"[{"id":"small","name":"small","type":2},{"id":"big","name":"large","type":1}]"#;
+        assert_eq!(pick_asset(body).as_deref(), Some("big"));
+        assert_eq!(pick_asset(r#"[{"id":"only","type":1}]"#).as_deref(), Some("only"));
+        assert_eq!(pick_asset("[]"), None);
+        assert_eq!(pick_asset("{}"), None);
+    }
+
+    #[test]
+    fn discord_cdn_urls_are_the_public_ones() {
+        assert_eq!(asset_url(730, "abc123", "png"), "https://cdn.discordapp.com/app-assets/730/abc123.png");
+        assert_eq!(asset_url(730, "abc123", "gif"), "https://cdn.discordapp.com/app-assets/730/abc123.gif");
+        assert_eq!(app_icon_url(730, "iconhash"), "https://cdn.discordapp.com/app-icons/730/iconhash.png?size=256");
     }
 }

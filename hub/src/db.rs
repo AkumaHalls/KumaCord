@@ -774,7 +774,7 @@ pub fn insert_message_with(
 pub fn list_messages(conn: &Connection, channel_id: i64, before: Option<i64>, limit: i64, owner: &str) -> rusqlite::Result<Vec<Message>> {
     let mut st = conn.prepare(
         "SELECT m.id, m.content, m.created_at_ms, u.id, u.username, u.role, u.avatar_version, u.banner_version, u.display_name, u.badges,
-                m.mentions, m.mention_everyone, m.reply_to FROM messages m
+                m.mentions, m.mention_everyone, m.reply_to, u.avatar_animated, u.banner_animated FROM messages m
          JOIN users u ON u.id = m.user_id
          WHERE m.channel_id = ?1 AND m.id < ?2 ORDER BY m.id DESC LIMIT ?3",
     )?;
@@ -784,7 +784,7 @@ pub fn list_messages(conn: &Connection, channel_id: i64, before: Option<i64>, li
             channel_id: ChannelId(channel_id),
             content: r.get(1)?,
             created_at_ms: r.get(2)?,
-            author: display_user(r.get(3)?, r.get(4)?, &r.get::<_, String>(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get::<_, i64>(9)?.max(0) as u64, owner),
+            author: display_user(r.get(3)?, r.get(4)?, &r.get::<_, String>(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get::<_, i64>(9)?.max(0) as u64, r.get::<_, i64>(13)? != 0, r.get::<_, i64>(14)? != 0, owner),
             attachments: Vec::new(),
             mentions: Vec::new(),
             mention_everyone: false,
@@ -800,11 +800,11 @@ pub fn list_messages(conn: &Connection, channel_id: i64, before: Option<i64>, li
     Ok(msgs)
 }
 
-pub(crate) fn display_user(id: UserId, username: String, stored_role: &str, avatar: Option<String>, banner_version: Option<String>, display_name: Option<String>, badges: u64, owner: &str) -> User {
+pub(crate) fn display_user(id: UserId, username: String, stored_role: &str, avatar: Option<String>, banner_version: Option<String>, display_name: Option<String>, badges: u64, avatar_animated: bool, banner_animated: bool, owner: &str) -> User {
     let role = if is_owner(&username, owner) { Role::Owner } else { Role::from_wire(stored_role).min(Role::Admin) };
-    // (The animation flags are not carried by the history queries: a message's author is drawn
-    // from the still, which is what everybody else in the room has cached anyway.)
-    User { id, username, role, flags: badges, role_ids: Vec::new(), avatar, banner: banner_version, display_name, avatar_animated: false, banner_animated: false }
+    // The animation flags ride here too: a message author from history is drawn exactly like a
+    // live one, so a GIF avatar in the backlog animates as well.
+    User { id, username, role, flags: badges, role_ids: Vec::new(), avatar, banner: banner_version, display_name, avatar_animated, banner_animated }
 }
 
 // ---------------------------------------------------------------- badges (v1.1)
@@ -1137,21 +1137,23 @@ pub fn audit(conn: &Connection, actor: Option<UserId>, action: &str, target: Opt
 /// Newest first; `before` is an exclusive id cursor.
 pub fn list_audit(conn: &Connection, before: Option<i64>, limit: i64, owner: &str) -> rusqlite::Result<Vec<AuditEntry>> {
     let mut st = conn.prepare(
-        "SELECT a.id, a.at_ms, a.action, a.detail, au.id, au.username, au.role, au.avatar_version, au.banner_version, au.display_name, au.badges, tu.id, tu.username, tu.role, tu.avatar_version, tu.banner_version, tu.display_name, tu.badges
+        "SELECT a.id, a.at_ms, a.action, a.detail, au.id, au.username, au.role, au.avatar_version, au.banner_version, au.display_name, au.badges, tu.id, tu.username, tu.role, tu.avatar_version, tu.banner_version, tu.display_name, tu.badges, au.avatar_animated, au.banner_animated, tu.avatar_animated, tu.banner_animated
          FROM audit_log a
          LEFT JOIN users au ON au.id = a.actor_id
          LEFT JOIN users tu ON tu.id = a.target_id
          WHERE a.id < ?1 ORDER BY a.id DESC LIMIT ?2",
     )?;
     let rows = st.query_map(params![before.unwrap_or(i64::MAX), limit], |r| {
-        let person = |i: usize| -> rusqlite::Result<Option<User>> {
+        // `i` is the person's first column (4 = actor, 11 = target); `ai` their first
+        // animation-flag column (18 = actor, 20 = target).
+        let person = |i: usize, ai: usize| -> rusqlite::Result<Option<User>> {
             let id: Option<i64> = r.get(i)?;
             Ok(match id {
-                Some(id) => Some(display_user(UserId(id), r.get(i + 1)?, &r.get::<_, String>(i + 2)?, r.get(i + 3)?, r.get(i + 4)?, r.get(i + 5)?, r.get::<_, i64>(i + 6)?.max(0) as u64, owner)),
+                Some(id) => Some(display_user(UserId(id), r.get(i + 1)?, &r.get::<_, String>(i + 2)?, r.get(i + 3)?, r.get(i + 4)?, r.get(i + 5)?, r.get::<_, i64>(i + 6)?.max(0) as u64, r.get::<_, i64>(ai)? != 0, r.get::<_, i64>(ai + 1)? != 0, owner)),
                 None => None,
             })
         };
-        Ok(AuditEntry { id: r.get(0)?, at_ms: r.get(1)?, action: r.get(2)?, detail: r.get(3)?, actor: person(4)?, target: person(11)? })
+        Ok(AuditEntry { id: r.get(0)?, at_ms: r.get(1)?, action: r.get(2)?, detail: r.get(3)?, actor: person(4, 18)?, target: person(11, 20)? })
     })?;
     rows.collect()
 }

@@ -9,7 +9,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use image::{DynamicImage, ImageFormat, Rgb, RgbImage, Rgba, RgbaImage};
+use image::codecs::gif::{GifDecoder, GifEncoder, Repeat};
+use image::{AnimationDecoder, DynamicImage, Frame, ImageFormat, Rgb, RgbImage, Rgba, RgbaImage};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message as WsMsg;
@@ -200,6 +201,23 @@ fn dims(bytes: &[u8]) -> (u32, u32) {
     (img.width(), img.height())
 }
 
+/// An animated GIF of `colours` frames, 64x64, looping.
+fn gif(colours: &[Rgba<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut enc = GifEncoder::new(&mut out);
+        enc.set_repeat(Repeat::Infinite).unwrap();
+        for c in colours {
+            enc.encode_frame(Frame::new(RgbaImage::from_pixel(64, 64, *c))).unwrap();
+        }
+    }
+    out
+}
+
+fn frames_of(bytes: &[u8]) -> usize {
+    GifDecoder::new(Cursor::new(bytes)).unwrap().into_frames().collect_frames().unwrap().len()
+}
+
 async fn error_of(r: reqwest::Response) -> (StatusCode, String) {
     let s = r.status();
     (s, r.json::<ApiError>().await.map(|e| e.error).unwrap_or_default())
@@ -292,6 +310,101 @@ async fn transparent_pictures_are_stored_as_png() {
     assert_eq!(r.headers()["content-type"], "image/png");
     let img = image::load_from_memory(&r.bytes().await.unwrap()).unwrap().to_rgba8();
     assert_eq!((img.get_pixel(3, 32)[3], img.get_pixel(60, 32)[3]), (0, 255));
+    env.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_animated_avatar_is_served_as_an_animation_and_a_still_is_not() {
+    let env = setup().await;
+    let ana = env.who("ana").await;
+    let bia = env.who("bia").await;
+
+    // A still first: `?anim=1` answers 404, which is how the client knows to draw the still.
+    let still = env.upload_ok(&ana, png(300, 300, 3)).await;
+    assert!(!env.who("ana").await.user.avatar_animated, "a PNG is a still");
+    assert_eq!(env.get_avatar(&bia, ana.user.id, "?anim=1").await.status(), StatusCode::NOT_FOUND);
+
+    // Now a 3-frame GIF.
+    let v = env.upload_ok(&ana, gif(&[Rgba([255, 0, 0, 255]), Rgba([0, 0, 255, 255]), Rgba([0, 255, 0, 255])])).await;
+    assert_ne!(still, v);
+    assert!(env.who("ana").await.user.avatar_animated, "the flag rides the wire");
+
+    let anim = env.get_avatar(&bia, ana.user.id, "?anim=1").await;
+    assert_eq!(anim.status(), StatusCode::OK);
+    assert_eq!(anim.headers()["content-type"], "image/gif");
+    let anim_bytes = anim.bytes().await.unwrap();
+    assert_eq!(&anim_bytes[..3], b"GIF");
+    assert_eq!(frames_of(&anim_bytes), 3, "every frame survives the cleaning");
+    // The client asks with the size and the version too; the animation ignores the size, checks the version.
+    assert_eq!(env.get_avatar(&bia, ana.user.id, &format!("?size=64&anim=1&v={v}")).await.status(), StatusCode::OK);
+
+    // The still is still there, first frame, square at both sizes.
+    let r = env.get_avatar(&bia, ana.user.id, "?size=256").await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(dims(&r.bytes().await.unwrap()), (256, 256));
+
+    // The still and the animation never share an ETag; a stale animation URL is gone, not the still.
+    let (still_etag, anim_etag) = (
+        env.get_avatar(&bia, ana.user.id, "?size=64").await.headers()["etag"].to_str().unwrap().to_string(),
+        env.get_avatar(&bia, ana.user.id, "?anim=1").await.headers()["etag"].to_str().unwrap().to_string(),
+    );
+    assert_ne!(still_etag, anim_etag);
+    assert_eq!(env.get_avatar(&bia, ana.user.id, "?anim=1&v=deadbeef0000").await.status(), StatusCode::NOT_FOUND);
+
+    // Removing it takes the animation with it and clears the flag.
+    assert_eq!(env.remove_own(&ana).await.status(), StatusCode::OK);
+    assert_eq!(env.get_avatar(&bia, ana.user.id, "?anim=1").await.status(), StatusCode::NOT_FOUND);
+    assert!(!env.who("ana").await.user.avatar_animated);
+    env.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_version_changes_when_only_the_animation_changes() {
+    let env = setup().await;
+    let ana = env.who("ana").await;
+    let bia = env.who("bia").await;
+    let mut bia_ws = env.ws(&bia).await;
+    bia_ws.wait_for("ready", |e| matches!(e, ServerEvent::Ready { .. })).await;
+
+    // Same first frame (red), different animation: the version must differ, or every client would
+    // keep the old animation pinned under the same cache key.
+    let v1 = env.upload_ok(&ana, gif(&[Rgba([255, 0, 0, 255]), Rgba([0, 255, 0, 255])])).await;
+    let v2 = env.upload_ok(&ana, gif(&[Rgba([255, 0, 0, 255]), Rgba([0, 0, 255, 255])])).await;
+    assert_ne!(v1, v2, "the version covers the animation, not just the first frame");
+    let updated = bia_ws.updated(ana.user.id, Some(&v2)).await;
+    assert!(updated.avatar_animated, "the broadcast carries the flag");
+    assert_eq!(env.get_avatar(&bia, ana.user.id, &format!("?anim=1&v={v1}")).await.status(), StatusCode::NOT_FOUND, "the old animation URL is gone");
+    let anim = env.get_avatar(&bia, ana.user.id, "?anim=1").await;
+    assert_eq!(anim.status(), StatusCode::OK);
+    let bytes = anim.bytes().await.unwrap();
+    assert_eq!(frames_of(&bytes), 2);
+    // The second frame is blue now, not green.
+    let mut frames = GifDecoder::new(Cursor::new(&bytes)).unwrap().into_frames();
+    frames.next().unwrap().unwrap();
+    let second = frames.next().unwrap().unwrap();
+    let px = *second.buffer().get_pixel(32, 32);
+    assert!(px[2] > 200 && px[1] < 60, "second frame is blue, got {px:?}");
+    env.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn history_and_live_messages_carry_the_animation_flag() {
+    let env = setup().await;
+    let ana = env.who("ana").await;
+    let bia = env.who("bia").await;
+    env.upload_ok(&ana, gif(&[Rgba([255, 0, 0, 255]), Rgba([0, 0, 255, 255])])).await;
+    assert!(env.who("ana").await.user.avatar_animated);
+
+    let mut ana_ws = env.ws(&ana).await;
+    ana_ws.wait_for("ready", |e| matches!(e, ServerEvent::Ready { .. })).await;
+    let mut bia_ws = env.ws(&bia).await;
+    bia_ws.wait_for("ready", |e| matches!(e, ServerEvent::Ready { .. })).await;
+    let ch = env.first_text_channel(&ana).await;
+    ana_ws.0.send_text(&ClientEvent::SendMessage { channel_id: ChannelId(ch), content: "oi".into(), mentions: vec![], reply_to: None, reply_mention: false }).await;
+    let ServerEvent::MessageCreated { message } = bia_ws.wait_for("message", |e| matches!(e, ServerEvent::MessageCreated { .. })).await else { unreachable!() };
+    assert!(message.author.avatar_animated, "live messages carry the flag");
+    let hist: Vec<Message> = env.http.get(env.url(&format!("/api/channels/{ch}/messages"))).bearer_auth(&bia.token).send().await.unwrap().json().await.unwrap();
+    assert!(hist[0].author.avatar_animated, "and so does the history");
     env.server.shutdown().await;
 }
 
