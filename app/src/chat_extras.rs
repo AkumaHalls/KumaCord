@@ -576,27 +576,30 @@ pub fn quote_line(ui: &mut egui::Ui, r: &ReplyRef) -> bool {
     resp.clicked()
 }
 
-/// The text of a message with its mention chips (plain `links::message` when it has none).
+/// The text of a message with its mention chips (plain emoji-aware text when it has none).
 #[allow(clippy::too_many_arguments)]
-pub fn message_text(ui: &mut egui::Ui, chat: &mut ChatUi, target: Target, id: i64, caption: &str, ids: &[UserId], everyone: bool, me: Option<UserId>) {
-    if (ids.is_empty() && !everyone) || !caption.contains('@') {
-        crate::links::message(ui, caption);
-        return;
-    }
-    let spans = chat.chips(target, id, caption, ids, everyone);
-    if spans.is_empty() {
-        crate::links::message(ui, caption);
-        return;
-    }
+pub fn message_text(ui: &mut egui::Ui, chat: &mut ChatUi, textures: &mut crate::emoji::Textures, target: Target, id: i64, caption: &str, ids: &[UserId], everyone: bool, me: Option<UserId>) {
+    let spans = if (ids.is_empty() && !everyone) || !caption.contains('@') {
+        Arc::from(Vec::new())
+    } else {
+        chat.chips(target, id, caption, ids, everyone)
+    };
     let mut offset = 0;
     for line in caption.split('\n') {
         let (start, end) = (offset, offset + line.len());
         offset = end + 1;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
+            if spans.is_empty() {
+                // A `ui.label` (and `links::message`, which is built on it) draws an emoji with the
+                // font's monochrome glyph — that is the grey emoji that arrived in the rooms. The
+                // art goes through `rich_line`, which lays the PNG out as its own widget.
+                crate::emoji::rich_line(ui, textures, line, |ui: &mut egui::Ui, t: &str| { ui.add(egui::Label::new(t).selectable(true)); });
+                return;
+            }
             let mut pos = start;
             for s in spans.iter().filter(|s| s.range.start >= start && s.range.end <= end) {
-                text_part(ui, &caption[pos..s.range.start]);
+                text_part(ui, textures, &caption[pos..s.range.start]);
                 let label = &caption[s.range.clone()];
                 let (bg, fg) = match s.chip {
                     Chip::User(u) if Some(u) == me => (CHIP_ME_BG, CHIP_ME_TEXT),
@@ -613,17 +616,17 @@ pub fn message_text(ui: &mut egui::Ui, chat: &mut ChatUi, target: Target, id: i6
                 });
                 pos = s.range.end;
             }
-            text_part(ui, &caption[pos..end]);
+            text_part(ui, textures, &caption[pos..end]);
         });
     }
 }
 
-/// Plain text with clickable links, inside a wrapped row.
-fn text_part(ui: &mut egui::Ui, text: &str) {
+/// Plain text with clickable links, inside a wrapped row — emoji in their art, not the font's.
+fn text_part(ui: &mut egui::Ui, textures: &mut crate::emoji::Textures, text: &str) {
     for seg in crate::links::segments(text) {
         match seg {
             crate::links::Segment::Text(t) => {
-                ui.label(t);
+                crate::emoji::rich_line(ui, textures, t, |ui: &mut egui::Ui, t: &str| { ui.add(egui::Label::new(t).selectable(true)); });
             }
             crate::links::Segment::Link { shown, url } => {
                 if ui.link(shown).on_hover_text(&url).clicked() {

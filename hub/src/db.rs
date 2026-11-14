@@ -178,6 +178,11 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         ("badges", "INTEGER NOT NULL DEFAULT 0"),
         // Banners (v1.1): the version of the profile banner (the image is in `banner_blobs`).
         ("banner_version", "TEXT"),
+        // Whether the stored picture is an animation. Materialized here (rather than read back
+        // from `avatars`) because `UserRow::user()` has no connection to join with, and the flag
+        // rides on every `User` — see `avatar::store`, the only writer.
+        ("avatar_animated", "INTEGER NOT NULL DEFAULT 0"),
+        ("banner_animated", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         if !has_column(&tx, "users", column)? {
             tx.execute_batch(&format!("ALTER TABLE users ADD COLUMN {column} {decl}"))?;
@@ -241,6 +246,7 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS categories_position ON categories(position);",
     )?;
     crate::avatar::init(&tx)?;
+    crate::banner::init(&tx)?;
     crate::profile::init(&tx)?;
     crate::attachments::init(&tx)?;
     if !has_column(&tx, "sessions", "auth_epoch")? {
@@ -325,6 +331,11 @@ pub struct UserRow {
     pub display_name: Option<String>,
     /// Version of the profile banner image, if there is one.
     pub banner_version: Option<String>,
+    /// The stored avatar is an animation (GIF / animated WebP / APNG): the client asks for
+    /// `?anim=1` and plays the frames instead of drawing one still.
+    pub avatar_animated: bool,
+    /// The same, for the banner.
+    pub banner_animated: bool,
     /// The effective badge flags (automatic rules OR the admin's grants), materialized in
     /// the `users.badges` column by [`recompute_badges`] — the wire reads them from here.
     pub badges: u64,
@@ -367,7 +378,7 @@ impl UserRow {
     pub fn user(&self, owner: &str) -> User {
         // v1.1: `role_ids` is filled by the callers that know the database (login, the
         // admin lists); a bare row keeps the default of none.
-        User { id: self.id, username: self.username.clone(), role: self.role(owner), flags: self.badges, role_ids: Vec::new(), avatar: self.avatar.clone(), display_name: self.display_name.clone(), banner: self.banner_version.clone() }
+        User { id: self.id, username: self.username.clone(), role: self.role(owner), flags: self.badges, role_ids: Vec::new(), avatar: self.avatar.clone(), display_name: self.display_name.clone(), banner: self.banner_version.clone(), avatar_animated: self.avatar_animated, banner_animated: self.banner_animated }
     }
 
     pub fn account(&self, owner: &str) -> vox_proto::Account {
@@ -375,7 +386,7 @@ impl UserRow {
     }
 }
 
-const USER_COLS: &str = "u.id, u.username, u.role, u.password_hash, u.reset_hash, u.reset_expires_ms, u.server_muted, u.created_at_ms, u.avatar_version, u.display_name, u.banner_version, u.badges";
+const USER_COLS: &str = "u.id, u.username, u.role, u.password_hash, u.reset_hash, u.reset_expires_ms, u.server_muted, u.created_at_ms, u.avatar_version, u.display_name, u.banner_version, u.badges, u.avatar_animated, u.banner_animated";
 
 fn user_row(r: &rusqlite::Row) -> rusqlite::Result<UserRow> {
     Ok(UserRow {
@@ -391,6 +402,9 @@ fn user_row(r: &rusqlite::Row) -> rusqlite::Result<UserRow> {
         display_name: r.get(9)?,
         banner_version: r.get(10)?,
         badges: r.get::<_, i64>(11)?.max(0) as u64,
+        // Last, so the indices above never shift when a column is added here.
+        avatar_animated: r.get::<_, i64>(12)? != 0,
+        banner_animated: r.get::<_, i64>(13)? != 0,
     })
 }
 
@@ -788,7 +802,9 @@ pub fn list_messages(conn: &Connection, channel_id: i64, before: Option<i64>, li
 
 pub(crate) fn display_user(id: UserId, username: String, stored_role: &str, avatar: Option<String>, banner_version: Option<String>, display_name: Option<String>, badges: u64, owner: &str) -> User {
     let role = if is_owner(&username, owner) { Role::Owner } else { Role::from_wire(stored_role).min(Role::Admin) };
-    User { id, username, role, flags: badges, role_ids: Vec::new(), avatar, banner: banner_version, display_name }
+    // (The animation flags are not carried by the history queries: a message's author is drawn
+    // from the still, which is what everybody else in the room has cached anyway.)
+    User { id, username, role, flags: badges, role_ids: Vec::new(), avatar, banner: banner_version, display_name, avatar_animated: false, banner_animated: false }
 }
 
 // ---------------------------------------------------------------- badges (v1.1)
@@ -871,6 +887,8 @@ pub fn recompute_badges(conn: &Connection, owner: &str) -> rusqlite::Result<usiz
             avatar: None,
             display_name: None,
             banner_version: None,
+            avatar_animated: false,
+            banner_animated: false,
             badges: have.max(0) as u64,
         };
         let rank = conn.query_row("SELECT COUNT(*) FROM users WHERE id < ?1", [id], |r| r.get::<_, i64>(0))?;

@@ -294,6 +294,8 @@ mod tests {
             avatar: None,
             display_name: None,
             banner_version: None,
+            avatar_animated: false,
+            banner_animated: false,
             badges: 0,
         }
     }

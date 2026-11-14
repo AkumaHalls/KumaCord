@@ -53,28 +53,103 @@ pub struct Processed {
     pub mime: &'static str,
     /// Hash of `big`: the same picture uploaded twice has the same version.
     pub version: String,
+    /// The animation, when the upload was one: the container with every metadata chunk cut out
+    /// and every frame decoded inside the budget. `None` for a still — which is what every
+    /// avatar was before, so a still costs exactly what it always cost.
+    pub anim: Option<Anim>,
 }
 
-/// Untrusted file bytes in, the two stored sizes out.
+/// One stored animation (the cleaned container and its type).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Anim {
+    pub bytes: Vec<u8>,
+    pub mime: &'static str,
+}
+
+/// Untrusted file bytes in, the two stored sizes out (and the animation, if there is one).
 pub fn process(bytes: &[u8]) -> Result<Processed, ThumbError> {
     let img = decode_untrusted(bytes)?;
-    let transparent = has_transparency(&img);
+    let (w, h) = (img.width(), img.height());
     // Centre-crop to a square and resize (always to the full size: a 100 px picture is enlarged).
     let big = img.resize_to_fill(256, 256, FilterType::Lanczos3);
     drop(img);
     let small = big.resize_exact(64, 64, FilterType::Lanczos3);
+    // Transparency is decided on the RESIZED image, not on the decoded one: the decoded buffer is
+    // allowed 20 MP (80 MB of RGBA) and the decoder's `max_alloc` budget does not cover a second
+    // copy of it made here — which is what `to_rgba8` did, on every upload with an alpha channel,
+    // before the resize released it. The resized buffer is 256x256x4 = 256 KB at most.
+    let transparent = has_transparency(&big);
     let (mime, big_bytes, small_bytes) = if transparent {
         ("image/png", encode_png(&big)?, encode_png(&small)?)
     } else {
         ("image/jpeg", encode_jpeg(&big)?, encode_jpeg(&small)?)
     };
     let version = hex(&Sha256::digest(&big_bytes)[..VERSION_BYTES]);
-    Ok(Processed { small: small_bytes, big: big_bytes, mime, version })
+    Ok(Processed { small: small_bytes, big: big_bytes, mime, version, anim: keep_animation(bytes, w, h)? })
 }
 
-/// Does any pixel let the background through?
+/// The uploaded file's animation, cleaned and budgeted — or `None` when it has none to keep.
+///
+/// The stills above come from `decode_untrusted`, which takes the first frame: until now the rest
+/// of a GIF or an animated WebP was thrown away with the container and every avatar arrived as a
+/// still. Here the container is kept instead, but only after the treatment chat attachments
+/// already get — every metadata chunk cut out (so nothing of the original survives except the
+/// frames) and every frame decoded inside the pixel budget (so a file that only *looks* fine is
+/// refused).
+///
+/// Only GIF and WebP: `strip` cuts an APNG's animation chunks along with the rest of the
+/// ancillary data, so an APNG degrades to the still it already was. GIF and animated WebP are
+/// what people upload and what every picker exports.
+fn keep_animation(bytes: &[u8], w: u32, h: u32) -> Result<Option<Anim>, ThumbError> {
+    let kind = match image::guess_format(bytes) {
+        Ok(image::ImageFormat::Gif) => crate::attachments::Kind::Gif,
+        Ok(image::ImageFormat::WebP) => crate::attachments::Kind::WebP,
+        // A PNG or a JPEG avatar is a still whatever it claims: nothing to keep.
+        _ => return Ok(None),
+    };
+    let Some((clean, animated)) = crate::attachments::strip(kind, bytes) else {
+        return Ok(None);
+    };
+    if !animated || clean.len() > AVATAR_MAX_ANIMATED_BYTES {
+        return Ok(None);
+    }
+    // The cleaned container is what gets stored, so it is the thing that has to fit the budget.
+    // This used to verify the RAW bytes and store the cleaned ones unverified: `strip` only
+    // removes whole blocks and copies image blocks verbatim, so a clean container can only be
+    // smaller than the raw one — but that is a reading of `strip`, not a proof, and this is the
+    // last trusted decision point before the blob reaches the database and every client that
+    // draws the avatar. Decoding the clean container is also the cheaper half of the two.
+    match crate::attachments::verify_animation(kind, &clean, w, h) {
+        Ok(n) if n > 1 => {}
+        // A single frame is a still whatever the container says: nothing to keep, and no reason
+        // to spend the bytes on a second copy of the same picture.
+        Ok(_) => return Ok(None),
+        Err(e) => {
+            // Refusing is the honest answer for a bomb (the budget is a limit, not a warning),
+            // but a container our stripper cannot read is still a decodable picture: it keeps
+            // its still, which is what it would have got before animations existed.
+            return Err(match e {
+                crate::attachments::Refusal::TooManyFrames | crate::attachments::Refusal::Dimensions => ThumbError::TooLarge,
+                _ => return Ok(None),
+            });
+        }
+    }
+    Ok(Some(Anim { bytes: clean, mime: kind.mime() }))
+}
+
+/// Does any pixel let the background through? The two layouts that already ARE the answer are
+/// read in place; anything else converts, which on a resized avatar is at most 256 KB.
+/// (`to_rgba8` on an `ImageRgba8` clones the whole buffer, which is exactly the copy this
+/// avoids.)
 fn has_transparency(img: &DynamicImage) -> bool {
-    img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p[3] < 255)
+    if !img.color().has_alpha() {
+        return false;
+    }
+    match img {
+        DynamicImage::ImageRgba8(b) => b.pixels().any(|p| p[3] < 255),
+        DynamicImage::ImageLumaA8(b) => b.pixels().any(|p| p[3] < 255),
+        _ => img.to_rgba8().pixels().any(|p| p[3] < 255),
+    }
 }
 
 fn encode_jpeg(img: &DynamicImage) -> Result<Vec<u8>, ThumbError> {
@@ -146,9 +221,20 @@ pub fn init(conn: &Connection) -> rusqlite::Result<()> {
             mime TEXT NOT NULL,
             small BLOB NOT NULL,
             big BLOB NOT NULL,
+            anim BLOB,
+            anim_mime TEXT,
             updated_ms INTEGER NOT NULL
         );",
-    )
+    )?;
+    // The animation columns arrived after the first avatar tables existed. Additive like every
+    // other column here: an older row reads back with no animation, which is what it always had.
+    if !crate::db::has_column(conn, "avatars", "anim")? {
+        conn.execute_batch("ALTER TABLE avatars ADD COLUMN anim BLOB")?;
+    }
+    if !crate::db::has_column(conn, "avatars", "anim_mime")? {
+        conn.execute_batch("ALTER TABLE avatars ADD COLUMN anim_mime TEXT")?;
+    }
+    Ok(())
 }
 
 /// Store (replace) the user's picture; returns the version it had before, if any.
@@ -156,10 +242,11 @@ pub fn store(conn: &mut Connection, user_id: UserId, p: &Processed) -> rusqlite:
     let tx = conn.transaction()?;
     let before: Option<String> = tx.query_row("SELECT avatar_version FROM users WHERE id = ?", [user_id], |r| r.get(0)).optional()?.flatten();
     tx.execute(
-        "INSERT OR REPLACE INTO avatars (user_id, version, mime, small, big, updated_ms) VALUES (?, ?, ?, ?, ?, ?)",
-        params![user_id, p.version, p.mime, p.small, p.big, now_ms()],
+        "INSERT OR REPLACE INTO avatars (user_id, version, mime, small, big, anim, anim_mime, updated_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        params![user_id, p.version, p.mime, p.small, p.big, p.anim.as_ref().map(|a| &a.bytes), p.anim.as_ref().map(|a| a.mime), now_ms()],
     )?;
-    tx.execute("UPDATE users SET avatar_version = ? WHERE id = ?", params![p.version, user_id])?;
+    // The flag rides on `users` so `UserRow::user()` can put it on the wire without a join.
+    tx.execute("UPDATE users SET avatar_version = ?, avatar_animated = ? WHERE id = ?", params![p.version, p.anim.is_some(), user_id])?;
     tx.commit()?;
     Ok(before)
 }
@@ -169,7 +256,7 @@ pub fn clear(conn: &mut Connection, user_id: UserId) -> rusqlite::Result<Option<
     let tx = conn.transaction()?;
     let before: Option<String> = tx.query_row("SELECT avatar_version FROM users WHERE id = ?", [user_id], |r| r.get(0)).optional()?.flatten();
     tx.execute("DELETE FROM avatars WHERE user_id = ?", [user_id])?;
-    tx.execute("UPDATE users SET avatar_version = NULL WHERE id = ?", [user_id])?;
+    tx.execute("UPDATE users SET avatar_version = NULL, avatar_animated = 0 WHERE id = ?", [user_id])?;
     tx.commit()?;
     Ok(before)
 }
@@ -178,6 +265,12 @@ pub fn clear(conn: &mut Connection, user_id: UserId) -> rusqlite::Result<Option<
 pub fn load(conn: &Connection, user_id: UserId, size: u32) -> rusqlite::Result<Option<(String, String, Vec<u8>)>> {
     let col = if size <= 64 { "small" } else { "big" };
     conn.query_row(&format!("SELECT version, mime, {col} FROM avatars WHERE user_id = ?"), [user_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .optional()
+}
+
+/// (version, mime, animation bytes), or `None` when the stored picture is a still.
+pub fn load_anim(conn: &Connection, user_id: UserId) -> rusqlite::Result<Option<(String, String, Vec<u8>)>> {
+    conn.query_row("SELECT version, anim_mime, anim FROM avatars WHERE user_id = ? AND anim IS NOT NULL", [user_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .optional()
 }
 
@@ -262,23 +355,37 @@ pub async fn remove_avatar(State(s): State<AppState>, me: Authed, Path(id): Path
 pub struct AvatarQuery {
     size: Option<u32>,
     v: Option<String>,
+    /// `1` asks for the animation instead of the still. A picture that is not animated answers
+    /// `404`, which is what tells the client to draw the still it already has.
+    anim: Option<u8>,
 }
 
-/// `GET /api/users/{id}/avatar?size=64|256[&v=<version>]`
+/// `GET /api/users/{id}/avatar?size=64|256[&v=<version>]`, plus `?anim=1` for the animation.
 pub async fn get_avatar(State(s): State<AppState>, _: AuthUser, Path(id): Path<UserId>, Query(q): Query<AvatarQuery>, headers: HeaderMap) -> Result<Response, ApiErr> {
-    let size = match q.size {
-        None => 256,
-        Some(n) if AVATAR_SIZES.contains(&n) => n,
-        Some(_) => return Err(ApiErr::new(StatusCode::BAD_REQUEST, "size must be 64 or 256")),
-    };
-    let Some((version, mime, bytes)) = s.db.call(move |c| load(c, id, size)).await? else {
-        return Err(ApiErr::new(StatusCode::NOT_FOUND, "no picture"));
+    let animated = q.anim.is_some_and(|n| n != 0);
+    let (version, mime, bytes) = if animated {
+        let Some(found) = s.db.call(move |c| load_anim(c, id)).await? else {
+            return Err(ApiErr::new(StatusCode::NOT_FOUND, "the picture is not animated"));
+        };
+        found
+    } else {
+        let size = match q.size {
+            None => 256,
+            Some(n) if AVATAR_SIZES.contains(&n) => n,
+            Some(_) => return Err(ApiErr::new(StatusCode::BAD_REQUEST, "size must be 64 or 256")),
+        };
+        let Some(found) = s.db.call(move |c| load(c, id, size)).await? else {
+            return Err(ApiErr::new(StatusCode::NOT_FOUND, "no picture"));
+        };
+        found
     };
     // The URL with the version is the cache key: a stale version is gone, not "the new picture".
     if q.v.as_deref().is_some_and(|v| v != version) {
         return Err(ApiErr::new(StatusCode::NOT_FOUND, "that version of the picture is gone"));
     }
-    let etag = format!("\"{version}-{size}\"");
+    // The size is part of the ETag so the still and the animation of the same picture never share
+    // one; the animation has no size, so it uses 0.
+    let etag = format!("\"{version}-{}\"", if animated { 0 } else { q.size.unwrap_or(256) });
     let cache = if q.v.is_some() { "private, max-age=31536000, immutable" } else { "private, no-cache" };
     let unchanged = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).is_some_and(|v| v.split(',').any(|t| t.trim() == etag));
     let mut resp = if unchanged { StatusCode::NOT_MODIFIED.into_response() } else { bytes.into_response() };
@@ -390,9 +497,9 @@ mod tests {
     }
 
     #[test]
-    fn gif_first_frame_is_taken() {
-        use image::codecs::gif::{GifEncoder, Repeat};
-        use image::Frame;
+    fn gif_first_frame_is_taken_and_the_rest_is_kept() {
+        use image::codecs::gif::{GifDecoder, GifEncoder, Repeat};
+        use image::{AnimationDecoder, Frame};
         let mut gif = Vec::new();
         {
             let mut enc = GifEncoder::new(&mut gif);
@@ -405,6 +512,13 @@ mod tests {
         let p = process(&gif).unwrap();
         let px = *decode(&p.big).to_rgb8().get_pixel(128, 128);
         assert!(px[0] > 200 && px[2] < 60, "first frame (red), got {px:?}");
+        // The still is the first frame; the animation rides along, cleaned, so a client that can
+        // play it gets the whole thing and one that cannot sees exactly what it always saw.
+        let anim = p.anim.as_ref().expect("an animated GIF keeps its container");
+        assert_eq!(anim.mime, "image/gif");
+        let frames = GifDecoder::new(Cursor::new(&anim.bytes)).unwrap().into_frames().collect_frames().unwrap();
+        assert_eq!(frames.len(), 2, "cleaning must not drop frames");
+        assert_eq!(p.anim.as_ref().map(|a| a.bytes.len()), Some(anim.bytes.len()));
     }
 
     #[test]

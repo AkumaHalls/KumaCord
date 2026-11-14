@@ -356,6 +356,13 @@ pub fn style() -> egui::Style {
         (TextStyle::Name(STYLE_SECTION.into()), display(size::SECTION)),
     ]
     .into();
+    // Labels are NOT selectable by default. egui ships `selectable_labels: true`, which makes every
+    // `Label` that does not say otherwise take text selection and ask for `CursorIcon::Text` on
+    // hover - and `PlatformOutput::cursor_icon` is *sticky between frames*, so the I-beam outlives
+    // the label that asked for it: the pointer arrives on a widget that sets no cursor (my avatar in
+    // the "você" panel, on the way to change presence) still carrying the text cursor. The chat asks
+    // for selection back, explicitly, where copying a line matters (`chat_extras::text_part`).
+    s.interaction.selectable_labels = false;
     let sp = &mut s.spacing;
     sp.item_spacing = egui::vec2(space::M, 5.0);
     sp.button_padding = egui::vec2(space::M, 3.0);
@@ -394,6 +401,52 @@ mod tests {
     fn ratio(a: Color32, b: Color32) -> f32 {
         let (hi, lo) = if lum(a) > lum(b) { (lum(a), lum(b)) } else { (lum(b), lum(a)) };
         (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// The pointer must not turn into a text cursor over the app's labels. egui ships
+    /// `selectable_labels: true`, which makes every `Label` that does not say otherwise take text
+    /// selection and ask for `CursorIcon::Text` on hover — and `PlatformOutput::cursor_icon` is
+    /// *sticky between frames*, so the I-beam outlived the label that asked for it and showed up on
+    /// the next widget that set no cursor: my avatar in the "você" panel, on the way to change
+    /// presence. Where copying a line matters (the chat) selection is asked for back explicitly
+    /// (`chat_extras::text_part`).
+    ///
+    /// Two frames per stage: egui fills a widget's `hovered` flag from the *previous* frame's
+    /// interact pass (`Context::register_widget`), so a label only gets the chance to ask for the
+    /// text cursor on its second frame under the pointer.
+    #[test]
+    fn a_label_does_not_take_the_text_cursor_and_it_does_not_outlive_the_label() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 60.0));
+        // The pointer sits over the label, the way it does over a channel name in the sidebar.
+        let pointer = || egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![egui::Event::PointerMoved(egui::pos2(20.0, 10.0))],
+            ..Default::default()
+        };
+        let icon = |out: &egui::FullOutput| out.platform_output.cursor_icon;
+
+        // Warm-up: the pointer arrives over the label; its hover is decided at the end of this frame.
+        let mut out = ctx.run_ui(pointer(), |ui| {
+            ui.add(egui::Label::new("um canal qualquer"));
+        });
+        out.textures_delta.clear();
+
+        // The label is hovered now and must not ask for the text cursor.
+        let mut out = ctx.run_ui(pointer(), |ui| {
+            ui.add(egui::Label::new("um canal qualquer"));
+        });
+        out.textures_delta.clear();
+        assert_ne!(icon(&out), egui::CursorIcon::Text, "a label took the text cursor");
+
+        // And the next frame, over a widget that sets no cursor of its own (my avatar, a bare
+        // `allocate_exact_size`): the I-beam must not have followed the pointer here either.
+        let mut out = ctx.run_ui(pointer(), |ui| {
+            ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
+        });
+        out.textures_delta.clear();
+        assert_ne!(icon(&out), egui::CursorIcon::Text, "the I-beam outlived the label that asked for it");
     }
 
     /// The tokens that were carrying unreadable text or an invisible component, pinned so they

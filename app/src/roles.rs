@@ -24,6 +24,9 @@ const ADMIN_COLOR: Color32 = Color32::from_rgb(0xE9, 0x9A, 0xC0);
 const MOD_COLOR: Color32 = Color32::from_rgb(0x62, 0xC6, 0xD0);
 /// Audit log page size.
 const AUDIT_PAGE: u32 = 100;
+/// The colour a new category gets when the field is left blank: the same one the hub's own
+/// default uses, so a blank field never becomes a 400 ("a cor precisa ser #rrggbb").
+const DEFAULT_CATEGORY_COLOR: &str = "#5865F2";
 
 pub fn role_label(role: Role) -> &'static str {
     match role {
@@ -319,6 +322,15 @@ pub fn admin_error(e: &anyhow::Error) -> String {
         "O último canal de texto não pode ser apagado.".into()
     } else if l.contains("channel name must be") {
         format!("O nome do canal precisa ter de 1 a {} caracteres.", vox_proto::CHANNEL_NAME_MAX)
+    } else if l.contains("a cor precisa ser") {
+        // The hub's own wording (`check_category` / the role editor). The category field is
+        // optional in the UI, so reaching this means somebody typed something that is not
+        // `#rrggbb` — say that instead of the generic refusal.
+        "A cor precisa ser no formato #rrggbb (ex.: #5865F2). Deixe em branco para a cor padrão.".into()
+    } else if l.contains("o nome da categoria precisa") {
+        "O nome da categoria precisa ter de 1 a 32 caracteres.".into()
+    } else if l.contains("o nome do cargo precisa") {
+        "O nome do cargo precisa ter de 1 a 24 caracteres.".into()
     } else if l.contains("http 403") {
         "Seu cargo não permite isso.".into()
     } else if l.contains("http 404") || l.contains("http 405") {
@@ -2077,10 +2089,17 @@ impl App {
             ui.add_space(space::S);
             let name = self.roles.new_category.trim().to_string();
             if ui.add_enabled_ui(!name.is_empty(), |ui| ui_kit::button(ui, Kind::Secondary, Some(ph::PLUS), "Criar categoria")).inner.clicked() {
-                let color = if self.roles.new_category_color.trim().starts_with('#') {
-                    self.roles.new_category_color.trim().to_string()
+                // A blank colour used to send a bare "#", which the hub answers with a 400
+                // ("a cor precisa ser #rrggbb") — and that 400 was then reported as "não foi
+                // possível conectar ao servidor", so creating a category looked like a dead hub.
+                // The field is optional in the UI, so it falls back to the hub's own default.
+                let typed = self.roles.new_category_color.trim();
+                let color = if typed.is_empty() {
+                    DEFAULT_CATEGORY_COLOR.to_string()
+                } else if typed.starts_with('#') {
+                    typed.to_string()
                 } else {
-                    format!("#{}", self.roles.new_category_color.trim())
+                    format!("#{typed}")
                 };
                 let position = self.categories.len() as i32;
                 self.admin(AdminCmd::CreateCategory { name, color, position });
@@ -2091,15 +2110,24 @@ impl App {
     }
 
     /// v1.2: "Salvar" of the category being edited. The name is required (an empty one just
-    /// closes the editor); the colour gets its `#` back when the person left it out.
+    /// closes the editor); the colour gets its `#` back when the person left it out, and a
+    /// blank one falls back to the default instead of a bare "#".
     fn save_category(&mut self, id: ChannelId, name: &str) {
         self.roles.editing_category = None;
         let name = name.trim().to_string();
         if name.is_empty() {
             return;
         }
-        let color = self.roles.editing_category_color.trim().to_string();
-        let color = if color.starts_with('#') { color } else { format!("#{color}") };
+        // Same rule as the create form above: a blank field means the hub's default colour,
+        // not a bare "#" (which the hub refuses with a 400).
+        let typed = self.roles.editing_category_color.trim();
+        let color = if typed.is_empty() {
+            DEFAULT_CATEGORY_COLOR.to_string()
+        } else if typed.starts_with('#') {
+            typed.to_string()
+        } else {
+            format!("#{typed}")
+        };
         self.roles.editing_category_color.clear();
         // The order is the sidebar's business (the drag & drop), so this category's current
         // position goes back untouched — the hub writes what it is given.
@@ -2321,6 +2349,23 @@ mod tests {
         assert!(admin_error(&e("members failed: HTTP 404 Not Found: ")).contains("versão antiga"));
     }
 
+    /// The report that started this: a refused create-category (HTTP 400 "Bad Request") fell into
+    /// the transport branch because the reason phrase contains "request", so it was shown as
+    /// "não foi possível conectar ... porta 7890". A refusal must never read as a dead server.
+    #[test]
+    fn a_refused_category_is_not_a_dead_server() {
+        let e = |s: &str| anyhow::anyhow!("{s}");
+        let refused = e("create category failed: HTTP 400 Bad Request: a cor precisa ser #rrggbb");
+        let msg = admin_error(&refused);
+        assert!(msg.contains("#rrggbb"), "{msg}");
+        assert!(!msg.contains("7890"), "{msg}");
+        let msg = crate::backend::friendly(&refused);
+        assert!(msg.starts_with("O servidor não aceitou"), "{msg}");
+        // A real transport failure still says so, URL and all.
+        let down = e("create category request: error sending request for url (http://10.0.0.2:7890/api/admin/categories)");
+        assert!(crate::backend::friendly(&down).contains("porta 7890"));
+    }
+
     #[test]
     fn audit_lines_read_in_portuguese() {
         assert_eq!(audit_action_pt(vox_proto::AUDIT_MOVE), "moveu");
@@ -2364,7 +2409,7 @@ mod tests {
 
     #[test]
     fn the_people_picker_offers_members_and_moderators_only() {
-        let info = |id, name: &str, role| MemberInfo { user: User { id, username: name.into(), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None }, has_password: false, server_muted: false, created_at_ms: 0, granted: 0, banned: None };
+        let info = |id, name: &str, role| MemberInfo { user: User { id, username: name.into(), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None, avatar_animated: false, banner_animated: false }, has_password: false, server_muted: false, created_at_ms: 0, granted: 0, banned: None };
         let ms = vec![info(UserId(1), "dono", Role::Owner), info(UserId(2), "adm", Role::Admin), info(UserId(3), "ana", Role::Member), info(UserId(4), "anabela", Role::Moderator), info(UserId(5), "bia", Role::Member)];
         let names = |v: Vec<&MemberInfo>| v.iter().map(|m| m.user.username.clone()).collect::<Vec<_>>();
         assert_eq!(names(pick_candidates(&ms, &[], "an")), ["ana", "anabela"]);

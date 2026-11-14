@@ -914,7 +914,17 @@ impl App {
                 // Banner, and the picture overlapping its lower edge (a ring in the card's colour).
                 let r = theme::radius::POPUP;
                 let (banner, _) = ui.allocate_exact_size(Vec2::new(POPOUT_WIDTH, BANNER_H), Sense::hover());
-                ui.painter().rect_filled(banner, egui::CornerRadius { nw: r, ne: r, sw: 0, se: 0 }, banner_color);
+                let painter = ui.painter_at(banner);
+                painter.rect_filled(banner, egui::CornerRadius { nw: r, ne: r, sw: 0, se: 0 }, banner_color);
+                // Their banner over the flat colour, cropped to the band (never stretched), with the
+                // card's own rounded corners put back on top of it.
+                if crate::avatars::draw_banner(&mut self.avatars.banners.store, &painter, ui.ctx(), banner, &user) {
+                    // The card's rounded top corners, back over the picture (a square of the card's
+                    // own colour with the right corner rounded: the picture keeps its square edge).
+                    let corner = |min: Pos2, which: egui::CornerRadius| painter.rect_filled(egui::Rect::from_min_size(min, Vec2::splat(r as f32)), which, theme::PAREDE);
+                    corner(banner.left_top(), egui::CornerRadius { nw: r, ne: 0, sw: 0, se: 0 });
+                    corner(banner.right_top() - Vec2::new(r as f32, 0.0), egui::CornerRadius { nw: 0, ne: r, sw: 0, se: 0 });
+                }
                 let center = Pos2::new(banner.left() + 18.0 + AVATAR_R, banner.bottom());
                 ui.painter().circle_filled(center, AVATAR_R + 5.0, theme::PAREDE);
                 crate::avatars::draw_avatar(&mut self.avatars.store, ui.painter(), ui.ctx(), center, AVATAR_R, &user, Surface::Popout);
@@ -978,10 +988,20 @@ impl App {
                             ui.add_space(2.0);
                             egui::Frame::new().fill(theme::MOVEL).corner_radius(theme::radius::BUTTON).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.add(egui::Label::new(RichText::new(line).color(theme::TEXTO)).wrap());
-                                if let Some(el) = activity_elapsed(a, now) {
-                                    ui.label(RichText::new(el).font(theme::body(11.5)).color(theme::NEVOA));
-                                }
+                                // v1.6: the game's own tile left of the two lines, as on Discord.
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    let (r, _) = ui.allocate_exact_size(Vec2::splat(crate::game_icons::TILE_CARD), Sense::hover());
+                                    crate::game_icons::tile(ui.ctx(), &ui.painter_at(r), &mut self.game_icons, &mut self.emoji_textures, &a.name, r);
+                                    ui.vertical(|ui| {
+                                        // One line, "…" when the game's name does not fit; hover shows it whole.
+                                        ui.add(egui::Label::new(RichText::new(line.clone()).color(theme::TEXTO)).truncate().selectable(false))
+                                            .on_hover_text(line);
+                                        if let Some(el) = activity_elapsed(a, now) {
+                                            ui.label(RichText::new(el).font(theme::body(11.5)).color(theme::NEVOA));
+                                        }
+                                    });
+                                });
                             });
                         }
                     }

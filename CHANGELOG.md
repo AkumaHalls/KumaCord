@@ -37,10 +37,58 @@ categorias não pulam mais quando você mexe só nos canais.
   (`CONTROL_CHECKBOX_BORDER_RADIUS`) — antes o checkbox herdava o raio da linha
   e virava círculo.
 
+### Adicionado (perfil)
+
+- **Avatar animado (GIF) e banner de perfil.** O hub guarda o GIF limpo (sem
+  metadados, EXEX incluído) além do still, e serve a animação em `?anim=1` quando
+  o `User::avatar_animated`/`banner_animated` diz que existe uma — um avatar
+  estático não paga nada por isso. O banner é novo de ponta a ponta (`banner.rs`,
+  tabela `banner_blobs`, caixa 600x240), com remoção própria e pelo moderador.
+- **Catálogo de emojis ampliado** para a paridade com o Discord, com a arte em
+  PNG (Twemoji) em vez do glifo monocromático da fonte — o emote colorido chega
+  colorido na sala, e cinza nunca mais.
+- **Tile do jogo na atividade** ("Jogando X"), como no Discord: quadradinho
+  escuro com raio concêntrico à linha, mostrando a arte oficial do jogo na
+  Steam (appid mapeado em `game_icons.rs`, capsule 184x69 baixada uma vez da CDN
+  pública e virada em textura numa thread, sem travar a UI) ou um emoji temático
+  do próprio catálogo para jogos fora da Steam; jogo desconhecido ganha o
+  gamepad. Aparece na lista de membros, na lista online e no painel "você", e
+  no cartão de perfil ao lado de "Jogando X".
+
+### Corrigido (ponteiro do mouse)
+
+- **O ponteiro não vira mais cursor de texto.** O egui liga por padrão
+  `selectable_labels`, o que faz qualquer rótulo pedir o cursor de texto ao ser
+  tocado — e esse cursor gruda entre quadros, aparecendo sobre o avatar do painel
+  "você" quando você ia mudar a presença. Agora os rótulos do app não são
+  selecionáveis; o chat, onde copiar um treço importa, pede a seleção de volta.
+
+### Corrigido (segurança, antes do push)
+
+- **O hub não copia mais o buffer decodificado inteiro.** A decisão "tem
+  transparência?" era tomada antes do resize, sobre a imagem decodificada de até
+  20 MP — e o orçamento do decoder não cobria essa segunda cópia. Dois uploads
+  decodificando ao mesmo tempo custavam ~336 MB de pico, a cada janela de rate
+  limit, por qualquer membro: em instância pequena era o hub inteiro que caía.
+  Agora a decisão é sobre a imagem já redimensionada (no máximo 576 KB) e as
+  layouts que já são a resposta são lidas sem copiar. O avatar, que tinha o mesmo
+  padrão, recebeu a mesma correção.
+- **A animação guardada é verificada depois de limpa.** O hub conferia os bytes
+  crus e gravava o container limpo sem re-verificar — que é justamente o que vai
+  para o banco e para cada cliente que abre o perfil. Agora `strip` vem primeiro
+  e a verificação roda sobre o que é armazenado (e o decode sai mais barato: um em
+  vez de dois).
+
 ### Verificação
 
-- `cargo test -p voxhub-app --bin KumaCord` = 325 passed, 0 failed (7 testes
-  novos cobrindo a intercalação, o arrastar de categoria e o lote).
+- `cargo test -p voxhub-app --bin KumaCord` = 340 passed, 0 failed; hub 304,
+  0 failed (inclui 7 testes novos de banner e o da intercalação da sidebar).
+- Auditoria de segurança (skill `security-audit`, modo guiado) antes do push:
+  dois agentes de revisão focados, somente leitura, sobre `banner.rs` + as 3 rotas
+  novas + as constantes do `vox-proto`, e sobre o caminho de decodificação de
+  bytes não-confiáveis. Um achado medium confirmado e corrigido (acima), um
+  `needs_validation` fechado em garantia, o resto rejeitado com motivo. Detalhe e
+  o que ficou sem cobertura em `docs/varredura-discord-paridade.md` § 11.6.
 
 ## [1.5.0] — 2026-11-09
 

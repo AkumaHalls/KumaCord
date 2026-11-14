@@ -66,8 +66,8 @@
 | Nome de exibição, "Sobre mim", cor de destaque | ✅ | — | v0.6 |
 | Status custom + presença (Ausente/Não perturbe/Invisível) | ✅ | — | — |
 | **Badges de perfil (catálogo, tenure com brilho, editor admin)** | ✅ | — | 1.0.4/1.0.5 |
-| **Avatar animado (GIF)** | ❌ | M | O hub re-codifica tudo; precisa guardar o GIF + animar |
-| **Banner de perfil** (imagem/GIF atrás do card) | ❌ | M | Nem imagem estática temos hoje (só cor) |
+| **Avatar animado (GIF)** | ✅ | — | v1.6: `?anim=1` + `User::avatar_animated`; o hub guarda o container limpo (`strip`) além do still |
+| **Banner de perfil** (imagem/GIF atrás do card) | ✅ | — | v1.6: `banner.rs` (tabela `banner_blobs`), caixa 600x240, mesma bifurcação de animação |
 | Efeitos/nomeplate (os cosméticos animados) | ❌ | G | Pós-GIF, se rolar |
 
 ## 6. Cargos e permissões 🔨 EM ANDAMENTO (S4)
@@ -125,7 +125,7 @@
 4. ❌ **Kick** + **timeout** (P, completam a moderação)
 5. ❌ **Tema Discord** (P visual)
 6. ❌ **Categorias de canais** (M, pedido explícito)
-7. ❌ **GIF avatar + banner** (M)
+7. ✅ **GIF avatar + banner** (v1.6)
 8. ❌ **Tópico de canal** + **slowmode** + **silenciar canal** (P cada)
 9. ❌ **GIFs no chat** (M) → depois **emojis do servidor** (M) → **stickers** (M)
 10. ❌ **Ícone do servidor** (P) → depois o resto da lista (G: threads, DM grupo, stage)
@@ -230,5 +230,90 @@ App (cliente)
 - [x] Tópico do canal no header do chat; configs de voz (user_limit/bitrate) no editor
 
 Verificação
-- [x] `cargo test -p voxhub-app --bin KumaCord` = 325 passed; hub 289; proto 77
+- [x] `cargo test -p voxhub-app --bin KumaCord` = 340 passed; hub 304; proto 77
 - [x] revisão `ecc:rust-reviewer` nas mudanças de hub/proto (4 achados fechados)
+
+### 11.5 O ponteiro que virava cursor de texto (relevado: "o ponteiro muda pra como se fosse digitar texto")
+
+O menu de presença do painel "você" funcionava, mas ao chegar com o mouse sobre o avatar para
+abri-lo o ponteiro virava I-beam. Não era o menu: era o egui.
+
+**Causa raiz:** `egui-0.36.2` liga `interaction.selectable_labels = true` por padrão
+(`style.rs:1489`), e `Label` sem `.selectable(false)` cai nisso (`widgets/label.rs:308`). Um label
+selecionável, em hover, pede `CursorIcon::Text` (`text_selection/label_text_selection.rs:541`) — e
+`PlatformOutput::cursor_icon` é **sticky entre frames** (`data/output.rs:246`, "sticky between
+frames"). Somando: qualquer label da sidebar (um nome de canal, por exemplo) deixava o I-beam
+marcado, e o ponteiro continuava com ele sobre o widget seguinte que não define cursor — o avatar
+do painel "você", que é um `allocate_exact_size` cru (`avatars.rs:678`).
+
+**Correção:** uma linha em `app/src/theme.rs` — `s.interaction.selectable_labels = false`. Nenhum
+lugar do app pedia `Label::selectable(true)` (há vários `.selectable(false)` explicitos só para
+escapar do I-beam), então nada se perdeu. O chat, onde copiar um treco importa, pede a seleção de
+volta, explícito: `chat_extras::text_part` e a closure do `rich_line` usam
+`ui.add(Label::new(t).selectable(true))`. De brinde, `Hyperlink` (`widgets/hyperlink.rs:56`) também
+lia o default: links deixam de ser selecionáveis e seguem apontando com a mão, como no Discord.
+
+Teste que trava: `theme::tests::a_label_does_not_take_the_text_cursor_and_it_does_not_outlive_the_label`
+(duas frames: label sob o ponteiro, depois um widget sem cursor — nenhuma das duas pode ser `Text`).
+
+### 11.6 Auditoria de segurança antes do push (skill `security-audit`, modo guiado)
+
+Dois agentes de revisão focados, um por superfície nova: `hub/src/banner.rs` + as 3 rotas em
+`hub/src/api.rs:79-82` + as constantes/doc em `vox-proto`, e o caminho de decodificação de bytes
+não-confiáveis. Somente leitura — nada foi construído, executado ou sondado.
+
+**Achado confirmado e corrigido (medium, memória):**
+`has_transparency` era chamada antes do resize, sobre a imagem decodificada inteira. Os limites
+do decoder (`linkpreview/thumb.rs:46-53`: `max_alloc = 160 MB`, `MAX_PIXELS = 20_000_000`) cobrem
+só o buffer do decoder — não uma segunda cópia dele. `to_rgba8()` sobre um `ImageRgba8` é um
+`clone` do buffer inteiro: 80 MB de fonte + 80 MB de clone + o corpo do upload, por decode em voo,
+com `MAX_CONCURRENT_DECODES = 2` → ~336 MB de pico, a cada janela de rate limit
+(`BANNER_RATE_LIMIT = 5` / `BANNER_RATE_WINDOW_SECS = 600`), por qualquer membro autenticado.
+Em instância pequena é OOM que derruba o hub inteiro.
+
+Correção, duas partes, no último ponto de decisão confiável:
+1. a decisão de transparência mudou para **depois** do resize, onde o buffer é no máximo
+   600x240x4 = 576 KB (banner) / 256x256x4 = 256 KB (avatar);
+2. as duas layouts que já *são* a resposta (`ImageRgba8`, `ImageLumaA8`) são lidas no lugar, sem
+   cópia — era exatamente o caso que pagava.
+
+Preço aceito e documentado no código: uma imagem cuja única transparência não sobreviva ao
+Lanczos3 passa a ser JPEG. Diferença cosmética num upload já degenerado, não um controle
+atravessado. `avatar.rs` tinha o padrão idêntico e recebeu o mesmo par de correções.
+
+Teste que trava: `banner::tests::a_transparent_banner_bigger_than_the_box_still_lands_as_png`
+(1600x640, metade transparente → ainda PNG, ainda transparente depois de caber na caixa).
+
+**Fechado na revisão (era `needs_validation`, virou garantia):** o hub gravava a animação sem
+decodificar o que guardava. `keep_animation` verificava os bytes **crus** e armazenava a saída
+limpa do `strip` sem re-verificar; o irmão (`attachments/validate.rs:119,128,134`) faz as duas.
+Reestruturado: `strip` primeiro, e `verify_animation` roda sobre o container **limpo** — que é o
+que chega ao banco e a cada cliente que abre o perfil. De brinde, metade do trabalho de decode
+(uma decodificação em vez de duas).
+
+**Rejeitado com motivo (não era achado):** path/traversal e injeção por id/version
+(`Path<UserId>` casa um segmento, todo SQL é parametrizado, `version` sai de
+`hex(&Sha256::digest[..6])` = 12 hex, `mime` só de `Kind::mime()` ou constantes — sem SVG, sem
+XSS armazenado); race no rate limit (expurgo→compara→push sob um único guarda de Mutex com
+recuperação de poison, sem TOCTOU); membro comum chamando `remove_banner`
+(`admin::moderation_target` exige `can_moderate()` **e** `outranks` estrito, rejeita auto-alvo, e
+`me.role` é `effective_role`, que colapsa para Member com senha pendente → fail-secure); falta de
+auth (`Authed` / `AuthUser` em todas as rotas); `?v=` gigante (`max_buf_size(64 KB)` no builder
+HTTP/1); fila ilimitada no semáforo (tetada por `max_conns = 1024` / `max_conns_per_ip = 128` +
+`request_timeout` de 120 s); vazamento 404 vs 403 (`get_banner` é 404 indistinguível); EXIF
+sobrevivendo (o still é re-encode do zero, `banner.rs:440-455` prova que comentário e EXIF saem,
+`INSERT OR REPLACE` reescreve todas as colunas então um still depois de uma animação zera
+`anim`/`anim_mime`).
+
+**Duas notas de doc, corrigidas:** `vox-proto` documentava `?size=` no banner (o campo não
+existe — um banner tem um tamanho só) e `profile.rs:140` tinha um intra-doc link quebrado
+(`crate::PresenceEntry` não existe no crate).
+
+**Não coberto (ficou registrado, não é achado):** nada foi executado — sem build sob carga, sem
+fuzz dos decodificadores, sem teste de concorrência. Fora do código: TLS, proxy reverso, sidecar
+LiveKit, segredos em `config.toml`, permissões e backup do SQLite, e se `Limits` é sobrescrito
+abaixo dos defaults. O lado do app (`app/**`) e o fan-out do broadcast não foram auditados.
+
+**Verificação:** hub 164 + 12 + 6 + 7 + 3 + 6 + 11 + 13 + 11 + 4 testes, 0 falhas;
+`vox-proto` 77 passed, `cargo doc` sem links quebrados.
+

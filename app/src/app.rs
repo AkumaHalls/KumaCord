@@ -436,6 +436,8 @@ pub struct App {
     /// v1.1: the emoji picker (its search and last category) and its textures.
     pub emoji: crate::emoji::Picker,
     pub emoji_textures: crate::emoji::Textures,
+    /// v1.6: the game tile next to "Jogando X" (the cache of the Steam art fetched so far).
+    pub game_icons: crate::game_icons::Store,
     /// v1.1: the tenure tier this session already saw per user — the "Membro desde" glows
     /// when it rose, until the card is opened once (per session, like a fresh level-up).
     pub tenure_seen: HashMap<UserId, u64>,
@@ -595,6 +597,7 @@ impl App {
             badges: Default::default(),
             emoji: Default::default(),
             emoji_textures: Default::default(),
+            game_icons: Default::default(),
             tenure_seen: Default::default(),
             voice: VoiceUi::default(),
             center: Center::Chat,

@@ -160,6 +160,8 @@ pub struct Parts<'a> {
     pub chatx: &'a mut chat_extras::ChatUi,
     pub images: &'a mut crate::chat_images::ImagesUi,
     pub previews: &'a mut crate::previews::PreviewStore,
+    /// The emoji art, so a message's emoji come out in colour instead of the font's grey glyph.
+    pub emoji: &'a mut crate::emoji::Textures,
     pub previews_on: bool,
     pub auto_images: bool,
 }
@@ -236,7 +238,7 @@ pub fn message_list<T: ChatLine>(ui: &mut egui::Ui, p: Parts<'_>, msgs: &[T], sp
                             Some(us) => (&us[..], false),
                             None => (m.mention_ids(), m.everyone()),
                         };
-                        chat_extras::message_text(ui, p.chatx, spec.target, m.id(), caption, ids, everyone, me);
+                        chat_extras::message_text(ui, p.chatx, p.emoji, spec.target, m.id(), caption, ids, everyone, me);
                     }
                     if let Some(i) = crate::chat_images::show_attachments(ui, p.images, m.attachments(), p.auto_images, images_settled) {
                         out.open_image = Some((m.attachments().to_vec(), i));
@@ -386,6 +388,7 @@ impl App {
             chatx: &mut self.chatx,
             images: &mut self.images,
             previews: &mut self.previews,
+            emoji: &mut self.emoji_textures,
             previews_on,
             auto_images: self.settings.auto_show_images,
         };
@@ -423,6 +426,7 @@ impl App {
             chatx: &mut self.chatx,
             images: &mut self.images,
             previews: &mut self.previews,
+            emoji: &mut self.emoji_textures,
             previews_on,
             auto_images: self.settings.auto_show_images,
         };

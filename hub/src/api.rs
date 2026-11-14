@@ -21,7 +21,7 @@ use crate::livekit_token;
 use crate::state::AppState;
 use crate::util::{now_ms, random_hex, sha256_hex};
 use crate::voice_guard::VoiceGuard;
-use crate::{admin, avatar, db, owner, profile, sounds, ws};
+use crate::{admin, avatar, banner, db, owner, profile, sounds, ws};
 
 pub fn router(state: AppState) -> Router {
     let limits = std::sync::Arc::new(state.tuning.limits.clone());
@@ -76,6 +76,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/me/avatar", put(avatar::put_avatar).delete(avatar::delete_avatar).layer(DefaultBodyLimit::max(AVATAR_MAX_UPLOAD_BYTES)))
         .route("/api/users/{id}/avatar", get(avatar::get_avatar))
         .route("/api/mod/users/{id}/remove-avatar", post(avatar::remove_avatar))
+        // profile banners (`banner.rs`)
+        .route("/api/me/banner", put(banner::put_banner).delete(banner::delete_banner).layer(DefaultBodyLimit::max(BANNER_MAX_UPLOAD_BYTES)))
+        .route("/api/users/{id}/banner", get(banner::get_banner))
+        .route("/api/mod/users/{id}/remove-banner", post(banner::remove_banner))
         // profiles: display name, bio, colour, custom status, presence
         .route("/api/users/{id}/profile", get(profile::get_profile))
         .route("/api/me/profile", put(profile::put_profile))

@@ -137,9 +137,9 @@ impl CustomStatus {
 
 /// What somebody is playing right now ("Jogando X" — the game detection of 2026-11-11): the
 /// detected game's name and when this person started playing it. Ephemeral like the auto-away
-/// of [`crate::PresenceEntry`] on the hub: never persisted, gone when the connection dies, and
-/// re-sent by the app only when the detected game actually changes. `name` comes from the
-/// app's own catalogue (the executable's basename), so the hub only carries it.
+/// on the hub: never persisted, gone when the connection dies, and re-sent by the app only when
+/// the detected game actually changes. `name` comes from the app's own catalogue (the
+/// executable's basename), so the hub only carries it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Activity {
     /// The game's display name ("Counter-Strike 2", "Minecraft"...).
@@ -516,7 +516,7 @@ mod tests {
         let p: UserProfile = serde_json::from_str(r#"{"user":{"id":3,"username":"ana"}}"#).unwrap();
         assert_eq!((p.bio.as_str(), p.accent, p.status, p.presence, p.online, p.member_since_ms), ("", None, None, Presence::Online, false, 0));
         let full = UserProfile {
-            user: User { id: UserId(3), username: "ana".into(), role: Role::Admin, flags: 0, role_ids: Vec::new(), avatar: None, display_name: Some("Ana".into()), banner: None },
+            user: User { id: UserId(3), username: "ana".into(), role: Role::Admin, flags: 0, role_ids: Vec::new(), avatar: None, display_name: Some("Ana".into()), banner: None, avatar_animated: false, banner_animated: false },
             bio: "oi".into(),
             accent: Some("#112233".into()),
             status: Some(CustomStatus { emoji: "🎮".into(), text: "x".into(), expires_at_ms: Some(5) }),
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn a_user_without_a_display_name_serialises_exactly_as_v052() {
-        let new = User { id: UserId(7), username: "Ana".into(), role: Role::Moderator, flags: 0, role_ids: Vec::new(), avatar: Some("ab".into()), display_name: None, banner: None };
+        let new = User { id: UserId(7), username: "Ana".into(), role: Role::Moderator, flags: 0, role_ids: Vec::new(), avatar: Some("ab".into()), display_name: None, banner: None, avatar_animated: false, banner_animated: false };
         let old = v052::User { id: UserId(7), username: "Ana".into(), role: Role::Moderator, avatar: Some("ab".into()) };
         assert_eq!(serde_json::to_string(&new).unwrap(), serde_json::to_string(&old).unwrap());
         assert_eq!(serde_json::to_string(&User::new(UserId(7), "Ana")).unwrap(), r#"{"id":7,"username":"Ana"}"#);

@@ -40,6 +40,13 @@ const ONLINE_AVATAR: f32 = 30.0;
 /// The thickness of the insertion marker of a drag & drop.
 const DROP_MARK: f32 = 2.0;
 
+/// One text line's height for `font`. Rows that hold two lines (name + "Jogando X") are sized
+/// from it, so the second line is never cut by the row's own clip (`painter_at(rect)` clips
+/// to `rect`).
+fn line_h(ui: &egui::Ui, font: egui::FontId) -> f32 {
+    ui.painter().layout_no_wrap(" ".to_string(), font, Color32::WHITE).size().y
+}
+
 /// v1.2: what the sidebar is dragging. Only channels and categories are grabbable, and only
 /// for those who may reorder them (`Role::can_manage_channels`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -926,7 +933,15 @@ impl App {
         // 2026-11-11: an explicit id, like the category header and the channel rows: the automatic
         // one moves with the number of rows above, so a click could land on one id at the press and
         // on another at the release (egui then swallows it). Keyed on the member's own id it cannot.
-        let rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), MEMBER_H));
+        // v1.2: "Jogando X" under the name — the row grows by one line when a game is on, so the
+        // second line is not cut by the row's own clip (`painter_at(rect)` clips to `rect`).
+        let act_line = self.activity_line(m.user.id).filter(|l| !l.is_empty());
+        let row_h = if act_line.is_some() {
+            (line_h(ui, theme::body(13.5)) + line_h(ui, theme::body(10.5)) + 4.0).max(MEMBER_H)
+        } else {
+            MEMBER_H
+        };
+        let rect = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), row_h));
         let resp = ui.interact(rect, egui::Id::new(("voice_member_row", m.user.id)), Sense::click());
         ui.advance_cursor_after_rect(rect);
         if !ui.is_rect_visible(rect) {
@@ -994,19 +1009,35 @@ impl App {
             _ => None,
         };
         let name_left = center.x + MEMBER_AVATAR / 2.0 + 8.0;
+        // v1.6: the game's own tile left of the two lines when a game is on; the text moves right.
+        let game = act_line.as_ref().and_then(|_| self.activity_of(m.user.id)).map(|a| a.name.clone());
+        let text_left = if game.is_some() { name_left + crate::game_icons::TILE + 5.0 } else { name_left };
         let color = match crate::roles::role_color(role) {
             Some(c) => c,
             None if speaking => theme::GIZ,
             None => theme::NEVOA,
         };
-        let name = crate::app::notify::fit_name(&painter, m.user.shown_name(), theme::body(13.5), color, x - name_left - 2.0);
+        let name = crate::app::notify::fit_name(&painter, m.user.shown_name(), theme::body(13.5), color, x - text_left - 2.0);
         let name_h = name.size().y;
-        painter.galley(Pos2::new(name_left, cy - name_h / 2.0), name, color);
-        // v1.2: "Jogando X" under the name (the row is one line taller than it looks: 13.5 over
-        // 10.5 fits inside MEMBER_H).
-        if let Some(line) = self.activity_line(m.user.id).filter(|l| !l.is_empty()) {
-            let act = crate::app::notify::fit_name(&painter, &line, theme::body(10.5), theme::NEVOA, x - name_left - 2.0);
-            painter.galley(Pos2::new(name_left, cy + name_h / 2.0 - 1.0), act, theme::NEVOA);
+        // v1.2: "Jogando X" under the name — both lines centered as one block inside the row
+        // (the row was sized for them above); `fit_name` ends a long game with "…".
+        if let Some(line) = &act_line {
+            let act = crate::app::notify::fit_name(&painter, line, theme::body(10.5), theme::NEVOA, x - text_left - 2.0);
+            let act_h = act.size().y;
+            let top = cy - (name_h + act_h) / 2.0;
+            painter.galley(Pos2::new(text_left, top), name, color);
+            let act_top = top + name_h;
+            painter.galley(Pos2::new(text_left, act_top), act, theme::NEVOA);
+            // v1.6: the tile vertically centered on the activity line.
+            if let Some(g) = &game {
+                let tile_rect = Rect::from_center_size(Pos2::new(name_left + crate::game_icons::TILE / 2.0, act_top + act_h / 2.0), Vec2::splat(crate::game_icons::TILE));
+                crate::game_icons::tile(&ctx, &painter, &mut self.game_icons, &mut self.emoji_textures, g, tile_rect);
+            }
+            // Hover on the line shows the full game name (the drawn one may end in "…").
+            let act_rect = Rect::from_min_size(Pos2::new(text_left, act_top), Vec2::new(x - text_left - 2.0, act_h));
+            ui.interact(act_rect, ui.id().with(("activity", m.user.id)), Sense::hover()).on_hover_text(line.clone());
+        } else {
+            painter.galley(Pos2::new(text_left, cy - name_h / 2.0), name, color);
         }
 
         // The parts with their own hover / click, on top of the row's.
@@ -1176,7 +1207,10 @@ impl App {
             let icons_w = 3.0 * 30.0 + 2.0 * 2.0;
             let text_w = (ui.available_width() - icons_w - 8.0).max(30.0);
             // v1.2: a third line ("Jogando X") when a game is on, or the block stays two lines.
-            let text_h = if self.my_id().is_some_and(|id| self.activity_line(id).is_some_and(|l| !l.is_empty())) { 46.0 } else { 34.0 };
+            // The height is the sum of the real line heights, not a guess — a fixed 46.0 cut the
+            // bottom of the third line at the panel's clip rect.
+            let act_on = self.my_id().is_some_and(|id| self.activity_line(id).is_some_and(|l| !l.is_empty()));
+            let text_h = line_h(ui, theme::semibold(13.5)) + line_h(ui, theme::body(12.0)) + if act_on { line_h(ui, theme::body(11.0)) } else { 0.0 };
             ui.allocate_ui_with_layout(Vec2::new(text_w, text_h), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_width(text_w);
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -1238,9 +1272,17 @@ impl App {
             }
         }
         // v1.2: "Jogando X" under the presence (or the room) line, as on Discord's own panel.
+        // `.truncate()` ends the line with "…" inside the available width; hover shows it whole.
         if let Some(me) = self.my_id() {
-            if let Some(line) = self.activity_line(me).filter(|l| !l.is_empty()) {
-                ui.add(egui::Label::new(RichText::new(line).font(theme::body(11.0)).color(theme::NEVOA)).truncate().selectable(false));
+            if let Some(a) = self.activity_of(me).cloned().filter(|a| !crate::profile::activity_line(a).is_empty()) {
+                let line = crate::profile::activity_line(&a);
+                // v1.6: the game's own tile left of the line, as on Discord.
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(crate::game_icons::TILE), Sense::hover());
+                    crate::game_icons::tile(ui.ctx(), &ui.painter_at(r), &mut self.game_icons, &mut self.emoji_textures, &a.name, r);
+                    ui.add(egui::Label::new(RichText::new(line.clone()).font(theme::body(11.0)).color(theme::NEVOA)).truncate().selectable(false))
+                        .on_hover_text(line);
+                });
             }
         }
     }
@@ -1355,14 +1397,33 @@ impl App {
             _ => None,
         };
         let name_left = center.x + ONLINE_AVATAR / 2.0 + 10.0;
+        let act_line = self.activity_line(u.id).filter(|l| !l.is_empty());
+        // v1.6: the game's own tile left of the two lines when a game is on; the text moves right.
+        let game = act_line.as_ref().and_then(|_| self.activity_of(u.id)).map(|a| a.name.clone());
+        let text_left = if game.is_some() { name_left + crate::game_icons::TILE + 5.0 } else { name_left };
         let color = crate::roles::role_color(role).unwrap_or(if resp.hovered() { theme::GIZ } else { theme::TEXTO });
-        let name = crate::app::notify::fit_name(&painter, u.shown_name(), theme::body(14.0), color, x - name_left - 2.0);
+        let name = crate::app::notify::fit_name(&painter, u.shown_name(), theme::body(14.0), color, x - text_left - 2.0);
         let name_h = name.size().y;
-        painter.galley(Pos2::new(name_left, cy - name_h / 2.0), name, color);
-        // v1.2: "Jogando X" on its own line under the name, as on Discord's member list.
-        if let Some(line) = self.activity_line(u.id).filter(|l| !l.is_empty()) {
-            let act = crate::app::notify::fit_name(&painter, &line, theme::body(11.0), theme::NEVOA, x - name_left - 2.0);
-            painter.galley(Pos2::new(name_left, cy + name_h / 2.0 + 1.0), act, theme::NEVOA);
+        // v1.2: "Jogando X" on its own line under the name, as on Discord's member list. The two
+        // lines are centered as one block — drawn from the middle down, the second line fell past
+        // the row's bottom and was clipped by `painter_at(rect)`.
+        if let Some(line) = &act_line {
+            let act = crate::app::notify::fit_name(&painter, line, theme::body(11.0), theme::NEVOA, x - text_left - 2.0);
+            let act_h = act.size().y;
+            let top = cy - (name_h + act_h + 1.0) / 2.0;
+            painter.galley(Pos2::new(text_left, top), name, color);
+            let act_top = top + name_h + 1.0;
+            painter.galley(Pos2::new(text_left, act_top), act, theme::NEVOA);
+            // v1.6: the tile vertically centered on the activity line.
+            if let Some(g) = &game {
+                let tile_rect = Rect::from_center_size(Pos2::new(name_left + crate::game_icons::TILE / 2.0, act_top + act_h / 2.0), Vec2::splat(crate::game_icons::TILE));
+                crate::game_icons::tile(&ctx, &painter, &mut self.game_icons, &mut self.emoji_textures, g, tile_rect);
+            }
+            // Hover on the line shows the full game name (the drawn one may end in "…").
+            let act_rect = Rect::from_min_size(Pos2::new(text_left, act_top), Vec2::new(x - text_left - 2.0, act_h));
+            ui.interact(act_rect, ui.id().with(("activity", u.id)), Sense::hover()).on_hover_text(line.clone());
+        } else {
+            painter.galley(Pos2::new(text_left, cy - name_h / 2.0), name, color);
         }
         if let Some(r) = voice_rect {
             ui.interact(r, ui.id().with(("in_voice", u.id)), Sense::hover()).on_hover_text("Em um canal de voz");

@@ -37,7 +37,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 use vox_proto::*;
 
-pub use validate::{Kind, Refusal};
+pub use validate::{Kind, Refusal, strip, verify_animation};
 
 use crate::api::{ApiErr, AuthUser};
 use crate::state::AppState;

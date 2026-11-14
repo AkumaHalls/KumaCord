@@ -421,6 +421,77 @@ impl Textures {
     }
 }
 
+/// A run of a message: either plain text, a link, or one emoji drawn from its art.
+enum Run<'a> {
+    Text(&'a str),
+    Emoji(&'static EmojiDef),
+}
+
+/// Split `text` into the runs `rich_text` draws. Emoji are matched by their own text, longest
+/// first, so a multi-codepoint emoji ("❤️") is never split into a bare heart plus a stray
+/// variation selector. Everything else stays text and keeps its own colour.
+fn runs(text: &str) -> Vec<Run<'_>> {
+    let bytes = text.as_bytes();
+    let mut out: Vec<Run<'_>> = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < text.len() {
+        let rest = &text[i..];
+        // The catalog's texts are short and the matches are rare: a scan is cheaper than a
+        // trie here, and this only runs on the message rows on screen.
+        if let Some(def) = CATALOG.iter().find(|d| rest.starts_with(d.ch)) {
+            if start < i {
+                out.push(Run::Text(&text[start..i]));
+            }
+            out.push(Run::Emoji(def));
+            i += def.ch.len();
+            start = i;
+            continue;
+        }
+        // Advance by one whole char (never into the middle of a codepoint).
+        i += rest.chars().next().map_or(1, char::len_utf8);
+        let _ = bytes;
+    }
+    if start < text.len() {
+        out.push(Run::Text(&text[start..]));
+    }
+    out
+}
+
+/// The size an emoji is drawn at inside a message: a little above the text's line box, the way
+/// Discord's inline emoji sit. egui cannot put an image inside a `LayoutJob`, so the emoji are
+/// laid out as their own widgets in a wrapped row — which is also why they keep their colour.
+pub const INLINE_SIZE: f32 = 20.0;
+
+/// Draw one line of a message with its emoji in full colour. `links` handles the clickable
+/// parts; this only decides, per run, whether it is text (a label, which keeps `format`) or an
+/// emoji (its art, which is the whole point: the font's glyph is the grey one).
+pub fn rich_line<F: FnMut(&mut egui::Ui, &str)>(ui: &mut egui::Ui, textures: &mut Textures, line: &str, mut label: F) {
+    for run in runs(line) {
+        match run {
+            Run::Text(t) => {
+                for seg in crate::links::segments(t) {
+                    match seg {
+                        crate::links::Segment::Text(t) => label(ui, t),
+                        crate::links::Segment::Link { shown, url } => {
+                            if ui.link(shown).on_hover_text(&url).clicked() {
+                                crate::links::open_url(&url);
+                            }
+                        }
+                    }
+                }
+            }
+            Run::Emoji(d) => {
+                let (r, resp) = ui.allocate_exact_size(egui::vec2(INLINE_SIZE, INLINE_SIZE), egui::Sense::hover());
+                if let Some(tex) = textures.get(ui.ctx(), d.ch) {
+                    ui.painter().image(tex, r, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
+                }
+                resp.on_hover_text(d.name);
+            }
+        }
+    }
+}
+
 /// The picker's memory: the search and the last category (Discord remembers the last
 /// tab too). Each surface that opens it (the chat's 🙂, "Reagir") manages its own popup.
 #[derive(Default)]
@@ -487,7 +558,12 @@ impl Picker {
         if cells.is_empty() {
             ui_kit::hint(ui, if q.is_empty() && self.cat.is_none() { "Use um emoji e ele aparece aqui." } else { "Nada encontrado." });
         }
-        egui::Grid::new(("emoji_grid", self.cat.is_none(), self.search.clone())).spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
+        // The id must stand still. It used to carry `self.cat.is_none()` and the whole search
+        // string, so every keystroke and every tab change minted a NEW id — and a popup whose
+        // content id moves between frames loses its anchor and closes. That is exactly "mudo de
+        // categoria e ele fecha, tenho que abrir de novo". A Grid's id is only its own state
+        // (which row it is on); the cells below can change every frame without touching it.
+        egui::Grid::new("emoji_grid").spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
             for (i, d) in cells.iter().enumerate() {
                 let (r, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
                 if resp.clicked() {

@@ -6,6 +6,7 @@ pub mod api;
 pub mod attachments;
 pub mod auth;
 pub mod avatar;
+pub mod banner;
 pub mod calls;
 pub mod chat;
 pub mod config;

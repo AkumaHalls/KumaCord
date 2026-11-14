@@ -151,19 +151,30 @@ pub struct User {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     /// Banner picture version (a short hash of the stored image), `None` = no banner. The
-    /// image itself is `GET /api/users/{id}/banner?size=...` (see [`AvatarResponse`]); a
-    /// client caches it by `(user, version)`. Added after v1.1 with no protocol bump, same
-    /// rules as `avatar`: `default` for older hubs, absent from the JSON when there is no
-    /// banner (byte-identical to before), ignored by older clients.
+    /// image itself is `GET /api/users/{id}/banner[?anim=1][&v=<version>]` — one size only
+    /// (a banner is drawn in one place, so there is no `?size=` to ask for); a client caches
+    /// it by `(user, version)`. Added after v1.1 with no protocol bump, same rules as
+    /// `avatar`: `default` for older hubs, absent from the JSON when there is no banner
+    /// (byte-identical to before), ignored by older clients.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub banner: Option<String>,
+    /// The stored avatar is an animation (GIF / animated WebP / APNG), so the client should ask
+    /// for `?anim=1` and play the frames instead of drawing one still. `false` is the normal
+    /// case and stays out of the JSON entirely — `Not::not` omits it — so a user with a plain
+    /// picture serialises byte-identical to before, an older hub parses as `false` (and the
+    /// client just draws the still), and an older client ignores the unknown field.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub avatar_animated: bool,
+    /// The same, for the banner. One flag per picture because they are independent uploads.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub banner_animated: bool,
 }
 
 impl User {
     /// A plain member without a picture or a display name (what everybody was before items 12,
     /// "foto de perfil" and profiles).
     pub fn new(id: UserId, username: impl Into<String>) -> Self {
-        User { id, username: username.into(), role: Role::Member, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None }
+        User { id, username: username.into(), role: Role::Member, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None, avatar_animated: false, banner_animated: false }
     }
 }
 
@@ -420,23 +431,32 @@ impl Role {
 
 // ---------- profile pictures ----------
 //
-// - `PUT    /api/me/avatar`   body = the image file as it is (PNG / JPEG / WebP / GIF first frame,
-//   any `Content-Type`), at most [`AVATAR_MAX_UPLOAD_BYTES`]  -> [`AvatarResponse`]. The *hub*
-//   validates it (dimension caps, no decompression bombs), centre-crops it to a square, resizes
-//   it to [`AVATAR_SIZES`] and re-encodes it (JPEG, or PNG when it has transparency) without any
-//   metadata. `400` not an image, `413` too big, `429` too many changes
+// - `PUT    /api/me/avatar`   body = the image file as it is (PNG / JPEG / WebP / GIF — animated
+//   or not), any `Content-Type`), at most [`AVATAR_MAX_UPLOAD_BYTES`]  -> [`AvatarResponse`]. The
+//   *hub* validates it (dimension caps, no decompression bombs, every frame of an animation
+//   inside the pixel budget), centre-crops the first frame to a square, resizes it to
+//   [`AVATAR_SIZES`] and re-encodes it (JPEG, or PNG when it has transparency) without any
+//   metadata. When the upload is an animation it also keeps the container with every metadata
+//   chunk cut out, at most [`AVATAR_MAX_ANIMATED_BYTES`], and sets [`User::avatar_animated`].
+//   `400` not an image, `413` too big, `429` too many changes
 //   ([`AVATAR_RATE_LIMIT`] per [`AVATAR_RATE_WINDOW_SECS`]).
 // - `DELETE /api/me/avatar`                                       -> [`AvatarResponse`]
 // - `GET    /api/users/{id}/avatar?size=64|256[&v=<version>]`  the stored image (authenticated).
 //   With `v` equal to the current version it is `Cache-Control: ... immutable` (the version is
 //   the cache key); a different `v` is `404`, and so is a user without a picture.
+//   `?anim=1` answers the animation instead, and `404` when the picture is not animated — which
+//   is how a client knows to draw the still.
 // - `POST   /api/mod/users/{id}/remove-avatar`  (Moderador+, above the target's role)  -> [`OkResponse`]
 //
 // Every change broadcasts [`ServerEvent::UserUpdated`] with the new [`User::avatar`]. A hub older
 // than this answers `404` / `405` to all of it, and its users never have an `avatar`.
 
-/// Biggest accepted upload (bytes).
-pub const AVATAR_MAX_UPLOAD_BYTES: usize = 5 * 1024 * 1024;
+/// Biggest accepted upload (bytes). An animation needs the room a still never did: a 5 MB GIF is
+/// a real profile picture, and the stills are still what everybody downloads.
+pub const AVATAR_MAX_UPLOAD_BYTES: usize = 8 * 1024 * 1024;
+/// Biggest animation kept after the metadata is cut out (bytes). Smaller than the upload cap
+/// because stripping is what removes the junk, and what is left is what everybody downloads.
+pub const AVATAR_MAX_ANIMATED_BYTES: usize = 6 * 1024 * 1024;
 /// The sizes the hub stores and serves (square, pixels).
 pub const AVATAR_SIZES: [u32; 2] = [64, 256];
 /// At most this many picture changes per person...
@@ -449,6 +469,41 @@ pub const AVATAR_RATE_WINDOW_SECS: u64 = 600;
 pub struct AvatarResponse {
     #[serde(default)]
     pub avatar: Option<String>,
+}
+
+// ---------- profile banners ----------
+//
+// - `PUT    /api/me/banner`   body = the image file as it is (PNG / JPEG / WebP / GIF — animated
+//   or not), any `Content-Type`), at most [`BANNER_MAX_UPLOAD_BYTES`]  -> [`BannerResponse`]. The
+//   *hub* validates it the same way an avatar is validated, fits the first frame inside a 600x240
+//   box keeping the aspect (a banner is never cropped away) and re-encodes it without any metadata.
+//   When the upload is an animation it also keeps the container with every metadata chunk cut out,
+//   at most [`BANNER_MAX_ANIMATED_BYTES`], and sets [`User::banner_animated`].  `400` not an image,
+//   `413` too big, `429` too many changes ([`BANNER_RATE_LIMIT`] per [`BANNER_RATE_WINDOW_SECS`]).
+// - `DELETE /api/me/banner`                                      -> [`BannerResponse`]
+// - `GET    /api/users/{id}/banner[&v=<version>]`               the stored image (authenticated).
+//   With `v` equal to the current version it is `Cache-Control: ... immutable`; a different `v` is
+//   `404`, and so is a user without a banner. `?anim=1` answers the animation instead, and `404`
+//   when the banner is not animated — which is how a client knows to draw the still.
+// - `POST   /api/mod/users/{id}/remove-banner`  (Moderador+, above the target's role)  -> [`OkResponse`]
+//
+// Every change broadcasts [`ServerEvent::UserUpdated`] with the new [`User::banner`].
+
+/// Biggest accepted banner upload (bytes). The same room an avatar gets, and for the same
+/// reason: an animation needs what a still never did, and the still is what everybody downloads.
+pub const BANNER_MAX_UPLOAD_BYTES: usize = 8 * 1024 * 1024;
+/// Biggest banner animation kept after the metadata is cut out (bytes).
+pub const BANNER_MAX_ANIMATED_BYTES: usize = 6 * 1024 * 1024;
+/// At most this many banner changes per person...
+pub const BANNER_RATE_LIMIT: usize = 5;
+/// ...in this many seconds.
+pub const BANNER_RATE_WINDOW_SECS: u64 = 600;
+
+/// Answer of `PUT` / `DELETE /api/me/banner`: the new version (`None` after a removal).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BannerResponse {
+    #[serde(default)]
+    pub banner: Option<String>,
 }
 
 /// The connecting user's own identity state (item 12), only in [`ServerEvent::Ready`]. Its
@@ -881,6 +936,8 @@ pub const AUDIT_TRANSFER_OWNER: &str = "transfer_owner";
 pub const AUDIT_RESET_OWNER: &str = "reset_owner";
 /// A moderator removed someone's profile picture (abuse).
 pub const AUDIT_REMOVE_AVATAR: &str = "remove_avatar";
+/// A moderator removed someone's profile banner (abuse).
+pub const AUDIT_REMOVE_BANNER: &str = "remove_banner";
 
 /// What a moderator did to *you* ([`ServerEvent::Moderated`], sent only to the target).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1554,7 +1611,7 @@ mod tests {
     }
 
     fn role_user(id: i64, role: Role) -> User {
-        User { id: UserId(id), username: format!("u{id}"), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None }
+        User { id: UserId(id), username: format!("u{id}"), role, flags: 0, role_ids: Vec::new(), avatar: None, display_name: None, banner: None, avatar_animated: false, banner_animated: false }
     }
 
     #[test]

@@ -70,6 +70,9 @@ pub struct Shared {
     pub livekit: LiveKitAdmin,
     /// Profile pictures: rate limit and decode slots.
     pub avatars: crate::avatar::AvatarState,
+    /// Profile banners: rate limit and decode slots (its own semaphore, so one person's banner
+    /// never eats another's avatar slot).
+    pub banners: crate::banner::BannerState,
     /// Soundboard: upload and play rate limits.
     pub sounds: crate::sounds::SoundState,
     /// Who the owner is, and the claim code while there is none ("quem hospeda vira dono").
@@ -183,6 +186,7 @@ impl Shared {
             throttle: Throttle::default(),
             livekit,
             avatars: Default::default(),
+            banners: Default::default(),
             sounds: Default::default(),
             ownership,
             calls: Default::default(),

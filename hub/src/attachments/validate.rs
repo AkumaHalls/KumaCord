@@ -205,8 +205,9 @@ fn limits() -> Limits {
     l
 }
 
-/// Decode every frame of an animation within the budget; returns the frame count.
-fn verify_animation(kind: Kind, bytes: &[u8], w: u32, h: u32) -> Result<usize, Refusal> {
+/// Decode every frame of an animation within the budget; returns the frame count. `pub` because
+/// the profile-picture path keeps the animation instead of the still (see `avatar::process`).
+pub fn verify_animation(kind: Kind, bytes: &[u8], w: u32, h: u32) -> Result<usize, Refusal> {
     let per_frame = u64::from(w) * u64::from(h);
     let frames = match kind {
         Kind::Gif => {

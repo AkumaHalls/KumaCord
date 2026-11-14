@@ -2214,6 +2214,17 @@ fn output_reason(raw: &str) -> String {
     }
 }
 
+/// The HTTP status a hub error carries, when it carries one. `vox-client-core`'s `parse()`
+/// writes "HTTP {status}" into every non-2xx error, so this is how we tell "the hub answered
+/// and refused us" from "the request never got there" — the two need opposite advice.
+fn http_status(lower: &str) -> Option<u16> {
+    let at = lower.find("http ")? + 5;
+    // A URL ("...for url (http://host:7890/...)") also matches `http `, so only a run of digits
+    // right after it counts: "//147" yields nothing, and a transport error stays a transport one.
+    let digits: String = lower[at..].trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
 /// Map core/hub errors to messages for the colleagues (Portuguese, no jargon).
 pub fn friendly(e: &anyhow::Error) -> String {
     let full = format!("{e:#}");
@@ -2241,15 +2252,33 @@ pub fn friendly(e: &anyhow::Error) -> String {
         "O nome deve ter entre 2 e 32 caracteres.".into()
     } else if l.contains("invalid hub url") {
         "Endereço do servidor inválido. Exemplo: http://192.168.0.10:7890".into()
-    } else if l.contains("http 401") {
-        "Sessão recusada pelo servidor.".into()
-    } else if l.contains("http 5") {
-        "O servidor retornou um erro. Tente novamente em instantes.".into()
+    } else if let Some(code) = http_status(&l) {
+        // The hub answered and refused: that is a "no", not a dead server, and the advice is the
+        // opposite. Until now every status other than 401/5xx fell through to the transport
+        // branch below and was reported as "não foi possível conectar" — which sent people to
+        // check a hub that was up and had simply said no (a 400 on a field, a 409, a 422).
+        friendly_status(code, &full)
     } else if l.contains("request") || l.contains("connect") || l.contains("timed out") || l.contains("dns") {
         "Não foi possível conectar ao servidor. Confira o endereço e se o servidor está ligado (porta 7890).".into()
     } else {
         format!("Erro: {full}")
     }
+}
+
+/// The message for a status the hub answered with (`full` is the whole error, for the codes we
+/// have no specific advice for).
+fn friendly_status(code: u16, full: &str) -> String {
+    match code {
+        400 | 422 => "O servidor não aceitou o que foi enviado. Confira os campos e tente de novo.",
+        401 => "Sessão recusada pelo servidor.",
+        403 => "Seu cargo não permite isso.",
+        404 | 405 => "Não encontrado: talvez já tenha sido apagado, ou o servidor é de uma versão antiga.",
+        409 => "Isso já existe, ou mudou de estado enquanto você pedia.",
+        429 => "Muitos pedidos seguidos. Aguarde alguns segundos e tente de novo.",
+        500..=599 => "O servidor retornou um erro. Tente novamente em instantes.",
+        _ => return format!("Erro: {full}"),
+    }
+    .into()
 }
 
 #[cfg(test)]
@@ -2300,6 +2329,23 @@ mod tests {
         // v1.0.1: an invite on a name that already exists.
         let e = anyhow::anyhow!("login failed: HTTP 401 Unauthorized: {}", vox_proto::ERR_INVITE_NAME_TAKEN);
         assert_eq!(friendly(&e), "Esse nome já existe neste servidor. Escolha outro nome ou peça a senha do servidor.");
+    }
+
+    /// A hub that answers and refuses is not a hub that is down. Every status used to fall into
+    /// the transport branch and be reported as "não foi possível conectar", which is how a
+    /// refused create-a-category looked like a dead server (the report that started this).
+    #[test]
+    fn a_refusal_is_not_a_dead_server() {
+        let refused = |body: &str| anyhow::anyhow!("create category failed: HTTP {body}");
+        assert_eq!(friendly(&refused("400 Bad Request: a cor precisa ser #rrggbb")), "O servidor não aceitou o que foi enviado. Confira os campos e tente de novo.");
+        assert_eq!(friendly(&refused("409 Conflict: já existe uma categoria com esse nome")), "Isso já existe, ou mudou de estado enquanto você pedia.");
+        assert_eq!(friendly(&refused("422 Unprocessable Entity: corpo vazio")), "O servidor não aceitou o que foi enviado. Confira os campos e tente de novo.");
+        assert_eq!(friendly(&refused("500 Internal Server Error: banco indisponível")), "O servidor retornou um erro. Tente novamente em instantes.");
+        assert_eq!(friendly(&refused("403 Forbidden: seu cargo não permite")), "Seu cargo não permite isso.");
+        // A transport failure still reads as one, URL and all (the digits after `http ` are a
+        // port, not a status, so nothing here is mistaken for a refusal).
+        let e = anyhow::anyhow!("error sending request for url (http://147.15.124.229:7890/api/admin/categories)").context("create category request");
+        assert!(friendly(&e).starts_with("Não foi possível conectar"), "{:?}", friendly(&e));
     }
 
     /// A stand-in for some other server (v1.0.1 test): answers its health check as `server_id`
