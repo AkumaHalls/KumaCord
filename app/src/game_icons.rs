@@ -1,14 +1,23 @@
-//! The game's own tile next to "Jogando X" — the little icon Discord draws from the game's art.
+//! The game's own tile next to "Jogando X" — the game's real logo, the way Discord draws it.
 //!
-//! The activity only carries the game's name, so the tile resolves that name the way Discord's
-//! own client does: first against Discord's "detectable applications" list, whose art lives on
-//! the public app-assets CDN (`cdn.discordapp.com/app-assets/{app_id}/{asset_id}.png`, falling
-//! back to the app icon `cdn.discordapp.com/app-icons/{app_id}/{icon}.png`) — the game's real
-//! logo, no key and no account. When Discord has no entry for the game (or the API refuses),
-//! [`resolve`] matches the name against a built-in table: a Steam appid (capsule art on
-//! Steam's public CDN, fetched once in a thread and cached as a texture) or, for games not on
-//! Steam, a themed emoji from the app's own Twemoji catalogue (drawn at once, no fetch).
-//! Anything unknown gets the gamepad. A fetch that fails just leaves the next source's tile.
+//! The activity only carries the game's name, so the tile resolves that name through four
+//! sources, each one covering the previous one's gaps:
+//!
+//! 1. **The pack inside the exe** (`assets/game-icons.pack`, built by
+//!    `tools/game_icons/build.ps1`): the app's own game catalogue already resolved against
+//!    Discord's list at build time, shipped as 64x64 PNGs. No network, instant, the icons are
+//!    there the moment the app starts — which is what "não depender da API do Discord" means
+//!    for the games people actually play.
+//! 2. **Discord's own pipeline** (`vox_client_core` isn't involved: see [`list`]): the same
+//!    public "detectable applications" JSON the official client polls, and the icon from the
+//!    public `app-icons` CDN. Covers the long tail (~21k games) with the same art Discord
+//!    shows. Cached on disk for a week, so it is fetched rarely, and a stale cache is still
+//!    used when offline.
+//! 3. **Steam**: the built-in table's appid, capsule art from Steam's public CDN.
+//! 4. **The app's own emoji catalogue**: a themed emoji, the gamepad for the unknown.
+//!
+//! Everything is best-effort and silent: a fetch that fails, a damaged pack or a missing
+//! entry simply leaves the next source's tile.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -252,9 +261,9 @@ impl Store {
         }
     }
 
-    /// The game's own logo from Discord's app-assets CDN, resolved by game name: `None` while
-    /// it loads, and `None` for good when Discord has no such game — the caller then falls back
-    /// to the Steam/emoji sources.
+    /// The game's own logo from Discord's public app-icons CDN, resolved by game name (the long
+    /// tail the embedded pack does not carry): `None` while it loads, and `None` for good when
+    /// Discord has no such game — the caller then falls back to the Steam/emoji sources.
     pub fn discord(&mut self, ctx: &egui::Context, game_key: &str) -> Option<TextureId> {
         let key = format!("discord/{game_key}");
         self.poll(ctx);
@@ -265,50 +274,170 @@ impl Store {
             _ => None,
         }
     }
+
+    /// The icon this build carries inside the exe (the embedded pack): decoded at once — the
+    /// images are tiny (64 px) and the pack is a few hundred KB, so there is no thread and no
+    /// fetch. `None` when the pack has no such game (the caller moves on to the live source).
+    pub fn pack(&mut self, ctx: &egui::Context, game_key: &str) -> Option<TextureId> {
+        let key = format!("pack/{game_key}");
+        self.poll(ctx);
+        if let Some(state) = self.map.get(&key) {
+            return match state {
+                State::Ready(id) => Some(*id),
+                // Failed stays failed for the session; Loading would mean a re-entrant call.
+                _ => None,
+            };
+        }
+        let Some(bytes) = pack_icon(game_key) else { return None };
+        let state = match vox_client_core::images::decode(bytes) {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                State::Ready(ctx.load_texture(key.clone(), color, egui::TextureOptions::LINEAR).id())
+            }
+            Err(_) => State::Failed,
+        };
+        self.map.insert(key, state);
+        match self.map.get(&format!("pack/{game_key}")) {
+            Some(State::Ready(id)) => Some(*id),
+            _ => None,
+        }
+    }
 }
 
 // ------------------------------------------------------------------ Discord's own art
 //
-// Discord's client matches a running process against its "detectable applications" list and
-// draws the game's logo from `cdn.discordapp.com/app-assets/{app_id}/{asset_id}.png` (the
-// rich-presence art), or the app's icon `cdn.discordapp.com/app-icons/{app_id}/{icon}.png`.
-// Both CDNs are public; the list is the same one Discord polls. Every match is verified by
-// NAME against the application itself before anything is drawn, so a wrong or stale entry can
-// never show another game's logo.
+// This is exactly what the official client does with a running game, minus the account: the
+// client matches the game against Discord's "detectable applications" list — the same public,
+// unauthenticated JSON it polls — and draws the logo from
+// `cdn.discordapp.com/app-icons/{app_id}/{icon_hash}.png`, where `icon_hash` rides along in that
+// same list. Verified end to end against the live endpoints: the list answers 200 (~25k entries,
+// each with id/name/aliases/icon_hash/executables) and every icon URL built this way answers 200
+// with a real PNG. The per-application API (`/applications/{id}`, which the previous version of
+// this module used to double-check names) is NOT used: it answers 401 these days, which is why
+// every tile fell back to the emoji.
+//
+// Matching is by normalised name against the entry's name and aliases — exact first, then a
+// prefix match in either direction. The prefix rule is what "Overwatch 2" (entry "Overwatch")
+// and "Minecraft: Java Edition" (entry "Minecraft") need; it is prefix-only so a short entry
+// like "Watch" can never be found *inside* a longer name and steal its tile.
 
-/// The detectable-applications list, fetched once per session and shared by every lookup.
-enum Detectable {
+/// Discord's detectable-applications list: the same public JSON the official client polls.
+const LIST_URL: &str = "https://discord.com/api/v9/applications/detectable";
+/// Where an entry's `icon_hash` becomes a PNG (the same CDN the client preconnects to).
+fn icon_url(app: u64, icon: &str) -> String {
+    format!("https://cdn.discordapp.com/app-icons/{app}/{icon}.png?size=256")
+}
+
+/// One detectable application: the id the CDN wants, the icon hash, and the normalised names it
+/// answers to (its own name plus the aliases Discord lists for it).
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Entry {
+    app: u64,
+    icon: String,
+    /// Normalised names (`key()`), the entry's own name first.
+    names: Vec<String>,
+}
+
+impl Entry {
+    fn from_json(e: &serde_json::Value) -> Option<Self> {
+        let app = e.get("id")?.as_str()?.parse::<u64>().ok()?;
+        let icon = e.get("icon_hash")?.as_str().filter(|h| !h.is_empty())?.to_string();
+        let mut names = Vec::new();
+        if let Some(name) = e.get("name").and_then(|n| n.as_str()) {
+            if !name.is_empty() {
+                names.push(key(name));
+            }
+        }
+        if let Some(aliases) = e.get("aliases").and_then(|a| a.as_array()) {
+            for a in aliases {
+                if let Some(a) = a.as_str().filter(|a| !a.is_empty()) {
+                    let k = key(a);
+                    if !names.contains(&k) {
+                        names.push(k);
+                    }
+                }
+            }
+        }
+        (!names.is_empty()).then_some(Entry { app, icon, names })
+    }
+}
+
+/// The session's list: fetched (or read from cache) once, shared by every lookup.
+enum List {
     Unfetched,
-    List(Arc<Vec<(u64, String)>>),
+    Ready(Arc<Vec<Entry>>),
     Failed,
 }
-static DETECTABLE: OnceLock<Mutex<Detectable>> = OnceLock::new();
+static LIST: OnceLock<Mutex<List>> = OnceLock::new();
 
-fn detectable_list() -> Option<Arc<Vec<(u64, String)>>> {
-    let m = DETECTABLE.get_or_init(|| Mutex::new(Detectable::Unfetched));
+/// The detectable list, from the session cache or a fresh-enough disk cache, fetching (and then
+/// caching) it as the last resort. `None` when nothing works — the caller draws the next source.
+fn list() -> Option<Arc<Vec<Entry>>> {
+    let m = LIST.get_or_init(|| Mutex::new(List::Unfetched));
     let mut g = m.lock().ok()?;
-    if let Detectable::List(l) = &*g {
-        return Some(l.clone());
+    match &*g {
+        List::Ready(l) => return Some(l.clone()),
+        List::Failed => return None,
+        List::Unfetched => {}
     }
-    if matches!(&*g, Detectable::Failed) {
+    // 1) a cache written less than a week ago.
+    if let Some((saved_at, entries)) = load_cache(false) {
+        if now_secs().saturating_sub(saved_at) < CACHE_TTL_SECS && !entries.is_empty() {
+            let arc = Arc::new(entries);
+            *g = List::Ready(arc.clone());
+            return Some(arc);
+        }
+    }
+    // 2) the live list (a background thread, so the UI never waits for 13 MB).
+    let entries = http_get(LIST_URL).ok().as_deref().map(parse_list).unwrap_or_default();
+    if entries.is_empty() {
+        // Offline (or the API refused): a stale cache still beats no icon at all.
+        if let Some((_, stale)) = load_cache(true).filter(|(_, e)| !e.is_empty()) {
+            let arc = Arc::new(stale);
+            *g = List::Ready(arc.clone());
+            return Some(arc);
+        }
+        *g = List::Failed;
         return None;
     }
-    let list = match http_get("https://discord.com/api/v9/applications/detectable") {
-        Ok(body) => parse_detectable(&body),
-        Err(_) => Vec::new(),
-    };
-    if list.is_empty() {
-        *g = Detectable::Failed;
-        return None;
-    }
-    let arc = Arc::new(list);
-    *g = Detectable::List(arc.clone());
+    let arc = Arc::new(entries);
+    save_cache(&arc);
+    *g = List::Ready(arc.clone());
     Some(arc)
+}
+
+/// The entry a game name resolves to: exact name or alias first, else the shortest prefix
+/// relation in either direction (so a longer game name finds its shorter entry and never the
+/// other way around: "watch" is not found inside "overwatch2").
+fn find<'a>(entries: &'a [Entry], k: &str) -> Option<&'a Entry> {
+    if k.is_empty() {
+        return None;
+    }
+    let mut prefix: Option<(&'a Entry, usize)> = None;
+    for e in entries {
+        for n in &e.names {
+            if n == k {
+                return Some(e);
+            }
+            if n.len() < 4 || k.len() < 4 {
+                continue;
+            }
+            if k.starts_with(n.as_str()) || n.starts_with(k) {
+                // Shorter entry name wins (the most generic art), the first one breaks ties.
+                if prefix.is_none_or(|(_, len)| len > n.len()) {
+                    prefix = Some((e, n.len()));
+                }
+            }
+        }
+    }
+    prefix.map(|(e, _)| e)
 }
 
 fn http_get(url: &str) -> Result<String, reqwest::Error> {
     reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
         .build()?
         .get(url)
         .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) KumaCord")
@@ -317,9 +446,189 @@ fn http_get(url: &str) -> Result<String, reqwest::Error> {
         .text()
 }
 
+// ------------------------------------------------------------------ the icons shipped inside the exe
+//
+// The app's own game catalogue, resolved against Discord's detectable list at BUILD time
+// (`tools/game_icons/build.ps1`: list -> manifest -> 64x64 PNGs -> `KUIG` pack) and embedded with
+// `include_bytes!`. The art comes from the same public CDN the official client uses; the pack only
+// means the games our own detector can name need no network at all — the icons are there the
+// moment the app starts, offline or not. Anything outside the pack still goes through the live
+// Discord source (the long tail), then Steam, then the emoji. A damaged pack is not fatal: the
+// whole feature is simply off.
+
+/// The pack's magic (see `tools/game_icons/pack.py`).
+const PACK_MAGIC: &[u8; 4] = b"KUIG";
+/// The pack format this build reads.
+const PACK_FORMAT: u8 = 1;
+
+/// `(normalised key, PNG bytes)` parsed once from the pack and kept for the process.
+static PACK: OnceLock<Vec<(String, &'static [u8])>> = OnceLock::new();
+
+fn pack_entries() -> &'static Vec<(String, &'static [u8])> {
+    PACK.get_or_init(|| parse_pack(include_bytes!("../assets/game-icons.pack")))
+}
+
+/// The pack's PNG for a normalised game name, or `None` when this build does not carry it.
+fn pack_icon(key: &str) -> Option<&'static [u8]> {
+    pack_entries().iter().find(|(k, _)| k == key).map(|(_, b)| *b)
+}
+
+fn parse_pack(bytes: &'static [u8]) -> Vec<(String, &'static [u8])> {
+    let mut r = Reader { b: bytes, i: 0 };
+    if r.take(4) != Some(PACK_MAGIC) || r.u8() != Some(PACK_FORMAT) {
+        return Vec::new();
+    }
+    let Some(count) = r.u32() else { return Vec::new() };
+    (0..count)
+        .filter_map(|_| {
+            let key = r.str()?.to_string();
+            let len = r.u32()? as usize;
+            let img = r.take(len)?;
+            Some((key, img))
+        })
+        .collect()
+}
+
+// ------------------------------------------------------------------ the list's disk cache
+//
+// The live list is ~13 MB of JSON and only a tenth of it is useful; the reduced form (id, icon
+// hash, names) is a few hundred KB. Re-fetching it every launch is wasteful and the icons are
+// not ours to rate-limit, so a fetched list is kept next to the settings for a week and read
+// back on the next runs. Best-effort everywhere: a full disk, a read-only folder or a corrupt
+// file just means a fresh fetch.
+
+/// The cache file's name, inside the app's data folder (`%APPDATA%\AkumaLabs`).
+const CACHE_FILE: &str = "game-icons.cache";
+/// How long a cached list is trusted before a fresh one is fetched (one week).
+const CACHE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+/// The cache format's magic (a bumped version invalidates every old file).
+const CACHE_MAGIC: &[u8; 4] = b"KUGC";
+/// The cache format's version (bumping it invalidates every old file).
+const CACHE_FORMAT: u8 = 1;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn cache_path() -> Option<std::path::PathBuf> {
+    crate::settings::dir().map(|d| d.join(CACHE_FILE))
+}
+
+/// Write the cache at `path` (the tests hand it a temp folder of their own).
+fn save_cache_at(path: &std::path::Path, entries: &[Entry]) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut v = Vec::with_capacity(entries.len() * 96 + 16);
+    v.extend_from_slice(CACHE_MAGIC);
+    v.push(CACHE_FORMAT);
+    put_u64(&mut v, now_secs());
+    put_u32(&mut v, entries.len() as u32);
+    for e in entries {
+        put_u64(&mut v, e.app);
+        put_str(&mut v, &e.icon);
+        put_u32(&mut v, e.names.len() as u32);
+        for n in &e.names {
+            put_str(&mut v, n);
+        }
+    }
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, &v).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    let _ = std::fs::rename(&tmp, &path);
+}
+
+/// Read the cache at `path`: `None` when there is none, it is another format, it is damaged or
+/// it is past the TTL (unless `stale_ok`, which is the offline fallback). The caller then
+/// fetches a fresh list.
+fn load_cache_at(path: &std::path::Path, stale_ok: bool) -> Option<(u64, Vec<Entry>)> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut r = Reader { b: &bytes, i: 0 };
+    if r.take(4)? != CACHE_MAGIC {
+        return None;
+    }
+    if r.u8()? != CACHE_FORMAT {
+        return None;
+    }
+    let saved_at = r.u64()?;
+    if !stale_ok && now_secs().saturating_sub(saved_at) > CACHE_TTL_SECS {
+        return None;
+    }
+    let count = r.u32()? as usize;
+    // A damaged table cannot ask for a huge allocation.
+    if count > 100_000 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        let app = r.u64()?;
+        let icon = r.str()?.to_string();
+        let names = (0..r.u32()?).map(|_| r.str().map(str::to_string)).collect::<Option<Vec<_>>>()?;
+        if names.is_empty() || icon.is_empty() {
+            return None;
+        }
+        out.push(Entry { app, icon, names });
+    }
+    Some((saved_at, out))
+}
+
+fn save_cache(entries: &[Entry]) {
+    if let Some(path) = cache_path() {
+        save_cache_at(&path, entries);
+    }
+}
+
+fn load_cache(stale_ok: bool) -> Option<(u64, Vec<Entry>)> {
+    load_cache_at(&cache_path()?, stale_ok)
+}
+
+fn put_u32(v: &mut Vec<u8>, n: u32) {
+    v.extend_from_slice(&n.to_le_bytes());
+}
+
+fn put_u64(v: &mut Vec<u8>, n: u64) {
+    v.extend_from_slice(&n.to_le_bytes());
+}
+
+fn put_str(v: &mut Vec<u8>, s: &str) {
+    put_u32(v, s.len() as u32);
+    v.extend_from_slice(s.as_bytes());
+}
+
+/// The binary cache: magic, version, when it was written, the count, then every entry
+/// (app id, icon hash, and its normalised names).
+struct Reader<'a> {
+    b: &'a [u8],
+    i: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let end = self.i.checked_add(n)?;
+        let s = self.b.get(self.i..end)?;
+        self.i = end;
+        Some(s)
+    }
+    fn u8(&mut self) -> Option<u8> {
+        self.take(1).map(|s| s[0])
+    }
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+    fn u64(&mut self) -> Option<u64> {
+        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    }
+    fn str(&mut self) -> Option<&'a str> {
+        let len = self.u32()? as usize;
+        std::str::from_utf8(self.take(len)?).ok()
+    }
+}
+
 fn http_get_bytes(url: &str) -> Option<Vec<u8>> {
     let r = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(15))
         .build()
         .ok()?
         .get(url)
@@ -328,71 +637,22 @@ fn http_get_bytes(url: &str) -> Option<Vec<u8>> {
     if r.status().is_success() { r.bytes().ok().map(|b| b.to_vec()) } else { None }
 }
 
-/// Normalised name match — "League of Legends" matches "leagueoflegends".
-fn name_matches(app_name: &str, k: &str) -> bool {
-    let a = key(app_name);
-    !a.is_empty() && !k.is_empty() && (a == k || a.contains(k) || k.contains(&a))
-}
-
-/// `[{"id":"730","name":"Counter-Strike 2",...}, ...]` -> (app id, name) pairs.
-fn parse_detectable(body: &str) -> Vec<(u64, String)> {
+/// `[{"id":"730","name":"Counter-Strike 2","icon_hash":"abc",...}, ...]` -> `Entry`s. The list is
+/// ~13 MB and only a tenth of it carries icons: the rest (tools, servers, launchers) is dropped.
+fn parse_list(body: &str) -> Vec<Entry> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else { return Vec::new() };
-    v.as_array().map(|a| a.as_slice()).unwrap_or_default()
-        .iter()
-        .filter_map(|e| {
-            let id = e.get("id")?.as_str()?.parse::<u64>().ok()?;
-            let name = e.get("name")?.as_str()?.to_string();
-            Some((id, name))
-        })
-        .collect()
+    v.as_array().map(|a| a.as_slice()).unwrap_or_default().iter().filter_map(Entry::from_json).collect()
 }
 
-/// The rich-presence art to draw: the large image (type 1) when there is one, else the first.
-fn pick_asset(body: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(body).ok()?;
-    let arr = v.as_array()?;
-    arr.iter()
-        .find(|a| a.get("type").and_then(|t| t.as_u64()) == Some(1))
-        .or_else(|| arr.first())
-        .and_then(|a| a.get("id")?.as_str())
-        .map(str::to_string)
-}
-
-fn asset_url(app: u64, asset: &str, ext: &str) -> String {
-    format!("https://cdn.discordapp.com/app-assets/{app}/{asset}.{ext}")
-}
-
-fn app_icon_url(app: u64, icon: &str) -> String {
-    format!("https://cdn.discordapp.com/app-icons/{app}/{icon}.png?size=256")
-}
-
-/// The game's logo bytes, or `None` (Discord has no such game / the API refused / CDN hiccup).
+/// The game's logo bytes, or `None` (Discord has no icon for the game, offline, CDN hiccup).
 fn discord_art(k: &str) -> Option<Vec<u8>> {
-    let list = detectable_list()?;
-    let &(app, _) = list.iter().find(|(_, name)| name_matches(name, k))?;
-    // Verify by name against the application itself: never draw another game's logo.
-    let info: serde_json::Value = serde_json::from_str(&http_get(&format!("https://discord.com/api/v9/applications/{app}")).ok()?).ok()?;
-    if !name_matches(info.get("name")?.as_str()?, k) {
+    // Autotests never fetch: the fallback tile is their deterministic answer.
+    if vox_client_core::testmode::background() {
         return None;
     }
-    let icon = info.get("icon").and_then(|i| i.as_str()).unwrap_or("");
-    // 1) the rich-presence art (app-assets CDN): png first, animated gif second.
-    if let Ok(assets) = http_get(&format!("https://discord.com/api/v9/applications/{app}/assets")) {
-        if let Some(asset) = pick_asset(&assets) {
-            for ext in ["png", "gif"] {
-                if let Some(b) = http_get_bytes(&asset_url(app, &asset, ext)) {
-                    return Some(b);
-                }
-            }
-        }
-    }
-    // 2) the app's icon (always on the public CDN).
-    if !icon.is_empty() {
-        if let Some(b) = http_get_bytes(&app_icon_url(app, icon)) {
-            return Some(b);
-        }
-    }
-    None
+    let list = list()?;
+    let entry = find(&list, k)?;
+    http_get_bytes(&icon_url(entry.app, &entry.icon))
 }
 
 impl Default for Store {
@@ -411,10 +671,14 @@ pub fn tile(ctx: &egui::Context, painter: &egui::Painter, store: &mut Store, emo
     painter.rect_stroke(rect, corner, egui::Stroke::new(theme::stroke::HAIRLINE, theme::MOVEL_PRESSED), egui::StrokeKind::Inside);
     let inner = rect.shrink(2.5);
     let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
-    // Discord's own logo first (the same art the official client draws); Steam/emoji when
-    // Discord has no entry for the game.
+    // The icon shipped inside the exe first (no network, instant), then Discord's own logo for
+    // everything else the live list knows; Steam/emoji when Discord has no entry for the game.
     let k = key(game);
     if !k.is_empty() {
+        if let Some(tex) = store.pack(ctx, &k) {
+            painter.image(tex, inner, uv, Color32::WHITE);
+            return;
+        }
         if let Some(tex) = store.discord(ctx, &k) {
             painter.image(tex, inner, uv, Color32::WHITE);
             return;
@@ -494,35 +758,105 @@ mod tests {
     }
 
     #[test]
-    fn discord_names_match_by_normalised_key() {
-        assert!(name_matches("League of Legends", "leagueoflegends"));
-        assert!(name_matches("Counter-Strike 2", "counterstrike2"));
-        assert!(!name_matches("Steam", "counterstrike2"));
-        assert!(!name_matches("", "x"));
-        assert!(!name_matches("Dota 2", ""));
+    fn detectable_json_parses_to_icon_bytes_entries() {
+        let body = r#"[{"id":"730","name":"Counter-Strike 2","icon_hash":"abc","aliases":["cs2","Counter-Strike 2"]},
+                       {"id":"570","name":"Dota 2","icon_hash":""},
+                       {"id":"1","name":"No Icon","aliases":["ni"]}]"#;
+        let entries = parse_list(body);
+        // An entry without an icon hash (or without names) has no art to draw: dropped.
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!((e.app, e.icon.as_str()), (730, "abc"));
+        // The name comes first, the aliases after, normalised and deduplicated.
+        assert_eq!(e.names, vec!["counterstrike2".to_string(), "cs2".to_string()]);
+        assert!(parse_list(r#"{"error":"401 Unauthorized"}"#).is_empty());
+        assert!(parse_list("not json").is_empty());
     }
 
     #[test]
-    fn detectable_json_parses_to_id_name_pairs() {
-        let body = r#"[{"id":"730","name":"Counter-Strike 2","icon":"abc"},{"id":"570","name":"Dota 2"}]"#;
-        assert_eq!(parse_detectable(body), vec![(730, "Counter-Strike 2".to_string()), (570, "Dota 2".to_string())]);
-        assert!(parse_detectable(r#"{"error":"401 Unauthorized"}"#).is_empty());
-        assert!(parse_detectable("not json").is_empty());
+    fn find_matches_the_exact_name_then_the_alias() {
+        let entries = parse_list(
+            r#"[{"id":"7","name":"Counter-Strike 2","icon_hash":"a","aliases":["cs2"]},
+                {"id":"8","name":"Valorant","icon_hash":"b"}]"#,
+        );
+        assert_eq!(find(&entries, "counterstrike2").map(|e| e.app), Some(7));
+        assert_eq!(find(&entries, "cs2").map(|e| e.app), Some(7));
+        assert_eq!(find(&entries, "valorant").map(|e| e.app), Some(8));
+        assert_eq!(find(&entries, "steam"), None);
+        assert_eq!(find(&entries, ""), None);
+        // Only prefixes relate: a longer unknown name is not a match.
+        assert_eq!(find(&entries, "counterstrikeglobaloffensive"), None);
     }
 
     #[test]
-    fn the_large_image_is_the_picked_asset() {
-        let body = r#"[{"id":"small","name":"small","type":2},{"id":"big","name":"large","type":1}]"#;
-        assert_eq!(pick_asset(body).as_deref(), Some("big"));
-        assert_eq!(pick_asset(r#"[{"id":"only","type":1}]"#).as_deref(), Some("only"));
-        assert_eq!(pick_asset("[]"), None);
-        assert_eq!(pick_asset("{}"), None);
+    fn find_prefix_matches_without_stealing_tiles_from_short_names() {
+        let entries = parse_list(
+            r#"[{"id":"9","name":"Overwatch","icon_hash":"o"},
+                {"id":"10","name":"Watch","icon_hash":"w"},
+                {"id":"11","name":"Minecraft","icon_hash":"m","aliases":["Minecraft Launcher"]},
+                {"id":"12","name":"Watch Dogs 2","icon_hash":"wd"}]"#,
+        );
+        // "Overwatch 2" is the entry's name plus a suffix: Overwatch wins, never Watch.
+        assert_eq!(find(&entries, "overwatch2").map(|e| e.app), Some(9));
+        // The entry's own name plus a word, spelled the way Discord lists it.
+        assert_eq!(find(&entries, "watchdogs2").map(|e| e.app), Some(12));
+        // "watch" alone is an exact entry of its own.
+        assert_eq!(find(&entries, "watch").map(|e| e.app), Some(10));
+        // A long game name finds its short entry.
+        assert_eq!(find(&entries, "minecraftjavaedition").map(|e| e.app), Some(11));
     }
 
     #[test]
-    fn discord_cdn_urls_are_the_public_ones() {
-        assert_eq!(asset_url(730, "abc123", "png"), "https://cdn.discordapp.com/app-assets/730/abc123.png");
-        assert_eq!(asset_url(730, "abc123", "gif"), "https://cdn.discordapp.com/app-assets/730/abc123.gif");
-        assert_eq!(app_icon_url(730, "iconhash"), "https://cdn.discordapp.com/app-icons/730/iconhash.png?size=256");
+    fn the_cache_round_trips_and_refuses_what_it_cannot_read() {
+        let dir = std::env::temp_dir().join(format!("kumacord-gicons-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("game-icons.cache");
+        let entries = parse_list(
+            r#"[{"id":"730","name":"Counter-Strike 2","icon_hash":"abc","aliases":["cs2"]},
+                {"id":"570","name":"Dota 2","icon_hash":"def"}]"#,
+        );
+        save_cache_at(&path, &entries);
+        let (_, back) = load_cache_at(&path, false).expect("the cache this build just wrote");
+        assert_eq!(back, entries);
+        // A half-written file (the rename never happened) is not a cache.
+        std::fs::write(&path, &std::fs::read(&path).unwrap()[..12]).unwrap();
+        assert!(load_cache_at(&path, false).is_none());
+        // Another format, or junk, is not a cache either.
+        std::fs::write(&path, b"XXXX\x01\x00\x00").unwrap();
+        assert!(load_cache_at(&path, false).is_none());
+        // Past the TTL it is only read as the offline fallback.
+        save_cache_at(&path, &entries);
+        assert!(load_cache_at(&path, false).is_some(), "written now, still fresh");
+        assert!(load_cache_at(&path, true).is_some(), "and readable when stale is allowed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_embedded_pack_parses_and_carries_the_catalogue() {
+        // The real pack this build ships (see tools/game_icons/build.ps1).
+        let entries = parse_pack(include_bytes!("../assets/game-icons.pack"));
+        assert!(entries.len() > 90, "the pack carries the app catalogue: {} entries", entries.len());
+        let lookup = |k: &str| entries.iter().find(|(key, _)| key == k).map(|(_, b)| *b);
+        // The names the app's own detector produces.
+        assert!(lookup("counterstrike2").is_some(), "Counter-Strike 2");
+        assert!(lookup("valorant").is_some(), "Valorant");
+        assert!(lookup("leagueoflegends").is_some(), "League of Legends");
+        assert!(lookup("roblox").is_some(), "Roblox");
+        assert!(lookup("minecraft").is_some(), "Minecraft");
+        assert!(lookup("fortnite").is_some(), "Fortnite");
+        assert!(lookup("genshinimpact").is_some(), "Genshin Impact");
+        // Every entry is a real PNG.
+        for (key, bytes) in &entries {
+            assert!(bytes.starts_with(b"\x89PNG"), "{key} is not a PNG");
+            assert!(bytes.len() < 64 * 1024, "{key} is suspiciously large");
+        }
+        // A damaged pack reads as empty, never as a panic.
+        assert!(parse_pack(b"nope!").is_empty());
+        assert!(parse_pack(&[0x4b, 0x55, 0x49, 0x47, 0x01][..]).is_empty());
+    }
+
+    #[test]
+    fn the_icon_url_is_the_public_cdn() {
+        assert_eq!(icon_url(730, "abc123"), "https://cdn.discordapp.com/app-icons/730/abc123.png?size=256");
     }
 }

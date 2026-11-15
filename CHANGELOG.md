@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.7.0] — 2026-11-14
+
+### Adicionado (ícones reais dos jogos)
+
+- **"Jogando X" agora mostra o ícone REAL do jogo, igual ao Discord.** Acabou a era dos
+  emojis: quem está jogando Roblox vê o logo do Roblox, CS2 o do CS2, Valorant o do
+  Valorant — o mesmo desenho que o cliente oficial do Discord mostra.
+- **Engenharia reversa do Discord (instalado, no PC do desenvolvedor)** para descobrir o
+  caminho exato: o cliente casa o jogo com a lista pública de *detectable applications*
+  (`/api/v9/applications/detectable`, a mesma que ele consulta) e desenha a arte de
+  `cdn.discordapp.com/app-icons/{app_id}/{icon_hash}.png`. Achamos também **por que os
+  emojis tinham voltado**: a versão anterior conferia o nome pelo endpoint
+  `/applications/{id}`, que passou a exigir autenticação (401) — com ela morta, todo jogo
+  caía no emoji. Agora tudo vem da própria lista, sem conta e sem chave.
+- **Pacote embutido no exe** (`app/assets/game-icons.pack`, 0,7 MB): os ~97 jogos do
+  catálogo do app já resolvidos em tempo de *build* (64×64). Ou seja: **não depende da API
+  do Discord** para o dia a dia — o ícone aparece instantaneamente, até offline. Os poucos
+  jogos fora do pacote continuam resolvidos ao vivo pela API pública do Discord (a fila
+  longa, ~21 mil jogos), com cache de uma semana em disco e fallback para o cache velho
+  quando estiver offline; Steam e o emoji seguem como últimas linhas.
+- `tools/game_icons/` (build.ps1 + manifest.py + pack.py) regenera o pacote a partir da
+  lista do Discord, e o teste `the_embedded_pack_parses_and_carries_the_catalogue` garante
+  que o pacote que vai no release é um pacote válido.
+
 ## [1.6.2] — 2026-11-14
 
 ### Corrigido

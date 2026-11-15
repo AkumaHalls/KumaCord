@@ -297,6 +297,26 @@ pub fn dir_overridden() -> bool {
     DIR.get().is_some()
 }
 
+/// The folder settings.json lives in (the autotest's own, `%APPDATA%\AkumaLabs`, or the macOS
+/// Application Support one). Siblings like the game-icon cache are written here.
+pub fn dir() -> Option<PathBuf> {
+    if let Some(d) = DIR.get() {
+        return Some(d.clone());
+    }
+    if let Some(d) = std::env::var_os("APPDATA") {
+        return Some(PathBuf::from(d).join("AkumaLabs"));
+    }
+    // macOS: ~/Library/Application Support/AkumaLabs (there is no %APPDATA%).
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        return Some(PathBuf::from(home).join("Library").join("Application Support").join("AkumaLabs"));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 fn path() -> Option<PathBuf> {
     if let Some(d) = DIR.get() {
         return Some(d.join("settings.json"));
