@@ -24,7 +24,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use eframe::egui::{self, Color32, Pos2, Rect, TextureId, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, TextureHandle, Vec2};
 
 use crate::theme;
 
@@ -192,9 +192,13 @@ pub fn resolve(game_name: &str) -> Resolved {
 
 /// The art of each source this session asked for: loading, ready, or failed (failed stays
 /// failed for the session — a CDN hiccup is not worth re-hammering it every frame).
+///
+/// `Ready` holds the texture's **handle**, not just its id: egui frees a texture when its last
+/// handle goes away, and an id without a handle draws nothing at all (the "Failed to find
+/// texture" warning) — which is exactly how the tiles went blank.
 enum State {
     Loading,
-    Ready(TextureId),
+    Ready(TextureHandle),
     Failed,
 }
 
@@ -221,7 +225,9 @@ impl Store {
                     let rgba = img.to_rgba8();
                     let (w, h) = rgba.dimensions();
                     let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
-                    State::Ready(ctx.load_texture(format!("game/{key}"), color, egui::TextureOptions::LINEAR).id())
+                    // The whole handle is kept in `State::Ready` (see its doc): an id alone would
+                    // drop the texture on the floor and the tile would draw blank.
+                    State::Ready(ctx.load_texture(format!("game/{key}"), color, egui::TextureOptions::LINEAR))
                 }
                 None => State::Failed,
             };
@@ -243,7 +249,7 @@ impl Store {
 
     /// The texture of `appid`'s Steam capsule art if it has arrived; starts the fetch on the
     /// first call and answers `None` (the caller draws the next source meanwhile) until then.
-    pub fn steam(&mut self, ctx: &egui::Context, appid: u32) -> Option<TextureId> {
+    pub fn steam(&mut self, ctx: &egui::Context, appid: u32) -> Option<TextureHandle> {
         let key = format!("steam/{appid}");
         self.poll(ctx);
         self.ensure(key.clone(), move || {
@@ -257,7 +263,7 @@ impl Store {
                 .and_then(|r| if r.status().is_success() { r.bytes().ok().map(|b| b.to_vec()) } else { None })
         });
         match self.map.get(&key) {
-            Some(State::Ready(id)) => Some(*id),
+            Some(State::Ready(tex)) => Some(tex.clone()),
             _ => None,
         }
     }
@@ -265,13 +271,13 @@ impl Store {
     /// The game's own logo from Discord's public app-icons CDN, resolved by game name (the long
     /// tail the embedded pack does not carry): `None` while it loads, and `None` for good when
     /// Discord has no such game — the caller then falls back to the Steam/emoji sources.
-    pub fn discord(&mut self, ctx: &egui::Context, game_key: &str) -> Option<TextureId> {
+    pub fn discord(&mut self, ctx: &egui::Context, game_key: &str) -> Option<TextureHandle> {
         let key = format!("discord/{game_key}");
         self.poll(ctx);
         let k = game_key.to_string();
         self.ensure(key.clone(), move || discord_art(&k));
         match self.map.get(&key) {
-            Some(State::Ready(id)) => Some(*id),
+            Some(State::Ready(tex)) => Some(tex.clone()),
             _ => None,
         }
     }
@@ -279,12 +285,12 @@ impl Store {
     /// The icon this build carries inside the exe (the embedded pack): decoded at once — the
     /// images are tiny (64 px) and the pack is a few hundred KB, so there is no thread and no
     /// fetch. `None` when the pack has no such game (the caller moves on to the live source).
-    pub fn pack(&mut self, ctx: &egui::Context, game_key: &str) -> Option<TextureId> {
+    pub fn pack(&mut self, ctx: &egui::Context, game_key: &str) -> Option<TextureHandle> {
         let key = format!("pack/{game_key}");
         self.poll(ctx);
         if let Some(state) = self.map.get(&key) {
             return match state {
-                State::Ready(id) => Some(*id),
+                State::Ready(tex) => Some(tex.clone()),
                 // Failed stays failed for the session; Loading would mean a re-entrant call.
                 _ => None,
             };
@@ -295,13 +301,13 @@ impl Store {
                 let rgba = img.to_rgba8();
                 let (w, h) = rgba.dimensions();
                 let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
-                State::Ready(ctx.load_texture(key.clone(), color, egui::TextureOptions::LINEAR).id())
+                State::Ready(ctx.load_texture(key.clone(), color, egui::TextureOptions::LINEAR))
             }
             Err(_) => State::Failed,
         };
-        self.map.insert(key, state);
-        match self.map.get(&format!("pack/{game_key}")) {
-            Some(State::Ready(id)) => Some(*id),
+        self.map.insert(key.clone(), state);
+        match self.map.get(&key) {
+            Some(State::Ready(tex)) => Some(tex.clone()),
             _ => None,
         }
     }
@@ -689,7 +695,7 @@ pub fn tile(ctx: &egui::Context, painter: &egui::Painter, store: &mut Store, emo
         }
     });
     if let Some(tex) = art {
-        painter.image(tex, rect, uv, Color32::WHITE);
+        painter.image(tex.id(), rect, uv, Color32::WHITE);
         painter.rect_stroke(rect, corner, egui::Stroke::new(theme::stroke::HAIRLINE, theme::MOVEL_PRESSED), egui::StrokeKind::Inside);
         return;
     }

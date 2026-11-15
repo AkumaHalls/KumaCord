@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.7.2] — 2026-11-15
+
+### Corrigido (o tile do jogo finalmente desenha)
+
+- **O ícone não aparecia: o tile era um quadrado cinza sem logo.** Causa raiz: o
+  cache de arte guardava apenas o `TextureId` e soltava o `TextureHandle` — o
+  egui **libera a textura quando o último handle cai**, então o `painter.image`
+  recebía um id morto (15 mil avisos de "Failed to find texture" por sessão) e
+  não desenhava nada; sobrava o tile cinza do placeholder. Agora o handle
+  inteiro fica guardado no estado — a arte fica viva pela sessão. Medido antes
+  e depois no mesmo teste E2E: **15.093 avisos → 0**, e o logo real do jogo
+  aparecendo na lista de membros (verificado em screenshot).
+
+### Mudado (licença)
+
+- **Rebranding completo: fora a MIT.** O `LICENSE` agora é **uso privado da
+  AkumaLabs** (todos os direitos reservados): usar e redistribuir o app sem
+  alteração dentro da comunidade, sim; modificar, redistribuir modificado ou
+  usar a marca sem autorização, não. Todos os textos que ainda diziam "código
+  aberto (MIT)" — README, LEIA-ME do instalador, metadados do instalador, o
+  cartão de créditos do app — foram trocados, e um teste novo garante que o
+  elogio não volte. Componentes de terceiros seguem com suas próprias licenças
+  em `THIRD-PARTY-NOTICES.md` (isso não muda: são as licenças deles).
+
 ## [1.7.1] — 2026-11-15
 
 ### Corrigido (ícones dos jogos: tamanho e layout)

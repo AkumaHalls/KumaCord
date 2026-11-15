@@ -8,8 +8,9 @@
 
 KumaCord é o app + servidor da **AkumaLabs**: canais de texto, salas de voz, webcam e compartilhamento de tela (Go Live), no estilo Discord, mas rodando no **seu próprio servidor** — nada passa por terceiros.
 
-> KumaCord é um projeto **open source (MIT)** da AkumaLabs — veja `LICENSE` e
-> `THIRD-PARTY-NOTICES.md`. O client é **travado para conectar apenas no
+> KumaCord é software de **uso privado da AkumaLabs** — todos os direitos
+> reservados (veja `LICENSE`; as bibliotecas e assets de terceiros seguem em
+> `THIRD-PARTY-NOTICES.md`). O client é **travado para conectar apenas no
 > servidor oficial**: não há campo de endereço nem opção de hospedar pelo app.
 
 ## O que tem aqui
@@ -134,4 +135,8 @@ Nota: parte da suíte de autotests de UI do upstream pressupõe a tela inicial o
 
 ## Licença
 
-Código: MIT (veja `LICENSE` — mantém os créditos do projeto original). A logo AkumaLabs (`app/assets/logo/`) é arte da marca própria. Bibliotecas, fontes e ícones de terceiros: `THIRD-PARTY-NOTICES.md`.
+**Uso privado da AkumaLabs — todos os direitos reservados** (veja `LICENSE`):
+usar e redistribuir o app sem alteração dentro da comunidade; modificar,
+redistribuir modificado ou usar a marca sem autorização por escrito, não.
+A logo AkumaLabs (`app/assets/logo/`) é arte da marca própria. Bibliotecas,
+fontes e ícones de terceiros: `THIRD-PARTY-NOTICES.md`.

@@ -1,22 +1,43 @@
-MIT License
+LICENÇA DE USO PRIVADO — KumaCord
+=================================
 
-Copyright (c) 2026 concord contributors
-Copyright (c) 2026 AkumaLabs (KumaCord branding, packaging and deployment)
+Copyright (c) 2026 AkumaLabs. Todos os direitos reservados.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. O QUE ESTA LICENÇA COBRE
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+   Este arquivo e todo o código-fonte, os binários, os instaladores, os assets
+   (arte, ícones, fontes, a cinemática da abertura e sua trilha), a documentação
+   e a marca "KumaCord" / "AkumaLabs" deste repositório.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. USO PERMITIDO
+
+   - Usar o app e o servidor como estão, sem modificação, dentro da comunidade
+     AkumaLabs.
+   - Copiar e redistribuir o app **sem alteração** (instalador ou zip portátil)
+     para quem a organização convidar.
+
+3. O QUE NÃO É PERMITIDO SEM AUTORIZAÇÃO POR ESCRITO DA AkumaLabs
+
+   - Modificar, adaptar ou criar obras derivadas do código ou dos assets.
+   - Redistribuir versões modificadas, ou distribuír o app como parte de outro
+     produto ou serviço.
+   - Usar a marca "KumaCord" ou "AkumaLabs", a arte ou os ícones dos jogos
+     (propriedade de seus respectivos donos, servidos pelo CDN público do
+     Discord) para qualquer fim além de exibir a atividade dentro do app.
+
+4. COMPONENTES DE TERCEIROS
+
+   As bibliotecas, as fontes e os ícones de terceiros que acompanham o produto
+   seguem suas próprias licenças — os avisos e os textos completos estão em
+   `THIRD-PARTY-NOTICES.md` e nas pastas de assets. Esta licença não substitui
+   nem concede os direitos deles.
+
+5. O SOFTWARE É FORNECIDO "NO ESTADO EM QUE SE ENCONTRA", SEM GARANTIA DE
+   QUALQUER TIPO, EXPRESSA OU IMPLÍCITA, INCLUINDO, SEM LIMITAÇÃO, AS GARANTIAS
+   DE COMERCIALIZAÇÃO, ADEQUAÇÃO A UM FIM ESPECÍFICO E NÃO VIOLAÇÃO. EM NENHUMA
+   HIPÓTESE OS AUTORES OU DETENTORES DOS DIREITOS SERÃO RESPONSÁVEIS POR
+   QUALQUER RECLAMAÇÃO, DANO OU OUTRA OBRIGAÇÃO, SEJA EM AÇÃO DE CONTRATO,
+   ATO ILÍCITO OU OUTRO, DECORRENTE DESTE SOFTWARE OU RELACIONADO A ELE.
+
+Para permissões além do item 2 (uso comercial, forks privados, redistribuição
+modificada), fale com a organização da AkumaLabs.

@@ -62,7 +62,7 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "CompanyName" "${COMPANY}"
 VIAddVersionKey "FileDescription" "Instalador do ${APPNAME}"
 VIAddVersionKey "FileVersion" "${VERSION}"
-VIAddVersionKey "LegalCopyright" "Baseado no projeto concord (MIT). Marca e logo AkumaLabs."
+VIAddVersionKey "LegalCopyright" "Uso privado AkumaLabs - todos os direitos reservados. Marca e logo AkumaLabs."
 
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"

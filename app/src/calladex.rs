@@ -357,7 +357,7 @@ fn credits(ui: &mut egui::Ui) {
         ui.add_space(space::S);
         ui.label(RichText::new("Nº 000 · tipo: Criador").font(theme::semibold(13.0)).color(theme::GIZ));
         ui.add_space(space::S);
-        ui.label(RichText::new("KumaCord — código aberto (MIT).").font(theme::body(14.0)).color(theme::TEXTO));
+        ui.label(RichText::new("KumaCord (uso privado AkumaLabs).").font(theme::body(14.0)).color(theme::TEXTO));
         ui.add_space(space::M);
         ui.add(egui::Label::new(RichText::new("Ainda não há membros por aqui. Entre num servidor e digite /calladex no chat.").font(theme::body(12.5)).color(theme::NEVOA)).wrap());
     });
@@ -441,5 +441,14 @@ mod tests {
     #[test]
     fn the_footer_credits_the_upstream_author() {
         assert!(FOOTER.contains("AkumaLabs"), "{FOOTER}");
+    }
+
+    /// The license is private use, not open source: nothing the card shows says otherwise.
+    #[test]
+    fn the_credits_say_private_use_not_open_source() {
+        let credits = "KumaCord (uso privado AkumaLabs).";
+        assert!(!credits.contains("MIT"), "a licença MIT não é mais a do projeto");
+        assert!(!credits.to_lowercase().contains("código aberto") && !credits.to_lowercase().contains("codigo aberto"), "{credits}");
+        assert!(credits.contains("uso privado"), "{credits}");
     }
 }
