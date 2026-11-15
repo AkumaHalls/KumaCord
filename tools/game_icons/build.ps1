@@ -64,6 +64,10 @@ foreach ($e in $m) {
 "icones baixados: $ok de $($m.Count)"
 if ($fail.Count -gt 0) { "falhas:`n" + ($fail -join "`n") }
 
+# Cantos arredondados (transparentes), como o Discord desenha a arte da atividade.
+& $Python (Join-Path $PSScriptRoot "round_corners.py") $icons $Size
+if ($LASTEXITCODE -ne 0) { throw "round_corners.py falhou" }
+
 Write-Host "4/4 empacotando..."
 & $Python (Join-Path $PSScriptRoot "pack.py") $manifest $icons (Join-Path $root "app\assets\game-icons.pack")
 if ($LASTEXITCODE -ne 0) { throw "pack.py falhou" }

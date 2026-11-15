@@ -807,11 +807,28 @@ impl App {
         });
     }
 
+    /// What the connect form points at (see [`App::effective_url`]). Pure, so the choice between
+    /// the fixed home, an invite and — under `--autotest` — the dev hub is testable without
+    /// building an `App`. The background branch itself is exercised by the release gate
+    /// against a real dev hub.
+    pub fn effective_url_of(typed: &str) -> String {
+        let typed = typed.trim();
+        if vox_proto::looks_like_invite(typed) {
+            typed.to_string()
+        } else if vox_client_core::testmode::background() && typed.starts_with("http") {
+            typed.to_string()
+        } else {
+            crate::brand::HOME_URL.to_string()
+        }
+    }
+
     /// The effective URL the connect form points at: the pasted invite, when there is one, else
-    /// the fixed AkumaLabs home ([`crate::brand::HOME_URL`]). Never anything else.
+    /// the fixed AkumaLabs home ([`crate::brand::HOME_URL`]). Never anything else — except in
+    /// background test mode, where the app is driven against its own dev hub
+    /// (`--server 127.0.0.1:7997`): the guard in [`App::connect`] already lets that address
+    /// through, and honouring it here is what keeps the release gate off the live server.
     pub fn effective_url(&self) -> String {
-        let typed = self.form.url.trim().to_string();
-        if vox_proto::looks_like_invite(&typed) { typed } else { crate::brand::HOME_URL.to_string() }
+        Self::effective_url_of(&self.form.url)
     }
 
     /// v1.0.1: what of this login was saved on this computer, and for which server (see
@@ -2389,6 +2406,15 @@ mod tests {
         assert_eq!(format_time(t, t + 1000, 0), "12:34");
         assert_eq!(format_time(t, t + 1000, -180), "09:34");
         assert_eq!(format_time(t, t + 2 * 86_400_000, 0), "07/10 12:34");
+    }
+
+    #[test]
+    fn the_form_goes_to_the_home_unless_a_test_names_a_dev_hub() {
+        // Outside test mode the launcher is locked to the one official home.
+        assert!(!vox_client_core::testmode::background(), "this test runs without --autotest");
+        assert_eq!(App::effective_url_of("http://127.0.0.1:7997"), crate::brand::HOME_URL, "a typed address is never an address");
+        assert_eq!(App::effective_url_of("vox1-abc"), "vox1-abc", "an invite is its own address");
+        assert_eq!(App::effective_url_of(""), crate::brand::HOME_URL, "an empty field means the home");
     }
 
     #[test]

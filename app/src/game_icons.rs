@@ -28,10 +28,11 @@ use eframe::egui::{self, Color32, Pos2, Rect, TextureId, Vec2};
 
 use crate::theme;
 
-/// Side of the tile in the member rows (the square next to "Jogando X").
+/// Side of the tile in the member rows. Discord draws the activity's own art at 16 px in the
+/// member list — the same number here, so the tile is never a shrunken copy inside a box.
 pub const TILE: f32 = 16.0;
-/// Side of the tile in the profile card.
-pub const TILE_CARD: f32 = 22.0;
+/// Side of the tile in the profile card: Discord shows the activity art at 32 px there.
+pub const TILE_CARD: f32 = 32.0;
 
 /// What a game name resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -661,37 +662,43 @@ impl Default for Store {
     }
 }
 
-/// Draw the game's tile in `rect`: a dark rounded square with a hairline (concentric with the
-/// row's own radius) and, inside, the game's own logo from Discord's app-assets when it arrived,
-/// else the Steam art, else the themed emoji / the gamepad while things load. The caller owns
-/// the hover (it already shows the full game name).
+/// Draw the game's tile in `rect`.
+///
+/// The art is the tile, exactly like Discord: when a logo exists it fills the whole rect edge to
+/// edge (never a shrunken copy inside a box), with a hairline around it so a dark logo — a third
+/// of Discord's app icons have a black or near-black background — still reads as a tile on the
+/// dark row instead of a hole (the contrast rule: an icon that carries meaning needs at least
+/// 3:1 against what surrounds it). While the art is on its way, or when there is none, the tile
+/// is the placeholder it always was: a dark rounded square with the themed emoji / the gamepad.
+/// The caller owns the hover (it already shows the full game name).
 pub fn tile(ctx: &egui::Context, painter: &egui::Painter, store: &mut Store, emojis: &mut crate::emoji::Textures, game: &str, rect: Rect) {
     let corner = egui::CornerRadius::same(theme::radius::TAG);
+    let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
+    // The icon shipped inside the exe first (no network, instant), then Discord's own logo for
+    // everything else the live list knows; Steam as the third source.
+    let k = key(game);
+    let art = if k.is_empty() {
+        None
+    } else {
+        store.pack(ctx, &k).or_else(|| store.discord(ctx, &k))
+    };
+    let art = art.or_else(|| {
+        match resolve(game) {
+            Resolved::Steam(appid) => store.steam(ctx, appid),
+            Resolved::Emoji(_) => None,
+        }
+    });
+    if let Some(tex) = art {
+        painter.image(tex, rect, uv, Color32::WHITE);
+        painter.rect_stroke(rect, corner, egui::Stroke::new(theme::stroke::HAIRLINE, theme::MOVEL_PRESSED), egui::StrokeKind::Inside);
+        return;
+    }
+    // No art (yet): the placeholder tile the app always had.
     painter.rect_filled(rect, corner, theme::NOITE);
     painter.rect_stroke(rect, corner, egui::Stroke::new(theme::stroke::HAIRLINE, theme::MOVEL_PRESSED), egui::StrokeKind::Inside);
     let inner = rect.shrink(2.5);
-    let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
-    // The icon shipped inside the exe first (no network, instant), then Discord's own logo for
-    // everything else the live list knows; Steam/emoji when Discord has no entry for the game.
-    let k = key(game);
-    if !k.is_empty() {
-        if let Some(tex) = store.pack(ctx, &k) {
-            painter.image(tex, inner, uv, Color32::WHITE);
-            return;
-        }
-        if let Some(tex) = store.discord(ctx, &k) {
-            painter.image(tex, inner, uv, Color32::WHITE);
-            return;
-        }
-    }
     match resolve(game) {
-        Resolved::Steam(appid) => {
-            if let Some(tex) = store.steam(ctx, appid) {
-                painter.image(tex, inner, uv, Color32::WHITE);
-            } else {
-                draw_emoji(ctx, painter, emojis, GAMEPAD, inner);
-            }
-        }
+        Resolved::Steam(_) => draw_emoji(ctx, painter, emojis, GAMEPAD, inner),
         Resolved::Emoji(ch) => draw_emoji(ctx, painter, emojis, ch, inner),
     }
 }
@@ -850,6 +857,15 @@ mod tests {
             assert!(bytes.starts_with(b"\x89PNG"), "{key} is not a PNG");
             assert!(bytes.len() < 64 * 1024, "{key} is suspiciously large");
         }
+        // The art is rounded like Discord's activity icons: the corner is transparent and the
+        // centre is opaque (this is what makes the tile read as a tile on the dark row).
+        let cs2 = pack_icon("counterstrike2").expect("Counter-Strike 2 ships in the pack");
+        let img = vox_client_core::images::decode(cs2).expect("the icon decodes").to_rgba8();
+        let (w, h) = img.dimensions();
+        assert!(w >= 32 && h >= 32, "the art is big enough for the tile: {w}x{h}");
+        assert_eq!(img.get_pixel(0, 0).0[3], 0, "the corner is transparent");
+        assert_eq!(img.get_pixel(w - 1, 0).0[3], 0, "both corners are");
+        assert_eq!(img.get_pixel(w / 2, h / 2).0[3], 255, "the centre is opaque");
         // A damaged pack reads as empty, never as a panic.
         assert!(parse_pack(b"nope!").is_empty());
         assert!(parse_pack(&[0x4b, 0x55, 0x49, 0x47, 0x01][..]).is_empty());

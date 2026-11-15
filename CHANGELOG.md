@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.7.1] — 2026-11-15
+
+### Corrigido (ícones dos jogos: tamanho e layout)
+
+- **O tile do jogo estava uma caixa preta pequena.** A arte era encolhida para 11 px dentro
+  de uma caixa escura de 16 px — num ícone de fundo escuro (um terço dos ícones do Discord
+  tem fundo preto/escuro: Valorant, League of Legends, Sekiro...) o resultado era exatamente
+  um quadrado preto. Refatorado no tamanho e no layout que o **Discord** usa:
+  - a arte é o tile: **16 px borda a borda** na lista de membros (antes 11 px dentro da
+    caixa) e **32 px** no cartão de perfil (antes 22 px) — os mesmos números do Discord;
+  - **cantos arredondados** transparentes no pacote (raio de 25%), como o Discord desenha a
+    arte da atividade — o tile encosta na fileira arredondado, não quadrado;
+  - um fio de cabelo em volta do tile, garantindo o contraste mínimo de 3:1 mesmo quando o
+    logo é escuro: o tile sempre se lê como tile, nunca como um buraco na fileira.
+- O teste `the_embedded_pack_parses_and_carries_the_catalogue` passou a travar o formato:
+  canto transparente, centro opaco, PNG válido em toda entrada.
+
+### Corrigido (autotestes: o gate apontava para o servidor errado)
+
+- **Os clientes de autoteste sempre conectavam no servidor de produção**, ignorando o
+  `--server http://127.0.0.1:...`: o `effective_url` devolvia o `HOME_URL` para qualquer
+  endereço digitado (regra do launcher Travado). Em modo de teste (`--autotest`) o endereço
+  do hub de desenvolvimento agora é honrado — que é o que o gate sempre prometeu ("nunca
+  toca o servidor vivo em 7890"). Testado ponta a ponta: hub local, dois clientes, detector
+  de jogos ativo e o tile aparecendo na lista de membros.
+
 ## [1.7.0] — 2026-11-14
 
 ### Adicionado (ícones reais dos jogos)
