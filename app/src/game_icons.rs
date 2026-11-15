@@ -402,8 +402,9 @@ impl Default for Store {
 }
 
 /// Draw the game's tile in `rect`: a dark rounded square with a hairline (concentric with the
-/// row's own radius), the Steam art when it arrived, else the themed emoji / the gamepad while
-/// it loads. The caller owns the hover (it already shows the full game name).
+/// row's own radius) and, inside, the game's own logo from Discord's app-assets when it arrived,
+/// else the Steam art, else the themed emoji / the gamepad while things load. The caller owns
+/// the hover (it already shows the full game name).
 pub fn tile(ctx: &egui::Context, painter: &egui::Painter, store: &mut Store, emojis: &mut crate::emoji::Textures, game: &str, rect: Rect) {
     let corner = egui::CornerRadius::same(theme::radius::TAG);
     painter.rect_filled(rect, corner, theme::NOITE);
